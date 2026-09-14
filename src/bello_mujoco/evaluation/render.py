@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from io import BytesIO
+import json
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias
 
@@ -23,6 +25,10 @@ from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.locomotion_state import BelloState
 from bello_mujoco.envs.gait import gait_frequency, resolve_gait_command_transition
 from bello_mujoco.envs.rewards import command_is_moving
+from bello_mujoco.evaluation.settling import (
+    SettlingDiagnostics,
+    annotate_standing_frame,
+)
 from bello_mujoco.policy import (
     apply_actor,
     init_actor_critic,
@@ -201,7 +207,18 @@ def render_policy_rollout(
     obs_stack_size: int = 1,
     stochastic_actions: bool = False,
     action_seed: int = 0,
+    push_at_step: int | None = None,
+    push_velocity: tuple[float, float] = (0.0, 0.0),
+    record_standing: bool = False,
 ) -> RolloutStats:
+    if push_at_step is not None and not 0 < push_at_step < steps:
+        raise ValueError("push_at_step must be inside the rollout")
+    if len(push_velocity) != 2 or not np.all(np.isfinite(push_velocity)):
+        raise ValueError("push_velocity must contain two finite values")
+    if record_standing and (np.any(np.asarray(command) != 0) or not stop_on_done):
+        raise ValueError(
+            "standing diagnostics require zero command and first-failure stopping"
+        )
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
     reset_mujoco_data(env, mj_data)
@@ -222,6 +239,24 @@ def render_policy_rollout(
         steps, stochastic_actions=stochastic_actions, action_seed=action_seed
     )
     stats["observation_seed"] = env.config.model_randomization.seed
+    stats["push_applied"] = 0
+    stats["push_velocity_x"] = float(push_velocity[0])
+    stats["push_velocity_y"] = float(push_velocity[1])
+    diagnostics = (
+        SettlingDiagnostics(env.control_timestep, push_at_step)
+        if record_standing
+        else None
+    )
+
+    def annotate(frame):
+        if diagnostics is None or not diagnostics.samples:
+            return frame
+        return annotate_standing_frame(
+            frame,
+            diagnostics.samples[-1],
+            None if push_at_step is None else push_at_step * env.control_timestep,
+        )
+
     resources, renderer, camera, writer = open_rollout_video_resources(
         mj_model,
         output_path,
@@ -240,6 +275,7 @@ def render_policy_rollout(
                 mj_data,
                 camera_config,
                 root_body_name=env.model.robot.root_body_name,
+                transform=annotate,
             )
             action_rng = None
             if stochastic_actions:
@@ -253,6 +289,10 @@ def render_policy_rollout(
                 observation_norm_state=observation_norm_state,
             )
             action = np.asarray(jax.device_get(action), dtype=np.float32)
+            if push_at_step is not None and step_index == push_at_step:
+                root_qvel = int(env.model.root_qvel_adr)
+                mj_data.qvel[root_qvel : root_qvel + 2] += push_velocity
+                stats["push_applied"] = 1
             previous_ctrl = mj_data.ctrl.copy()
             requested_ctrl = mujoco_action_to_ctrl(env, action)
             for substep in range(env.decimation):
@@ -263,6 +303,13 @@ def render_policy_rollout(
             last_action = action
             step_count += 1
             done_flags = mujoco_done_flags(env, mj_data, step_count)
+            if diagnostics is not None:
+                # Diagnostic duration, not the training timeout, is the horizon.
+                done_flags["done/timeout"] = False
+                done_flags["done/any"] = done_flags["done/terminal"]
+                diagnostics.record(
+                    mujoco_standing_sample(env, mj_data, done_flags["done/terminal"])
+                )
             done = bool(done_flags["done/any"])
             if done:
                 record_rollout_done(
@@ -288,6 +335,7 @@ def render_policy_rollout(
                     mj_data,
                     camera_config,
                     root_body_name=env.model.robot.root_body_name,
+                    transform=annotate,
                 )
                 break
             if done:
@@ -312,7 +360,112 @@ def render_policy_rollout(
             obs_stack = update_observation_stack(obs_stack, obs, jnp.asarray(False))
     finally:
         resources.close()
+        if diagnostics is not None:
+            with output_path.with_suffix(".jsonl").open("w") as trace:
+                for sample in diagnostics.samples:
+                    trace.write(json.dumps(sample, allow_nan=False) + "\n")
+    stats["survived_rollout"] = int(stats["completed_episodes"] == 0)
+    if diagnostics is not None:
+        stats.update(diagnostics.summary())
+    if push_at_step is not None:
+        first_done = int(stats["first_done_step"])
+        end = first_done if first_done >= 0 else steps
+        stats["post_push_seconds"] = max(0, end - push_at_step) * env.control_timestep
     return finalize_rollout_stats(stats, current_episode_length=step_count)
+
+
+def mujoco_standing_sample(
+    env, data: mujoco.MjData, terminal: bool
+) -> dict[str, float]:
+    model = env.model.mj_model
+    frame = model.body(env._reward_frame_link("track_lin_vel_xy")).id
+    rotation = data.xmat[frame].reshape(3, 3)
+    yaw = math.atan2(rotation[1, 0], rotation[0, 0])
+    yaw_rotation = np.array(
+        [
+            [math.cos(yaw), -math.sin(yaw), 0],
+            [math.sin(yaw), math.cos(yaw), 0],
+            [0, 0, 1],
+        ]
+    )
+    forward = yaw_rotation @ np.asarray(env.model.robot.locomotion_forward_axis)
+    left = np.cross([0, 0, 1], forward)
+    geometry = env._sole_reward_geometry
+    feet = np.asarray(env.model.foot_body_ids)
+    centers = data.xpos[feet] + np.einsum(
+        "nij,nj->ni", data.xmat[feet].reshape(-1, 3, 3), geometry.centers
+    )
+    delta = centers[0] - centers[1]
+    headings = []
+    command_forward = rotation @ np.asarray(env.model.robot.locomotion_forward_axis)
+    command_forward = command_forward[:2] / max(
+        np.linalg.norm(command_forward[:2]), 1e-6
+    )
+    for name, axis in env.model.robot.foot_forward_axes:
+        vector = data.xmat[model.body(name).id].reshape(3, 3) @ np.asarray(axis)
+        vector = vector[:2] / max(np.linalg.norm(vector[:2]), 1e-6)
+        headings.append(
+            abs(
+                math.atan2(
+                    command_forward[0] * vector[1] - command_forward[1] * vector[0],
+                    command_forward @ vector,
+                )
+            )
+        )
+    velocity = np.zeros(6)
+    mujoco.mj_objectVelocity(
+        model,
+        data,
+        mujoco.mjtObj.mjOBJ_XBODY,
+        model.body(env._reward_link("track_lin_vel_xy")).id,
+        velocity,
+        0,
+    )
+    speed = float(np.linalg.norm(velocity[3:5]))
+    torso = model.body(env._reward_link("flat_orientation")).id
+    gravity = data.xmat[torso].reshape(3, 3).T @ np.array([0, 0, -1])
+    standing = env.reward_config.standing
+    recovery = (
+        float(
+            np.clip(
+                2
+                - max(
+                    speed / standing.recovery_speed,
+                    np.linalg.norm(gravity[:2]) / math.sin(standing.recovery_tilt),
+                ),
+                0,
+                1,
+            )
+        )
+        if standing.recovery_relaxation
+        else 1.0
+    )
+    contacts = mujoco_foot_contact(env, data)
+    indices = env.model.policy_ctrl_indices
+    saturation = (
+        np.abs(data.actuator_force[indices])
+        >= 0.99 * np.asarray(env.model.actuator_peak_force)[indices]
+    )
+    return {
+        "speed": speed,
+        "yaw_rate": float(
+            mujoco_link_ang_vel(env, data, env._reward_link("track_ang_vel_z"))[2]
+        ),
+        "tilt": math.acos(float(np.clip(-gravity[2], -1, 1))),
+        "foreaft_error": abs(float(delta @ forward)),
+        "width_error": abs(float(delta @ left) - geometry.nominal_width),
+        "heading_error": max(headings),
+        "recovery_scale": recovery,
+        "geometry_scale": max(recovery, standing.recovery_geometry_floor),
+        "left_contact": float(contacts[0]),
+        "right_contact": float(contacts[1]),
+        "x": float(data.xpos[frame, 0]),
+        "y": float(data.xpos[frame, 1]),
+        "yaw": yaw,
+        "torque_saturation": float(np.mean(saturation)),
+        "self_collision_contacts": float(mujoco_self_collision(env, data)),
+        "terminal": float(terminal),
+    }
 
 
 def rollout_policy_action(

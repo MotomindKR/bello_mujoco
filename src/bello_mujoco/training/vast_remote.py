@@ -318,13 +318,16 @@ if not all(np.all(np.isfinite(np.asarray(leaf))) for leaf in leaves):
 video = Path(sys.argv[1]) / "restored-policy.mp4"
 render_policy_rollout(
     runtime.env, runtime.policy, output_path=video, command=(0.0, 0.0, 0.0),
-    steps=25, width=256, height=192, fps=50, stop_on_done=False,
+    steps=25, width=256, height=192, fps=50, stop_on_done=True,
     camera_config=CameraConfig(), ppo_config=runtime.metadata.ppo,
     observation_norm_state=runtime.normalization.observation,
     obs_stack_size=runtime.metadata.ppo.policy.obs_stack_size,
+    record_standing=True,
 )
 if not video.is_file() or video.stat().st_size == 0:
     raise RuntimeError("restored policy produced no video")
+if not video.with_suffix(".jsonl").is_file():
+    raise RuntimeError("restored policy produced no settling diagnostics")
 print({"preflight_checkpoint_restored": str(checkpoint), "policy_video": str(video)})
 PY
 fi

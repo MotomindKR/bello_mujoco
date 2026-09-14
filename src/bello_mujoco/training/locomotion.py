@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+import math
 
 import jax
 
@@ -30,6 +31,7 @@ from bello_mujoco.training.tracking import (
     log_config,
     track_checkpoint_artifact,
     track_video,
+    track_metric_snapshot,
 )
 from bello_mujoco.training.ppo_config import (
     PPOConfig,
@@ -65,6 +67,10 @@ class TrainingVideoConfig:
     stop_on_done: bool = True
     stochastic_actions: bool = False
     action_seed: int = 0
+    standing_push_enabled: bool = False
+    standing_push_at_seconds: float = 5.0
+    standing_push_speed: float = 0.5
+    standing_suite_enabled: bool = False
     log_wandb: bool = True
     wandb_name: str = "train/rollout"
     camera_config: CameraConfig = CameraConfig()
@@ -98,6 +104,18 @@ def run_training(run_config: TrainingRunConfig) -> None:
 
     validate_ppo_config(config)
     validate_video_config(video_config)
+    if (
+        video_config.enabled
+        and video_config.standing_push_enabled
+        and not video_config.standing_suite_enabled
+    ):
+        dt = env_config.decimation * env_config.simulation_physics.timestep
+        if (
+            not 0
+            < round(video_config.standing_push_at_seconds / dt)
+            < video_config.steps
+        ):
+            raise ValueError("standing push must occur inside the evaluation video")
     if video_config.enabled:
         require_linux_software_rendering()
     validate_checkpoint_config(checkpoint_config)
@@ -381,31 +399,89 @@ def render_training_video(
     update = int(jax.device_get(runner_state.update))
     output_path = config.output_dir / f"{config.filename_prefix}_{update:06d}.mp4"
     train_state = runner_train_state(runner_state, static_policy)
-    rollout_stats = render_policy_rollout_isolated(
-        env,
-        train_state.policy,
-        output_path=output_path,
-        command=config.command,
-        steps=config.steps,
-        width=config.width,
-        height=config.height,
-        fps=config.fps,
-        stop_on_done=config.stop_on_done,
-        camera_config=config.camera_config,
-        ppo_config=ppo_config,
-        observation_norm_state=runner_state.observation_norm_state,
-        obs_stack_size=obs_stack_size,
-        stochastic_actions=config.stochastic_actions,
-        action_seed=config.action_seed,
-    )
-    if config.log_wandb:
-        track_video(
-            run,
-            output_path,
-            name=config.wandb_name,
-            step=env_steps,
-            caption=video_rollout_caption(update, rollout_stats),
+
+    def render_case(path, name, *, diagnostic=False, **overrides):
+        options = dict(
+            command=config.command,
+            steps=config.steps,
+            stop_on_done=config.stop_on_done,
+            camera_config=config.camera_config,
+            stochastic_actions=config.stochastic_actions,
         )
+        options.update(overrides)
+        stats = render_policy_rollout_isolated(
+            env,
+            train_state.policy,
+            output_path=path,
+            width=config.width,
+            height=config.height,
+            fps=config.fps,
+            ppo_config=ppo_config,
+            observation_norm_state=runner_state.observation_norm_state,
+            obs_stack_size=obs_stack_size,
+            action_seed=config.action_seed,
+            **options,
+        )
+        if config.log_wandb:
+            track_video(
+                run,
+                path,
+                name=name,
+                step=env_steps,
+                caption=video_rollout_caption(update, stats),
+            )
+            if diagnostic:
+                track_metric_snapshot(
+                    run,
+                    stats,
+                    env_steps=env_steps,
+                    update=update,
+                    context={"phase": name.removesuffix("/video")},
+                )
+                if options.get("record_standing") and run is not None:
+                    run.save(
+                        str(path.with_suffix(".jsonl")),
+                        base_path=str(config.output_dir),
+                        policy="now",
+                    )
+
+    render_case(output_path, config.wandb_name)
+    if config.standing_suite_enabled or config.standing_push_enabled:
+        speed = config.standing_push_speed
+        directions = (
+            ("world_pos_x", (speed, 0.0)),
+            ("world_neg_x", (-speed, 0.0)),
+            ("world_pos_y", (0.0, speed)),
+            ("world_neg_y", (0.0, -speed)),
+        )
+        push_step = round(config.standing_push_at_seconds / env.control_timestep)
+        if config.standing_suite_enabled:
+            cases = [("quiet", None, (0.0, 0.0))] + [
+                (name, push_step, velocity) for name, velocity in directions
+            ]
+        else:
+            direction = max(0, update // config.every_updates - 1) % len(directions)
+            cases = [("push", push_step, directions[direction][1])]
+        for name, push_at, velocity in cases:
+            duration = (
+                30.0 if push_at is None else config.standing_push_at_seconds + 15.0
+            )
+            suite = config.standing_suite_enabled
+            render_case(
+                output_path.with_stem(output_path.stem + "_standing_" + name),
+                f"eval/standing_{name}/video",
+                diagnostic=True,
+                command=(0.0, 0.0, 0.0),
+                steps=round(duration / env.control_timestep) if suite else config.steps,
+                stop_on_done=True,
+                camera_config=replace(config.camera_config, mode="fixed")
+                if suite
+                else config.camera_config,
+                stochastic_actions=False,
+                push_at_step=push_at,
+                push_velocity=velocity,
+                record_standing=suite,
+            )
     return output_path
 
 
@@ -425,6 +501,15 @@ def video_rollout_caption(update: int, stats: dict[str, float | int]) -> str:
 
 
 def validate_video_config(config: TrainingVideoConfig) -> None:
+    if (
+        not math.isfinite(config.standing_push_at_seconds)
+        or config.standing_push_at_seconds <= 0
+    ):
+        raise ValueError(
+            "video_config.standing_push_at_seconds must be positive and finite"
+        )
+    if not math.isfinite(config.standing_push_speed) or config.standing_push_speed <= 0:
+        raise ValueError("video_config.standing_push_speed must be positive and finite")
     if not config.enabled:
         return
     if config.every_updates <= 0:

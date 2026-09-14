@@ -167,10 +167,19 @@ def update_camera(
 
 
 def write_video_frame(
-    renderer, camera, writer, mj_model, mj_data, camera_config, *, root_body_name
+    renderer,
+    camera,
+    writer,
+    mj_model,
+    mj_data,
+    camera_config,
+    *,
+    root_body_name,
+    transform=None,
 ):
     update_camera(
         camera, mj_model, mj_data, camera_config, root_body_name=root_body_name
     )
     renderer.update_scene(mj_data, camera=camera)
-    writer.append_data(renderer.render())
+    frame = renderer.render()
+    writer.append_data(frame if transform is None else transform(frame))

@@ -27,6 +27,85 @@ from bello_mujoco.training.ppo_config import PPOConfig
 from bello_mujoco.training.normalization import init_observation_norm_state
 
 
+def test_standing_suite_uses_one_checkpoint_and_all_directions(monkeypatch):
+    calls = []
+    policy = object()
+    monkeypatch.setattr(
+        training, "runner_train_state", lambda *_: SimpleNamespace(policy=policy)
+    )
+    monkeypatch.setattr(
+        training,
+        "render_policy_rollout_isolated",
+        lambda env, p, **kwargs: calls.append((p, kwargs)) or {},
+    )
+    training.render_training_video(
+        SimpleNamespace(control_timestep=0.02),
+        SimpleNamespace(update=jnp.asarray(8192), observation_norm_state=object()),
+        object(),
+        TrainingVideoConfig(standing_suite_enabled=True, log_wandb=False),
+        None,
+        env_steps=8192 * 40960,
+        ppo_config=PPOConfig(),
+    )
+    assert len(calls) == 6
+    assert all(p is policy for p, _ in calls)
+    assert calls[1][1]["steps"] == 1500
+    assert [
+        kwargs["output_path"].stem.split("_standing_")[1] for _, kwargs in calls[2:]
+    ] == [
+        "world_pos_x",
+        "world_neg_x",
+        "world_pos_y",
+        "world_neg_y",
+    ]
+    assert [kwargs["push_velocity"] for _, kwargs in calls[2:]] == [
+        (0.5, 0),
+        (-0.5, 0),
+        (0, 0.5),
+        (0, -0.5),
+    ]
+    assert all(
+        kwargs["record_standing"] and kwargs["stop_on_done"] for _, kwargs in calls[1:]
+    )
+    assert all(kwargs["steps"] == 1000 for _, kwargs in calls[2:])
+
+
+@pytest.mark.parametrize(
+    "index,velocity",
+    [(1, (0.5, 0.0)), (2, (-0.5, 0.0)), (3, (0.0, 0.5)), (4, (0.0, -0.5))],
+)
+def test_standing_push_video_cycles_directions(monkeypatch, index, velocity):
+    calls = []
+    runner = SimpleNamespace(
+        update=jnp.asarray(index * 4096), observation_norm_state=object()
+    )
+    monkeypatch.setattr(
+        training, "runner_train_state", lambda *_: SimpleNamespace(policy=object())
+    )
+    monkeypatch.setattr(
+        training,
+        "render_policy_rollout_isolated",
+        lambda *args, **kwargs: calls.append(kwargs) or {},
+    )
+    training.render_training_video(
+        SimpleNamespace(control_timestep=0.02),
+        runner,
+        object(),
+        TrainingVideoConfig(
+            standing_push_enabled=True, every_updates=4096, steps=500, log_wandb=False
+        ),
+        None,
+        env_steps=10,
+        ppo_config=PPOConfig(),
+    )
+    assert len(calls) == 2
+    assert calls[1]["command"] == (0.0, 0.0, 0.0)
+    assert calls[1]["push_at_step"] == 250
+    assert calls[1]["push_velocity"] == velocity
+    assert calls[1]["stop_on_done"]
+    assert not calls[1]["stochastic_actions"]
+
+
 def component_slice(env: BelloLocomotionEnv, name: str) -> slice:
     offset = 0
     for component_name, size in env.observation_layout.components:

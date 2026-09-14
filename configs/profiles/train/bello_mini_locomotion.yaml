@@ -19,12 +19,23 @@ env_config:
     lateral_start_deadband: 0.1
     standing_reward_ramp_seconds: 0.2
   random_push:
+    # Per-world control steps: 488282 * 2048 is approximately 1B transitions.
+    curriculum_steps: 488282
+    initial_scale: 0.2
     lin_vel_x: [-0.5, 0.5]
     lin_vel_y: [-0.5, 0.5]
   spawn:
     # Independent scaling would break the coordinated flat-sole crouch.
     joint_pos_scale_range: [1.0, 1.0]
+    # Learn recovery from scheduled disturbances, not six-axis reset kicks.
+    root_vel_range: [0.0, 0.0]
 reward_config:
+  tracking:
+    # exp(-error^2 / std^2): match the reference 0.25 denominator.
+    lin_vel_xy_moving_std: 0.5
+    lin_vel_xy_still_std: 0.5
+    ang_vel_z_moving_std: 0.5
+    ang_vel_z_still_std: 0.5
   weights:
     healthy_survival: 2.25
     moving_lin_vel_xy_error: -1.0
@@ -33,8 +44,8 @@ reward_config:
     stand_waist_deviation: -4.0
     gait_contact: -2.5
     gait_swing_clearance: -1.0
-    stand_foot_foreaft: -4.0
-    stand_foot_width: -2.0
+    stand_foot_foreaft: -0.25
+    stand_foot_width: -0.25
     foot_crossing: -8.0
     foot_stumble: -2.0
   standing:
@@ -43,6 +54,8 @@ reward_config:
     recovery_relaxation: true
     recovery_speed: 0.25
     recovery_tilt: 0.15
+    continuous_bounded_alignment: true
+    recovery_geometry_floor: 0.25
   gait:
     swing_clearance_target: 0.075
     phase_shaped_clearance: true
@@ -62,6 +75,7 @@ done_config:
   base_height:
     min_height: 0.56
 checkpoint_config:
+  every_updates: 1024
   name: bello_mini_locomotion_seed0
   wandb_artifact_name: bello_mini_locomotion_seed0
 wandb_config:
@@ -69,6 +83,9 @@ wandb_config:
   run_name: bello_mini_locomotion_seed0
   tags: [locomotion, bello-mini, ideal-differential-ankle, seeded-plane-slope, additive-push-xy05]
 video_config:
+  standing_push_enabled: true
+  standing_suite_enabled: true
+  every_updates: 8192
   filename_prefix: bello_mini_locomotion
   command: [0.5, 0.0, 0.0]
   steps: 500

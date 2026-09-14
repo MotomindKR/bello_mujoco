@@ -150,6 +150,8 @@ class RandomPushConfig:
     interval_seconds: float = 5.0
     lin_vel_x: tuple[float, float] = (-0.5, 0.5)
     lin_vel_y: tuple[float, float] = (-0.5, 0.5)
+    curriculum_steps: int = 0
+    initial_scale: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -291,6 +293,15 @@ def validate_locomotion_config(
         )
     validate_range("random_push.lin_vel_x", config.random_push.lin_vel_x)
     validate_range("random_push.lin_vel_y", config.random_push.lin_vel_y)
+    push = config.random_push
+    if type(push.curriculum_steps) is not int or push.curriculum_steps < 0:
+        raise ValueError("random_push.curriculum_steps must be a nonnegative integer")
+    if not math.isfinite(push.initial_scale) or not 0 < push.initial_scale <= 1:
+        raise ValueError("random_push.initial_scale must be in (0, 1]")
+    if push.curriculum_steps and not push.enabled:
+        raise ValueError("random_push curriculum requires enabled pushes")
+    if not push.curriculum_steps and push.initial_scale != 1.0:
+        raise ValueError("random_push.initial_scale requires a curriculum")
     for name, value in config.numerical_safety.__dict__.items():
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(

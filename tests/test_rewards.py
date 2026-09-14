@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from bello_mujoco.configuration import locomotion_training_profile
 from bello_mujoco.envs.rewards import (
     CommandConfig,
     GaitRewardConfig,
@@ -59,6 +60,53 @@ def test_crossing_uses_signed_separation_in_every_mode():
         )[0]
         assert float(normal) == 0.0
         assert float(crossed) < -1.0
+
+
+def test_continuous_alignment_has_no_touchdown_cliff_and_cannot_be_disabled():
+    cfg = locomotion_training_profile("bello_mini_locomotion")
+    inputs = reward_inputs(
+        base_height=jnp.asarray(0.87),
+        foot_foreaft=jnp.asarray(0.18),
+        foot_separation=jnp.asarray(0.22),
+        nominal_stance_width=jnp.asarray(0.22),
+        minimum_foot_separation=jnp.asarray(0.12),
+        swing_progress=jnp.zeros(2),
+        foot_clearance_samples=jnp.zeros((2, 4)),
+    )
+    compute = jax.jit(
+        lambda x: compute_locomotion_reward(cfg.reward_config, x, cfg.command_config)
+    )
+    two, terms = compute(inputs)
+    one, one_terms = compute(inputs.replace(foot_contact=jnp.asarray([True, False])))
+    assert float(two) > float(one) > 0
+    assert float(terms["reward/stand_foot_foreaft"]) == pytest.approx(
+        float(one_terms["reward/stand_foot_foreaft"])
+    )
+    assert -0.005 <= float(terms["reward/stand_foot_foreaft"]) < 0
+    tilt = math.radians(18)
+    leaned, lean_terms = compute(
+        inputs.replace(
+            projected_gravity=jnp.asarray([math.sin(tilt), 0, -math.cos(tilt)])
+        )
+    )
+    assert float(leaned) < float(two)
+    assert float(lean_terms["reward/stand_foot_foreaft"]) < 0
+    _, fast_terms = compute(inputs.replace(lin_vel_xy=jnp.asarray([0.6, 0])))
+    assert float(fast_terms["reward/stand_foot_foreaft"]) < 0
+    aligned, _ = compute(inputs.replace(foot_foreaft=jnp.asarray(0.0)))
+    assert float(aligned) > float(two)
+    # Returning a recovery foot progressively reduces cost, including before contact.
+    costs = []
+    for stagger in (0.18, 0.10, 0.05, 0.02):
+        _, result = compute(
+            inputs.replace(
+                foot_contact=jnp.asarray([True, False]),
+                foot_foreaft=jnp.asarray(stagger),
+            )
+        )
+        costs.append(float(result["reward/stand_foot_foreaft"]))
+    assert costs == sorted(costs)
+    assert costs[-1] == 0
 
 
 def test_clearance_peaks_mid_swing_and_checks_each_sole_corner():
@@ -406,7 +454,33 @@ def test_tracking_reward_uses_tighter_tolerance_on_each_zero_command_axis() -> N
     assert tiny_command["reward/track_ang_vel_z"] == pytest.approx(0.02)
 
 
-def test_standing_tracking_requires_double_support() -> None:
+@pytest.mark.parametrize("experiment", ["bello_mini_locomotion", "bello_mini_standing"])
+@pytest.mark.parametrize("error", [0.0, 0.25, 0.5])
+@pytest.mark.parametrize("axis", [0, 1, 2])
+def test_mini_tracking_retains_reward_during_single_support_recovery(
+    experiment, error, axis
+):
+    profile = locomotion_training_profile(experiment)
+    velocity = jnp.zeros(3).at[axis].set(error)
+    inputs = reward_inputs(
+        lin_vel_xy=velocity[:2],
+        yaw_vel_z=velocity[2],
+        foot_contact=jnp.asarray([1.0, 0.0]),
+        foot_clearance_samples=jnp.zeros((2, 4)),
+        swing_progress=jnp.zeros(2),
+    )
+    compute = jax.jit(
+        lambda value: compute_locomotion_reward(
+            profile.reward_config, value, profile.command_config
+        )[1]
+    )
+    terms = compute(inputs)
+    key = "reward/track_lin_vel_xy" if axis < 2 else "reward/track_ang_vel_z"
+    assert float(terms[key]) == pytest.approx(0.04 * math.exp(-(error**2) / 0.25))
+    assert float(compute(inputs.replace(foot_contact=jnp.zeros(2)))[key]) == 0.0
+
+
+def test_standing_tracking_remains_available_during_recovery_steps() -> None:
     config = reward_config(track_lin_vel_xy=2.0, track_ang_vel_z=2.0)
     inputs = reward_inputs(command=jnp.zeros(3))
 
@@ -425,10 +499,53 @@ def test_standing_tracking_requires_double_support() -> None:
 
     assert supported["reward/track_lin_vel_xy"] == pytest.approx(0.04)
     assert supported["reward/track_ang_vel_z"] == pytest.approx(0.04)
-    assert single_support["reward/track_lin_vel_xy"] == pytest.approx(0.0)
-    assert single_support["reward/track_ang_vel_z"] == pytest.approx(0.0)
+    assert single_support["reward/track_lin_vel_xy"] == pytest.approx(0.04)
+    assert single_support["reward/track_ang_vel_z"] == pytest.approx(0.04)
+    _, flight = compute_locomotion_reward(
+        config, inputs.replace(foot_contact=jnp.zeros(2))
+    )
+    assert flight["reward/track_lin_vel_xy"] == 0.0
+    assert flight["reward/track_ang_vel_z"] == 0.0
     assert moving["reward/track_lin_vel_xy"] > 0.0
     assert moving["reward/track_ang_vel_z"] > 0.0
+
+
+@pytest.mark.parametrize("speed,scale", [(0.0, 1.0), (0.375, 0.5), (0.5, 0.0)])
+def test_recovery_relaxes_soft_posture_and_thermal_penalties_not_safety(speed, scale):
+    config = reward_config(
+        stand_hip_roll_continuous_torque_excess=-8.0,
+        stand_waist_deviation=-4.0,
+        stand_contact=-0.5,
+        hip_deviation=-0.25,
+        knee_deviation=-0.1,
+        torque_peak=-12.0,
+        termination=-100.0,
+        standing=StandingRewardConfig(recovery_relaxation=True),
+    )
+    inputs = reward_inputs(
+        actuator_force=jnp.asarray([15.0, 15.0]),
+        requested_actuator_force=jnp.asarray([100.0, 100.0]),
+        actuator_peak_force=jnp.asarray([20.0, 20.0]),
+        joint_pos_rel=jnp.asarray([0.2, 0.2]),
+        foot_contact=jnp.asarray([1.0, 0.0]),
+    )
+    compute = jax.jit(lambda value: compute_locomotion_reward(config, value)[1])
+    normal = compute(inputs)
+    recovery = compute(inputs.replace(lin_vel_xy=jnp.asarray([speed, 0.0])))
+    for name in (
+        "stand_hip_roll_continuous_torque_excess",
+        "stand_waist_deviation",
+        "stand_contact",
+        "hip_deviation",
+        "knee_deviation",
+    ):
+        assert recovery[f"reward/{name}"] == pytest.approx(
+            float(normal[f"reward/{name}"]) * scale
+        )
+    assert recovery["reward/torque_peak"] == normal["reward/torque_peak"]
+    assert compute(
+        inputs.replace(done=jnp.asarray(True), lin_vel_xy=jnp.asarray([speed, 0.0]))
+    )["reward/termination"] == pytest.approx(-2.0)
 
 
 def test_joint_limit_penalty_increases_with_distance_past_soft_limit() -> None:

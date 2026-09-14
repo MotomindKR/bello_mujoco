@@ -37,6 +37,17 @@ owning dataclass and YAML together, without aliases or parallel CLI defaults.
 The motor-coordinate action convention requires fresh training. Keep training,
 native evaluation, and hardware observation/filter conventions aligned.
 
+Mini's settling recipe keeps standing velocity tracking active during recovery
+steps with either foot supporting. Its bounded alignment costs remain active in
+single support, while a geometry floor prevents disturbances from eliminating
+all settling incentives. Soft posture/thermal rewards can relax during recovery;
+hard joint and motor limits do not. Settings live in the Mini training profile.
+
+`env_config.random_push.curriculum_steps` ramps disturbance strength from
+`initial_scale` to full strength using the persistent per-world training clock,
+shared with the torso COM curriculum. Episode resets do not restart this clock;
+checkpoint resume restores it. A zero duration disables the push curriculum.
+
 Runtime initialization validates the selected robot, including default-pose
 collisions. Unit tests exercise algorithms and invalid-input handling with
 synthetic inputs. Do not test a robot's YAML values, joint count, nominal angles,

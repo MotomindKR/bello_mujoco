@@ -74,6 +74,7 @@ class BelloLocomotionEnv:
     reward_config: RewardConfig = RewardConfig()
     command_config: CommandConfig = CommandConfig()
     done_config: DoneConfig = DoneConfig()
+    random_push_scale: float | jax.Array = 1.0
 
     def __post_init__(self) -> None:
         validate_locomotion_config(
@@ -230,9 +231,23 @@ class BelloLocomotionEnv:
         return 9 + 2 * self.action_size
 
     def initial_task_state(self) -> jax.Array:
-        if not self.config.torso_com_curriculum.enabled:
+        if not self._curriculum_steps:
             return jnp.zeros((0,), dtype=jnp.float32)
         return jnp.zeros((1,), dtype=jnp.float32)
+
+    @property
+    def _curriculum_steps(self) -> int:
+        return max(
+            self.config.random_push.curriculum_steps,
+            self.config.torso_com_curriculum.ramp_steps
+            if self.config.torso_com_curriculum.enabled
+            else 0,
+        )
+
+    def _push_curriculum_scale(self, task_state: jax.Array) -> jax.Array:
+        config = self.config.random_push
+        progress = jnp.clip(task_state[0] / config.curriculum_steps, 0.0, 1.0)
+        return config.initial_scale + (1.0 - config.initial_scale) * progress
 
     def with_initial_step_counts(
         self, state: BelloState, step_count: jax.Array
@@ -240,13 +255,15 @@ class BelloLocomotionEnv:
         return state.replace(step_count=step_count, episode_length=step_count)
 
     def with_task_state(self, task_state: jax.Array) -> "BelloLocomotionEnv":
-        if not self.config.torso_com_curriculum.enabled:
-            return self
-        if task_state.shape != (1,):
-            raise ValueError(
-                "torso COM curriculum task state must have shape (1,), got "
-                f"{task_state.shape}"
+        if self._curriculum_steps and task_state.shape != (1,):
+            raise ValueError("locomotion curriculum task state must have shape (1,)")
+        env = self
+        if self.config.random_push.curriculum_steps:
+            env = replace(
+                self, random_push_scale=self._push_curriculum_scale(task_state)
             )
+        if not self.config.torso_com_curriculum.enabled:
+            return env
         if self.model.mjx_model is None:
             raise RuntimeError("torso COM curriculum requires an MJX model")
         progress = jnp.clip(
@@ -263,30 +280,32 @@ class BelloLocomotionEnv:
             self.model,
             mjx_model=self.model.mjx_model.replace(body_ipos=body_ipos),
         )
-        return replace(self, model=model)
+        return replace(env, model=model)
 
     def update_task_state(
         self, task_state: jax.Array, info: dict[str, jax.Array]
     ) -> jax.Array:
         del info
-        if not self.config.torso_com_curriculum.enabled:
+        if not self._curriculum_steps:
             return task_state
         return jnp.minimum(
             task_state + 1.0,
-            jnp.asarray(
-                [self.config.torso_com_curriculum.ramp_steps], dtype=jnp.float32
-            ),
+            jnp.asarray([self._curriculum_steps], dtype=jnp.float32),
         )
 
     def task_state_metrics(self, task_state: jax.Array) -> dict[str, jax.Array]:
+        metrics = {}
+        if self.config.random_push.curriculum_steps:
+            metrics["curriculum/push_scale"] = self._push_curriculum_scale(task_state)
         if not self.config.torso_com_curriculum.enabled:
-            return {}
+            return metrics
         return {
+            **metrics,
             "curriculum/torso_com_scale": jnp.clip(
                 task_state[0] / self.config.torso_com_curriculum.ramp_steps,
                 0.0,
                 1.0,
-            )
+            ),
         }
 
     def _observation_layout(self, observation: ObservationConfig) -> ObservationLayout:
@@ -1069,6 +1088,7 @@ class BelloLocomotionEnv:
             data,
             step_count,
             rng,
+            scale=self.random_push_scale,
         )
 
     @property

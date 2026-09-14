@@ -80,6 +80,8 @@ env_config:
     undesired_contact_force_threshold: 1.0
     self_collision_force_threshold: 1.0
   random_push:
+    curriculum_steps: 0
+    initial_scale: 1.0
     enabled: false
     interval_seconds: 5.0
     lin_vel_x: [-0.5, 0.5]
@@ -190,6 +192,8 @@ reward_config:
     ang_vel_z_error_delta: 0.25
     ang_vel_z_lpf_cutoff_hz: 5.0
   standing:
+    continuous_bounded_alignment: false
+    recovery_geometry_floor: 0.0
     foot_linear_speed_scale: 0.15
     foot_angular_speed_scale: 1.0
     foot_angular_weight: 0.25
@@ -246,6 +250,10 @@ wandb_config:
   dir: .wandb
   tags: []
 video_config:
+  standing_suite_enabled: false
+  standing_push_enabled: false
+  standing_push_at_seconds: 5.0
+  standing_push_speed: 0.5
   enabled: false
   every_updates: 100
   render_initial: false

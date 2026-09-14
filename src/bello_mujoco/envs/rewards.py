@@ -270,6 +270,8 @@ class StandingRewardConfig:
     recovery_relaxation: bool = False
     recovery_speed: float = 0.25
     recovery_tilt: float = 0.15
+    continuous_bounded_alignment: bool = False
+    recovery_geometry_floor: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -455,6 +457,21 @@ def deadband_huber(error: jax.Array, deadband: float, scale: float) -> jax.Array
     return positive_huber((jnp.abs(error) - deadband) / scale)
 
 
+def standing_recovery_scale(
+    config: StandingRewardConfig,
+    velocity: jax.Array,
+    command: jax.Array,
+    gravity: jax.Array,
+) -> jax.Array:
+    if not config.recovery_relaxation:
+        return jnp.asarray(1.0)
+    disturbance = jnp.maximum(
+        jnp.linalg.norm(velocity - command[:2]) / config.recovery_speed,
+        jnp.linalg.norm(gravity[:2]) / math.sin(config.recovery_tilt),
+    )
+    return jnp.clip(2.0 - disturbance, 0.0, 1.0)
+
+
 def compute_locomotion_reward(
     config: RewardConfig,
     inputs: RewardInputs,
@@ -505,7 +522,9 @@ def compute_locomotion_reward(
     moving_ang_vel_z_error = jnp.where(standing_command, 0.0, moving_ang_vel_z_error)
     track_lin_vel_xy = jnp.exp(-lin_vel_error)
     track_ang_vel_z = jnp.exp(-yaw_vel_error)
-    tracking_supported = ~standing_command | standing_double_support
+    # Recovery steps must retain the incentive to arrest velocity. Unsupported
+    # flight still earns no standing tracking reward.
+    tracking_supported = ~standing_command | jnp.any(inputs.foot_contact)
     track_lin_vel_xy = jnp.where(tracking_supported, track_lin_vel_xy, 0.0)
     track_ang_vel_z = jnp.where(tracking_supported, track_ang_vel_z, 0.0)
     lin_vel_z = inputs.lin_vel_z**2
@@ -716,30 +735,54 @@ def compute_locomotion_reward(
             * (shortfall / config.gait.swing_clearance_target) ** 2
         )
 
-    recovery_scale = jnp.asarray(1.0)
-    if config.standing.recovery_relaxation:
-        disturbance = jnp.maximum(
-            jnp.linalg.norm(inputs.lin_vel_xy - inputs.command[:2])
-            / config.standing.recovery_speed,
-            jnp.linalg.norm(inputs.projected_gravity[:2])
-            / math.sin(config.standing.recovery_tilt),
+    recovery_scale = standing_recovery_scale(
+        config.standing, inputs.lin_vel_xy, inputs.command, inputs.projected_gravity
+    )
+    geometry_scale = jnp.maximum(
+        recovery_scale, config.standing.recovery_geometry_floor
+    )
+    if config.standing.continuous_bounded_alignment:
+        stand_foot_heading = jnp.where(
+            standing_command & ~inputs.done,
+            jnp.mean(bounded_foot_heading_error),
+            0.0,
         )
-        recovery_scale = jnp.clip(2.0 - disturbance, 0.0, 1.0)
+    if config.standing.recovery_relaxation:
         # Recovery relaxes standing posture, never the active gait schedule.
-        stand_foot_motion *= recovery_scale * jnp.all(inputs.foot_contact)
-        stand_foot_heading *= recovery_scale
-        stand_still *= recovery_scale
-    alignment_gate = (standing_double_support & ~inputs.done) * recovery_scale
-    stand_foot_foreaft = alignment_gate * deadband_huber(
+        motion_support = (
+            jnp.asarray(1.0)
+            if config.standing.continuous_bounded_alignment
+            else jnp.all(inputs.foot_contact)
+        )
+        stand_foot_motion *= geometry_scale * motion_support
+        stand_foot_heading *= geometry_scale
+        stand_still *= geometry_scale
+        stand_contact *= geometry_scale
+        stand_hip_roll_continuous_torque_excess *= recovery_scale
+        stand_waist_deviation *= recovery_scale
+        hip_deviation *= jnp.where(standing_command, recovery_scale, 1.0)
+        knee_deviation *= jnp.where(standing_command, recovery_scale, 1.0)
+    alignment_active = (
+        standing_command
+        if config.standing.continuous_bounded_alignment
+        else standing_double_support
+    )
+    alignment_gate = (alignment_active & ~inputs.done) * geometry_scale
+    stand_foot_foreaft = deadband_huber(
         inputs.foot_foreaft,
         config.standing.position_deadband,
         config.standing.position_scale,
     )
-    stand_foot_width = alignment_gate * deadband_huber(
+    stand_foot_width = deadband_huber(
         inputs.foot_separation - inputs.nominal_stance_width,
         config.standing.position_deadband,
         config.standing.position_scale,
     )
+    if config.standing.continuous_bounded_alignment:
+        stand_foot_foreaft /= 1.0 + stand_foot_foreaft
+        stand_foot_width /= 1.0 + stand_foot_width
+    stand_foot_foreaft *= alignment_gate
+    stand_foot_width *= alignment_gate
     foot_crossing = positive_huber(
         (inputs.minimum_foot_separation - inputs.foot_separation)
         / config.gait.crossing_scale
@@ -828,6 +871,13 @@ def reward_terms(config: RewardConfig) -> dict[str, float]:
 
 
 def validate_reward_config(config: RewardConfig) -> None:
+    floor = config.standing.recovery_geometry_floor
+    if not math.isfinite(floor) or not 0 <= floor <= 1:
+        raise ValueError("standing.recovery_geometry_floor must be in [0, 1]")
+    if config.standing.continuous_bounded_alignment and floor <= 0:
+        raise ValueError(
+            "continuous bounded alignment requires a positive geometry floor"
+        )
     for name, value in {
         "standing.position_scale": config.standing.position_scale,
         "standing.recovery_speed": config.standing.recovery_speed,

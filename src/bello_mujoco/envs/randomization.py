@@ -87,7 +87,9 @@ def randomize_spawn(model, config, terrain_height, data, rng, world_id=0):
     return data.replace(qpos=qpos, qvel=qvel)
 
 
-def apply_push_batch(model, config, control_timestep, data, step_count, rng):
+def apply_push_batch(
+    model, config, control_timestep, data, step_count, rng, *, scale=1.0
+):
     batch_size = int(step_count.shape[0])
     push_applied = jnp.zeros((batch_size,), dtype=bool)
     push_velocity = jnp.zeros((batch_size, 2), dtype=jnp.float32)
@@ -121,6 +123,7 @@ def apply_push_batch(model, config, control_timestep, data, step_count, rng):
     )
     root_qvel = int(model.root_qvel_adr)
     current_qvel_xy = data.qvel[:, root_qvel : root_qvel + 2]
+    push_velocity *= scale
     qvel_xy = jnp.where(
         push_applied[:, None],
         current_qvel_xy + push_velocity,

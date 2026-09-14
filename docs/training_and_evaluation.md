@@ -57,6 +57,29 @@ explicitly, even on hosts with physical GPUs. Training videos run in a fresh
 software worker per video. Enabled video failure, crash, or timeout fails the training run.
 Set `video_enabled=false` explicitly when videos are unwanted.
 
+### Standing and push diagnostics
+
+`video_config.standing_suite_enabled` adds a fixed-camera quiet-standing rollout
+and four independent world-XY velocity-kick rollouts to each video event. Push
+cases are named for world axes, not assumed robot forward/left axes. Every case
+uses the same policy and normalization. The suite retains the rendering
+environment's sampled physics, observation noise, filtering, and delay; it is
+not a clean nominal-physics or emulator qualification. Each case runs in its own
+CPU software worker, and an enabled render/trace failure fails training.
+
+The suite records 30 seconds of quiet standing, or a push followed by 15 seconds
+of recovery. `standing_push_at_seconds` and `standing_push_speed` configure the
+kick. Without the suite, `standing_push_enabled` adds one push rollout and cycles
+directions between events. The Mini profile sets video/checkpoint cadence.
+
+W&B receives per-case videos and reward-independent settling metrics; matching
+JSONL traces sit next to the videos. Overlays show support, motion, foot alignment,
+reward-relaxation scale, and torque saturation. A recovery is successful only
+when the robot was settled before the push, settles again afterward, and has no
+terminal failure. Training episode timeouts do not truncate the diagnostic
+horizon; physical/numerical termination still stops it. The physical criteria
+are implemented in `evaluation/settling.py`, separately from reward weights.
+
 ## Deployment artifact
 
 ```bash
