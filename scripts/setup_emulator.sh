@@ -4,10 +4,6 @@ set -euo pipefail
 
 readonly queue_length=10000
 readonly interfaces=(vcan0 vcan1)
-readonly host_device=/dev/ttyIMU
-readonly mujoco_device=/dev/ttyIMU-mujoco
-readonly pid_file=/run/bello-mujoco-imu-socat.pid
-readonly log_file=/tmp/bello-mujoco-imu-socat.log
 readonly action=${1:-start}
 
 if (( $# > 1 )) || [[ $action != start && $action != stop && $action != status ]]; then
@@ -26,7 +22,7 @@ fi
 
 if (( EUID != 0 )); then
   if ! command -v sudo >/dev/null 2>&1; then
-    echo "VCAN and /dev/ttyIMU setup require root privileges, but sudo is unavailable." >&2
+    echo "VCAN and emulated UART setup require root privileges, but sudo is unavailable." >&2
     exit 1
   fi
   exec sudo -- env "SOCAT_BIN=$socat_bin" "$0" "$@"
@@ -44,6 +40,21 @@ for command in "${required_commands[@]}"; do
     exit 1
   fi
 done
+
+with_serial_pair() {
+  local profile=$1
+  shift
+  local host_device mujoco_device pid_file log_file label
+  case $profile in
+    imu) host_device=/dev/ttyIMU; label=EBIMU ;;
+    power) host_device=/dev/ttyPOWER; label=COG-power ;;
+    *) echo "Unknown serial profile: $profile" >&2; return 2 ;;
+  esac
+  mujoco_device="${host_device}-mujoco"
+  pid_file="/run/bello-mujoco-${profile}-socat.pid"
+  log_file="/tmp/bello-mujoco-${profile}-socat.log"
+  "$@"
+}
 
 serial_running() {
   [[ -f $pid_file ]] || return 1
@@ -94,7 +105,7 @@ start_vcan() {
 
 start_serial() {
   if serial_running; then
-    echo "EBIMU serial pair is already running (PID $(<"$pid_file"))."
+    echo "$label serial pair is already running (PID $(<"$pid_file"))."
     echo "  driver: $host_device"
     echo "  MuJoCo: $mujoco_device"
     return
@@ -114,7 +125,7 @@ start_serial() {
   for _ in {1..50}; do
     if [[ -L $host_device && -L $mujoco_device ]]; then
       chmod 666 "$(readlink -f "$host_device")" "$(readlink -f "$mujoco_device")"
-      echo "EBIMU serial pair is ready (PID $pid):"
+      echo "$label serial pair is ready (PID $pid):"
       echo "  Motomind driver endpoint: $host_device"
       echo "  MuJoCo emulator endpoint: $mujoco_device"
       return
@@ -125,7 +136,7 @@ start_serial() {
     sleep 0.1
   done
 
-  echo "socat did not create the EBIMU serial endpoints:" >&2
+  echo "socat did not create the $label serial endpoints:" >&2
   tail -20 "$log_file" >&2
   exit 1
 }
@@ -135,9 +146,9 @@ stop_serial() {
     pid=$(<"$pid_file")
     kill "$pid"
     wait "$pid" 2>/dev/null || true
-    echo "Stopped EBIMU serial pair (PID $pid)."
+    echo "Stopped $label serial pair (PID $pid)."
   else
-    echo "EBIMU serial pair is not running."
+    echo "$label serial pair is not running."
   fi
   rm -f -- "$pid_file"
   remove_serial_endpoint "$host_device"
@@ -151,23 +162,31 @@ show_status() {
       failed=1
     fi
   done
+  for profile in imu power; do
+    if ! with_serial_pair "$profile" show_serial_status; then failed=1; fi
+  done
+  return "$failed"
+}
+
+show_serial_status() {
   if serial_running; then
-    echo "EBIMU serial pair is running (PID $(<"$pid_file"))."
+    echo "$label serial pair is running (PID $(<"$pid_file"))."
     ls -l -- "$host_device" "$mujoco_device"
   else
-    echo "EBIMU serial pair is not running."
-    failed=1
+    echo "$label serial pair is not running."
+    return 1
   fi
-  return "$failed"
 }
 
 case $action in
   start)
     start_vcan
-    start_serial
+    with_serial_pair imu start_serial
+    with_serial_pair power start_serial
     ;;
   stop)
-    stop_serial
+    with_serial_pair imu stop_serial
+    with_serial_pair power stop_serial
     echo "VCAN interfaces were left up."
     ;;
   status)

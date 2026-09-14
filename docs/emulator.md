@@ -1,5 +1,15 @@
 # Native hardware emulator
 
+The setup script creates both IMU and power-board UART pairs:
+`/dev/ttyIMU` / `/dev/ttyIMU-mujoco` and
+`/dev/ttyPOWER` / `/dev/ttyPOWER-mujoco`.
+The maintained native emulator and hardwared vCAN profiles enable a synthetic
+AGX power board. Battery/rail readings are explicit fixtures, not a battery
+physics model. Power data reaches the native visualizer's Power tab over the
+existing hardwared RPC connection. See the
+[stack power-board guide](../deps/bello-stack/docs/power_board.md) for settings,
+fault injection, physical opt-in and limitations.
+
 The emulator lives in `deps/bello-stack/components/bello-mujoco`. It uses
 headless `mujoco-rs`, MuJoCo 3.12.0, and the shared RobStride protocol engine.
 It builds directly from canonical URDF/hardware descriptions, independently of
