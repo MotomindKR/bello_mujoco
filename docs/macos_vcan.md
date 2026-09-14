@@ -169,10 +169,12 @@ when using Terminal 4A or when collecting estimator output:
 ```bash
 ./scripts/lima_vcan.sh run bash -c \
   'cd deps/bello-stack && cargo run --locked -p bello-state-estimatord -- \
-    --config components/bello-state-estimatord/config/bello-mini-vcan.yaml'
+    --config components/bello-state-estimatord/config/bello-mini.yaml'
 ```
 
-MuJoCo ground-truth pose remains available independently on port 50052.
+The estimator uses the same robot profile for physical hardware and emulation;
+only hardwared selects the CAN and serial transports. MuJoCo ground-truth pose
+remains available independently on port 50052.
 
 ### Terminal 4A: native macOS visualizer
 
