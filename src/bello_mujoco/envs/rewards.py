@@ -219,6 +219,8 @@ class RewardWeights:
     stand_waist_deviation: float = 0.0
     stand_foot_foreaft: float = 0.0
     stand_foot_width: float = 0.0
+    foot_heading: float = 0.0
+    foot_slip: float = 0.0
     foot_crossing: float = 0.0
     foot_stumble: float = 0.0
     hip_deviation: float = -0.25
@@ -271,6 +273,7 @@ class StandingRewardConfig:
     recovery_speed: float = 0.25
     recovery_tilt: float = 0.15
     continuous_bounded_alignment: bool = False
+    contact_independent_alignment: bool = False
     recovery_geometry_floor: float = 0.0
 
 
@@ -305,6 +308,7 @@ class LimitsPoseRewardConfig:
     hip_deviation_command_indices: tuple[int, ...] = (0,)
     hip_deviation_command_threshold: float = 0.1
     knee_deviation_apply_while_moving: bool = False
+    joint_pose_weights: tuple[tuple[str, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -349,6 +353,7 @@ class RewardConfig:
                 "stand_foot_foreaft",
                 "stand_foot_width",
                 "foot_stumble",
+                "foot_slip",
             )
         )
 
@@ -360,6 +365,7 @@ class RewardConfig:
             or self.enabled("stand_foot_motion")
             or self.enabled("stand_foot_heading")
             or self.enabled("foot_crossing")
+            or self.enabled("foot_heading")
         )
 
     @property
@@ -702,6 +708,8 @@ def compute_locomotion_reward(
     desired_contact = inputs.desired_foot_contact.astype(jnp.float32)
     gait_contact = gait_active * jnp.mean(jnp.abs(actual_contact - desired_contact))
     foot_speed = jnp.linalg.norm(inputs.foot_linear_velocity[:, :2], axis=1)
+    foot_slip = jnp.sum(actual_contact * foot_speed**2)
+    foot_heading = jnp.mean(inputs.foot_heading_error**2)
     gait_stance_slip = gait_active * jnp.sum(
         desired_contact
         * (
@@ -764,7 +772,10 @@ def compute_locomotion_reward(
         knee_deviation *= jnp.where(standing_command, recovery_scale, 1.0)
     alignment_active = (
         standing_command
-        if config.standing.continuous_bounded_alignment
+        if (
+            config.standing.continuous_bounded_alignment
+            or config.standing.contact_independent_alignment
+        )
         else standing_double_support
     )
     alignment_gate = (alignment_active & ~inputs.done) * geometry_scale
@@ -838,6 +849,8 @@ def compute_locomotion_reward(
         "stand_foot_foreaft": stand_foot_foreaft,
         "stand_foot_width": stand_foot_width,
         "foot_crossing": foot_crossing,
+        "foot_heading": foot_heading,
+        "foot_slip": foot_slip,
         "foot_stumble": foot_stumble,
         "hip_deviation": hip_deviation,
         "knee_deviation": knee_deviation,
@@ -871,6 +884,23 @@ def reward_terms(config: RewardConfig) -> dict[str, float]:
 
 
 def validate_reward_config(config: RewardConfig) -> None:
+    if type(config.standing.contact_independent_alignment) is not bool:
+        raise TypeError("standing.contact_independent_alignment must be a boolean")
+    pose_weights = config.limits_pose.joint_pose_weights
+    if type(pose_weights) is not tuple:
+        raise TypeError("limits_pose.joint_pose_weights must be a tuple")
+    names = set()
+    for entry in pose_weights:
+        if type(entry) is not tuple or len(entry) != 2:
+            raise ValueError("joint_pose_weights entries must be (joint_name, weight)")
+        name, weight = entry
+        if not isinstance(name, str) or not name or name in names:
+            raise ValueError("joint_pose_weights requires unique nonempty joint names")
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+            raise TypeError("joint_pose_weights values must be numbers")
+        if not math.isfinite(weight) or weight < 0:
+            raise ValueError("joint_pose_weights values must be finite and nonnegative")
+        names.add(name)
     floor = config.standing.recovery_geometry_floor
     if not math.isfinite(floor) or not 0 <= floor <= 1:
         raise ValueError("standing.recovery_geometry_floor must be in [0, 1]")

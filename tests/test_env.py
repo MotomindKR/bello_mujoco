@@ -195,6 +195,33 @@ def test_mini_new_recipe_steps_batched_with_extra_stop_and_reward_blend(
     np.testing.assert_allclose(second.standing_reward_blend, [0.0, 0.1], atol=1e-6)
 
 
+def test_mini_pose_weights_are_explicit_and_validated_at_load(bello_mini_asset):
+    from bello_mujoco.configuration import locomotion_training_profile
+
+    profile = locomotion_training_profile("bello_mini_locomotion")
+    env = BelloLocomotionEnv.load_prepared(
+        bello_mini_asset, reward_config=profile.reward_config, load_mjx=False
+    )
+    weights = np.asarray(env._joint_pose_weights())
+    for name, expected in profile.reward_config.limits_pose.joint_pose_weights:
+        assert weights[env.model.actuator_joint_names.index(name)] == pytest.approx(
+            expected
+        )
+    hold = np.setdiff1d(np.arange(env.model.mj_model.nu), env.model.policy_ctrl_indices)
+    assert np.all(weights[hold] == 0)
+    with pytest.raises(ValueError, match="every policy joint"):
+        replace(
+            env,
+            reward_config=replace(
+                profile.reward_config,
+                limits_pose=replace(
+                    profile.reward_config.limits_pose,
+                    joint_pose_weights=(("misspelled_joint", 1.0),),
+                ),
+            ),
+        )
+
+
 def test_bilateral_mirrors_are_explicit_and_involutive(
     bello_asset: PreparedAsset,
 ) -> None:
@@ -1340,6 +1367,38 @@ def test_random_push_adds_root_xy_velocity_on_interval(
     assert data.qvel[:, root_qvel : root_qvel + 2] == pytest.approx(
         initial_velocity + velocity
     )
+
+
+def test_push_interval_uses_each_episodes_clock_not_command_or_settling(bello_asset):
+    env = BelloLocomotionEnv.load_prepared(
+        bello_asset,
+        batch_size=2,
+        env_config=BelloEnvConfig(
+            random_push=RandomPushConfig(
+                enabled=True,
+                interval_seconds=5.0,
+                lin_vel_x=(0.5, 0.5),
+                lin_vel_y=(0.0, 0.0),
+            )
+        ),
+    )
+    state, _ = env.reset_batch(2)
+    assert env.control_timestep == pytest.approx(0.02)
+    for counts, expected in [
+        ([0, 249], [False, False]),
+        ([250, 251], [True, False]),
+        ([499, 500], [False, True]),
+        ([0, 750], [False, True]),
+    ]:
+        _, applied, velocity = env._maybe_apply_random_push_batch(
+            state.data, jnp.asarray(counts), jax.random.PRNGKey(0)
+        )
+        assert applied.tolist() == expected
+        np.testing.assert_allclose(velocity[:, 0], np.asarray(expected) * 0.5)
+    _, applied, _ = env._maybe_apply_random_push_batch(
+        state.data, jnp.asarray([250, 500]), None
+    )
+    assert not np.any(applied)
 
 
 @pytest.mark.parametrize("torso_enabled", [False, True])

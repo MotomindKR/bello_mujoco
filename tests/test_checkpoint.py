@@ -364,11 +364,30 @@ def assert_tree_equal(actual: Any, expected: Any) -> None:
         np.testing.assert_array_equal(actual_leaf, expected_leaf)
 
 
-def test_checkpoint_round_trips_eval_and_exact_runner_state(tmp_path: Path) -> None:
+@pytest.mark.parametrize("shared_rewards", [False, True])
+def test_checkpoint_round_trips_eval_and_exact_runner_state(
+    tmp_path: Path, shared_rewards
+) -> None:
     env = FakeEnv()
     config = ppo_config()
     state = runner_state(config, env)
     checkpoint_metadata = metadata(config, tmp_path)
+    if shared_rewards:
+        reward = checkpoint_metadata.reward
+        checkpoint_metadata = replace(
+            checkpoint_metadata,
+            reward=replace(
+                reward,
+                weights=replace(reward.weights, foot_heading=-1.0, foot_slip=-0.5),
+                standing=replace(reward.standing, contact_independent_alignment=True),
+                limits_pose=replace(
+                    reward.limits_pose,
+                    joint_pose_weights=tuple(
+                        (name, 0.5) for name in ACTION_LAYOUT.names
+                    ),
+                ),
+            ),
+        )
     path = tmp_path / "checkpoint"
 
     save_checkpoint(path, state, checkpoint_metadata)
@@ -750,6 +769,7 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
         "recovery_speed",
         "recovery_tilt",
         "continuous_bounded_alignment",
+        "contact_independent_alignment",
         "recovery_geometry_floor",
     ):
         document["metadata"]["reward"]["standing"].pop(name)
@@ -778,9 +798,12 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
         "stand_foot_width",
         "foot_crossing",
         "foot_stumble",
+        "foot_heading",
+        "foot_slip",
     ):
         document["metadata"]["reward"]["weights"].pop(name)
     document["metadata"]["reward"].pop("smoothness")
+    document["metadata"]["reward"]["limits_pose"].pop("joint_pose_weights")
     document["metadata"]["reward"]["tracking"].pop("lin_vel_xy_error_delta")
     document["metadata"]["reward"]["tracking"].pop("ang_vel_z_error_delta")
     document["metadata"]["reward"]["tracking"].pop("ang_vel_z_lpf_cutoff_hz")
@@ -815,6 +838,10 @@ def test_locomotion_checkpoint_without_new_reward_fields_loads_legacy_defaults(
     assert restored.env.command_delay_seconds == 0.0
     assert restored.reward.weights.foot_crossing == 0.0
     assert restored.reward.weights.foot_stumble == 0.0
+    assert restored.reward.weights.foot_heading == 0.0
+    assert restored.reward.weights.foot_slip == 0.0
+    assert not restored.reward.standing.contact_independent_alignment
+    assert restored.reward.limits_pose.joint_pose_weights == ()
     assert not restored.reward.gait.phase_shaped_clearance
 
     assert restored.reward.weights.action_acceleration == 0.0

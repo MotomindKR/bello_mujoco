@@ -1127,6 +1127,8 @@ class BelloLocomotionEnv:
             "policy_qvel_indices", model.policy_qvel_indices, mj_model.nv
         )
         require_index_range("foot_body_ids", model.foot_body_ids, mj_model.nbody)
+        if self.reward_config.limits_pose.joint_pose_weights:
+            self._joint_pose_weights()
         if self.command_config.enabled and model.foot_body_ids.size != 2:
             raise ValueError(
                 "gait-conditioned locomotion requires exactly two foot bodies"
@@ -1148,7 +1150,9 @@ class BelloLocomotionEnv:
                 *self.reward_config.enabled_link_names,
                 *self.done_config.enabled_link_names,
             }
-            if self.reward_config.enabled("stand_foot_heading"):
+            if self.reward_config.enabled(
+                "stand_foot_heading"
+            ) or self.reward_config.enabled("foot_heading"):
                 required_link_names.update(
                     name for name, _ in self.model.robot.foot_forward_axes
                 )
@@ -2962,6 +2966,24 @@ class BelloLocomotionEnv:
 
     def _joint_pose_weights(self) -> jax.Array:
         weights = np.zeros(self.model.mj_model.nu, dtype=np.float32)
+        configured = self.reward_config.limits_pose.joint_pose_weights
+        if configured:
+            policy_indices = np.asarray(self.model.policy_ctrl_indices)
+            policy_names = {
+                self.model.actuator_joint_names[index] for index in policy_indices
+            }
+            configured_weights = dict(configured)
+            if set(configured_weights) != policy_names:
+                raise ValueError(
+                    "joint_pose_weights must name every policy joint exactly once; "
+                    f"missing={sorted(policy_names - configured_weights.keys())}, "
+                    f"extra={sorted(configured_weights.keys() - policy_names)}"
+                )
+            for index in policy_indices:
+                weights[index] = configured_weights[
+                    self.model.actuator_joint_names[index]
+                ]
+            return jnp.asarray(weights)
         weights[np.asarray(self.model.policy_ctrl_indices)] = 1.0
         low_weight_indices = self._actuator_indices_named(
             "hip_pitch_joint", "knee_joint"

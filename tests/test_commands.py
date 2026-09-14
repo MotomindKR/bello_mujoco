@@ -436,7 +436,19 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         moving_lin_vel_xy_error=-1.0,
         moving_ang_vel_z_error=-1.0,
         stand_hip_roll_continuous_torque_excess=-8.0,
-        stand_waist_deviation=-4.0,
+        stand_still=0.0,
+        stand_contact=0.0,
+        stand_foot_motion=0.0,
+        stand_foot_heading=0.0,
+        stand_upright=0.0,
+        stand_waist_deviation=0.0,
+        hip_deviation=0.0,
+        knee_deviation=0.0,
+        flat_orientation=-5.0,
+        joint_pose=-1.0,
+        foot_heading=-1.0,
+        foot_slip=-0.5,
+        gait_stance_slip=0.0,
         gait_contact=-2.5,
         gait_swing_clearance=-1.0,
         stand_foot_foreaft=-0.25,
@@ -454,9 +466,8 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert (
         replace(
             bello.reward_config.standing,
-            recovery_relaxation=True,
-            continuous_bounded_alignment=True,
-            recovery_geometry_floor=0.25,
+            position_scale=0.05,
+            contact_independent_alignment=True,
         )
         == mini.reward_config.standing
     )
@@ -484,7 +495,18 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         mini.reward_config.standing.hip_roll_continuous_torque_limit
         == pytest.approx(10.0)
     )
-    assert mini.reward_config.weights.stand_waist_deviation == pytest.approx(-4.0)
+    assert mini.reward_config.weights.stand_waist_deviation == 0.0
+    pose_weights = dict(mini.reward_config.limits_pose.joint_pose_weights)
+    assert set(pose_weights) == set(
+        mini.asset_config.actuator_config.policy_joint_names
+    )
+    assert pose_weights["waist_roll_joint"] == 2.0
+    assert pose_weights["left_hip_roll_joint"] == 1.0
+    assert pose_weights["left_knee_joint"] == 0.05
+    assert pose_weights["left_ankle_pitch_joint"] == 0.1
+    for name, weight in pose_weights.items():
+        if name.startswith("left_"):
+            assert pose_weights[name.replace("left_", "right_", 1)] == weight
     assert mini.reward_config.weights.gait_contact == pytest.approx(-2.5)
     assert mini.reward_config.weights.gait_swing_clearance == pytest.approx(-1.0)
     assert mini.reward_config.gait.swing_clearance_target == pytest.approx(0.075)

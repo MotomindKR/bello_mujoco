@@ -115,11 +115,13 @@ decelerates while the clock remains active through two half-cycle boundaries,
 then standing rewards ramp in over 0.2 seconds. Its new standing rewards align
 sole fore/aft position and nominal width; signed separation discourages crossing
 in every mode. Phase-shaped toe/heel clearance and unexpected mid-swing contact
-penalties address scuffing. Bounded alignment costs remain active in single
-support, so putting the second foot down does not switch on a large penalty.
-Alignment/stillness/contact pressure relaxes only to a 25% floor during recovery.
-Recovery also relaxes soft hip/knee/waist posture and hip-roll thermal pressure;
-single-support corrective steps retain standing velocity-tracking rewards.
+penalties address scuffing. Moderate deadband-Huber alignment costs remain active
+in single support, so touchdown does not switch on a new placement penalty.
+Mini removes recovery relaxation and the overlapping standing stillness,
+contact, foot-motion, upright and joint-posture stack. Shared orientation,
+selective joint-pose, foot-heading and actual-contact slip costs remain active
+in all modes. Single-support corrective steps retain velocity-tracking rewards;
+standing hip-roll thermal shaping remains without tilt/speed relaxation.
 Hard motor limits are never relaxed. Mini retains 25% of commands for standing
 and ramps random pushes over the first approximately 1B transitions. Paired
 walking and fixed-checkpoint standing/push evaluation videos expose recovery failures separately
@@ -129,10 +131,12 @@ See [the formulation and configuration](training_configuration.md#locomotion-rew
 Mini's reference-aligned profile uses `0.5 m/s` planar and `0.5 rad/s` yaw
 tracking tolerances in both standing and moving components. It starts with zero
 floating-base velocity and retains torso COM randomization at `+/-0.15 m` per
-axis, with the existing curriculum retained. Reward weights, 25% standing
-sampling, sensor noise/filter/latency, and hard limits are unchanged. The
+axis, with the existing curriculum retained. The 25% standing sampling,
+sensor noise/filter/latency, and hard limits are unchanged. The
 [reference comparison](training_configuration.md#mini-reference-alignment)
 documents which Unitree/Booster choices were adopted and which were not.
+The [shared reward recipe and push schedule](mini_settling.md) document the
+current coefficients, legacy checkpoint boundary and native validation caveats.
 The Mini profile halves horizontal command ranges to +/-0.5 m/s per axis and
 enforces the configured actuator effort limits. These changes require fresh
 training; they do not repair existing policy weights. Validate phase-swept stops,

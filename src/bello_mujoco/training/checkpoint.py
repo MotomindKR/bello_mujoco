@@ -909,6 +909,8 @@ def _with_checkpoint_metadata_defaults(
                     "stand_foot_width",
                     "foot_crossing",
                     "foot_stumble",
+                    "foot_heading",
+                    "foot_slip",
                 ):
                     if name not in normalized_weights:
                         normalized_weights[name] = 0.0
@@ -944,6 +946,7 @@ def _with_checkpoint_metadata_defaults(
                     "recovery_speed": 0.25,
                     "recovery_tilt": 0.15,
                     "continuous_bounded_alignment": False,
+                    "contact_independent_alignment": False,
                     "recovery_geometry_floor": 0.0,
                 }.items():
                     normalized_standing.setdefault(name, default)
@@ -971,6 +974,7 @@ def _with_checkpoint_metadata_defaults(
             limits_pose = reward.get("limits_pose")
             if isinstance(limits_pose, dict):
                 normalized_limits_pose = dict(limits_pose)
+                normalized_limits_pose.setdefault("joint_pose_weights", [])
                 if "hip_lateral_command_index" in normalized_limits_pose:
                     if "hip_deviation_command_indices" in normalized_limits_pose:
                         raise ValueError(

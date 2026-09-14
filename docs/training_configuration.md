@@ -409,8 +409,9 @@ and `0.20 rad/s`. Mini uses `0.50 m/s` planar and `0.50 rad/s` yaw tolerances
 for both moving and zero-command components. Its Gaussian denominator is
 therefore `0.25`, not `0.50`: at a single-axis error of `0.5`, the corresponding
 tracking kernel retains `exp(-1)`, about 36.8% of its maximum. Tracking weights
-remain `2.0`; the existing moving-only smooth-L1 costs and recovery gate are
-unchanged. The standing-only Mini overlay inherits these tolerances.
+remain `2.0`; the existing moving-only smooth-L1 costs are unchanged.
+Mini no longer uses recovery relaxation. The standing-only Mini overlay
+inherits these tolerances.
 
 ### Mini reference alignment
 
@@ -444,9 +445,9 @@ from observation latency and is also applied in native evaluation/videos; the
 hardware runner does not insert a second artificial delay.
 
 For the new placement terms, `H(z)` is unit Huber loss and
-`D(e)=H(max(abs(e)-0.02,0)/0.03)`. Distances are meters. Let `dx=x_left-x_right`
+`D(e)=H(max(abs(e)-0.02,0)/0.05)`. Distances are meters. Let `dx=x_left-x_right`
 and `d=y_left-y_right` in robot forward/left coordinates. The added penalties
-are `-4*D(dx)`, `-2*D(d-d_nominal)`, and
+are `-0.25*D(dx)`, `-0.25*D(d-d_nominal)`, and
 `-8*H(max(d_min-d,0)/0.02)`. Nominal width and the minimum separation are
 derived from registered sole collision primitives in the default stance;
 `d_min` is the sum of the two half-widths plus a `0.01 m` margin. Geometry is
@@ -466,29 +467,33 @@ During standing recovery there is no scheduled swing; the same stumble weight
 instead penalizes loaded planar foot sliding, while unloaded recovery motion
 does not incur this term.
 
-All `stand_*` terms receive the standing blend. Legacy position and heading alignment
-require healthy double support. Mini instead enables
-`standing.continuous_bounded_alignment`: position costs use `h/(1+h)` for
-deadband-Huber error `h`, with weights `-0.25` each (at most `0.005` per term
-per 20 ms step), and position/heading alignment remain active during single
-support. `standing.recovery_geometry_floor: 0.25` retains geometry, foot-motion,
-contact and stillness shaping during recovery; foot motion no longer requires
-double support. These defaults are false/zero for existing checkpoint semantics.
-`standing.recovery_relaxation: true` smoothly
-relaxes standing alignment, foot stillness/contact pressure, hip/knee posture,
-waist posture, and the soft hip-roll continuous-torque cost as planar
-velocity error exceeds `0.25 m/s` or tilt exceeds approximately `0.15 rad`;
-the original posture relaxation reaches zero at twice these normalized thresholds,
-while Mini geometry/contact shaping never falls below its 25% floor. Gait contact timing
-is never multiplied by this recovery gate: its full configured penalty remains
-active during moving commands and the extra-step stop buffer, regardless of
-tracking error or tilt. Crossing, general
-balance, effort limits, and impact penalties remain active. These are initial
-tuning values, not demonstrated policy-performance guarantees.
+All `stand_*` terms receive the standing blend. Mini disables the separate
+standing stillness/contact/foot-motion/upright/heading/waist stack, along with
+the overlapping hip/knee deviation terms. Shared `flat_orientation: -5`,
+`joint_pose: -1`, `foot_heading: -1` and `foot_slip: -0.5` apply in every mode.
+The new heading cost is mean squared foot heading error in radians. Slip is
+the sum of squared planar foot speeds multiplied by actual filtered terrain
+contact, not scheduled stance. Mini disables `gait_stance_slip` to avoid
+duplication. Its standing-only overlay retains both shared foot terms.
+
+Mini enables `standing.contact_independent_alignment` for its two remaining
+standing placement costs, including single support. Costs use plain
+deadband-Huber errors, not `h/(1+h)`. A 20 cm stagger costs 0.0155 per 20 ms
+step and a 10 cm width error costs 0.0055. `recovery_relaxation` is false;
+neither tilt nor speed reduces posture, geometry or the retained standing
+hip-roll thermal penalty. No recovery timer is introduced. Gait timing,
+crossing, effort limits and impact penalties remain active.
+
+The older contact-gated and bounded/recovery-floor modes remain available for
+saved checkpoint semantics, not the maintained Mini profile. The new
+contact-independent flag defaults false and the shared reward weights default
+zero. See [Mini recipe and push scheduling](mini_settling.md) for the rationale
+and validation boundary. These are initial tuning values, not demonstrated
+policy-performance guarantees.
 
 Additional reward settings are `standing.position_deadband`, `position_scale`,
 `recovery_relaxation`, `recovery_speed`, `recovery_tilt`,
-`continuous_bounded_alignment`, `recovery_geometry_floor`, and
+`continuous_bounded_alignment`, `contact_independent_alignment`, `recovery_geometry_floor`, and
 `gait.phase_shaped_clearance`, `crossing_scale`, `sole_clearance_margin`,
 `stumble_grace_fraction`, `stumble_load_body_weights`, `stumble_speed_scale`.
 New diagnostics include signed sole separation, fore/aft and width error,
@@ -529,12 +534,14 @@ determines its mode.
 | `joint_force_peak` | `-4.0` | During commanded gait, quadratically penalize the two largest hip, knee, or ankle reaction-force excesses above `0.8` body weight. It is disabled for standing because adjacent joints in a support chain can report the same static load. This uses MuJoCo's parent-child linear interaction force, not actuator torque. |
 | `touchdown_impact` | `-4.0` | At the first raw contact across all physics substeps, penalize the larger of integrated normal load and peak normal force above `0.6` body weight plus actual pre-impact downward foot speed. Bounded squared `tanh` shaping limits isolated impacts from dominating an update. |
 | `joint_pose` | `-0.1` | Penalize weighted deviation from nominal joint pose. |
+| `foot_heading` | `0.0` | Mean squared foot heading error relative to command-frame forward; active in every mode with no contact/recovery/blend gate. Mini sets -1.0. |
+| `foot_slip` | `0.0` | Sum of squared planar foot velocities in actual filtered terrain contact; active in every mode. Mini sets -0.5. |
 | `stand_still` | `1.0` | At standing command, reward healthy double support in proportion to bounded foot stillness. Terminal steps receive no standing bonus. |
 | `stand_foot_motion` | `-1.0` | At standing command, penalize bounded foot linear and angular motion. |
 | `stand_foot_heading` | `-0.5` | During healthy standing double support, penalize bounded left/right foot heading error outside the configured deadband relative to the robot command-frame forward axis. The weighted cost is capped below `0.01` per control step and is inactive during recovery, termination, and moving commands. |
 | `stand_contact` | `-0.5` | At standing command, penalize each foot that is not in filtered terrain contact. Together with `stand_still`, this favors quiet double support without making continued recovery intrinsically negative. |
 | `stand_upright` | `-8.0` | At standing command, apply an additional gravity-vector tilt penalty so a deeply leaned pose cannot retain most of the standing reward. |
-| `stand_waist_deviation` | `0.0` | At standing command, penalize squared waist yaw and roll deviation from their straight default pose. Bello Mini sets this to `-4.0`; moving commands do not activate it. |
+| `stand_waist_deviation` | `0.0` | Legacy standing-only squared waist deviation; disabled in the current Mini recipe in favor of shared `joint_pose`. |
 | `hip_deviation` | `-0.25` | Penalize hip deviation during standing or when any configured command axis is active. |
 | `knee_deviation` | `-0.1` | Penalize knee deviation during effective standing; a profile can explicitly retain it while moving. A pending zero request does not activate standing-only shaping until the gait scheduler completes the current step. |
 | `joint_limit` | `-1.0` | Penalize proximity beyond the joint soft-limit factor. |
@@ -556,21 +563,21 @@ impact-to-tracking balance after the profile's tracking rewards were doubled,
 without changing the bounded touchdown formulation. Bello Mini inherits the same
 reward configuration except for a `-1.0` moving planar smooth-L1 error penalty
 and midpoint gait shaping: `gait_contact: -2.5`, `gait_swing_clearance: -1.0`,
-and a `0.075` m swing-clearance target. Mini also applies a `-8.0` standing
-hip-roll torque-excess penalty above `10 Nm`, half the RS03's `20 Nm` continuous
-rating, and a `-4.0` standing waist-deviation penalty. These leave
-moving-command lateral and waist authority to the existing general reward
-terms.
+and a `0.075` m swing-clearance target. Mini retains a `-8.0` standing hip-roll
+torque-excess penalty above `10 Nm`, half the RS03's `20 Nm` continuous rating,
+without recovery relaxation. Its shared posture map weights waist yaw/roll 2,
+hip roll/yaw 1, ankles 0.1, and hip pitch/knees 0.05 under `joint_pose: -1`.
+These are soft costs in all modes; no extra whole-body standing-pose bonus is
+added. The nominal pose is not a fixed servo-target balance controller.
 The error penalty uses a `0.25 m/s`
 Huber delta and preserves a signed corrective gradient when the Mini moves in
 the opposite direction, while the gait terms more strongly discourage
 persistent double support.
 
-Both profiles apply moving hip-deviation shaping on their pelvis-frame forward
-axis: command index 1 for Bello (`+Y`) and index 0 for Mini (`+X`). Bello enables
-`knee_deviation_apply_while_moving`, preserving the successful profile's
-moving-pose gate; Mini leaves the switch disabled so its knees remain free to
-form gait while the term still regularizes standing.
+Bello retains its hip-deviation shaping on command index 1 (pelvis `+Y`) and
+enables `knee_deviation_apply_while_moving`. Mini disables both separate
+deviation terms; its shared pose regularizer provides modest knee/pitch costs
+without a standing-only gate.
 
 The `links` section selects the measured link for `track_lin_vel_xy`,
 `track_ang_vel_z`, `lin_vel_z`, `ang_vel_xy`, `flat_orientation`, and
@@ -597,7 +604,12 @@ Supporting fields are:
 | `standing` | `foot_linear_speed_scale`, `foot_angular_speed_scale`, `foot_angular_weight`, `foot_heading_deadband`, `foot_heading_scale`, `hip_roll_continuous_torque_limit` |
 | `gait` | `stance_slip_angular_speed_scale`, `swing_clearance_target`, `joint_force_soft_limit_body_weights`, `joint_force_top_k`, `joint_force_apply_while_standing`, `touchdown_force_soft_limit_body_weights`, `touchdown_vertical_speed_scale` |
 | `smoothness` | `ankle_action_weight`, `waist_action_weight` |
-| `limits_pose` | `base_height_target`, `action_soft_limit_ratio`, `joint_soft_limit_factor`, `hip_deviation_command_indices`, `hip_deviation_command_threshold`, `knee_deviation_apply_while_moving` |
+| `limits_pose` | `base_height_target`, `action_soft_limit_ratio`, `joint_soft_limit_factor`, `hip_deviation_command_indices`, `hip_deviation_command_threshold`, `knee_deviation_apply_while_moving`, `joint_pose_weights` |
+
+`limits_pose.joint_pose_weights` is a sequence of `[joint_name, weight]` pairs.
+An explicit map must cover every policy joint exactly once with finite,
+nonnegative values; held joints and unknown names are rejected. Empty maps
+preserve historical per-joint weighting. This mapping is checkpointed.
 
 Rollout telemetry reports the mean, p95, p99, and worst normalized joint-force,
 foot-contact peak, and control-interval impulse maxima. The tail metrics are named

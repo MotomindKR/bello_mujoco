@@ -78,11 +78,12 @@ def test_continuous_alignment_has_no_touchdown_cliff_and_cannot_be_disabled():
     )
     two, terms = compute(inputs)
     one, one_terms = compute(inputs.replace(foot_contact=jnp.asarray([True, False])))
-    assert float(two) > float(one) > 0
+    assert float(two) == pytest.approx(float(one))
+    assert float(one) > 0
     assert float(terms["reward/stand_foot_foreaft"]) == pytest.approx(
         float(one_terms["reward/stand_foot_foreaft"])
     )
-    assert -0.005 <= float(terms["reward/stand_foot_foreaft"]) < 0
+    assert float(terms["reward/stand_foot_foreaft"]) == pytest.approx(-0.0135)
     tilt = math.radians(18)
     leaned, lean_terms = compute(
         inputs.replace(
@@ -90,9 +91,13 @@ def test_continuous_alignment_has_no_touchdown_cliff_and_cannot_be_disabled():
         )
     )
     assert float(leaned) < float(two)
-    assert float(lean_terms["reward/stand_foot_foreaft"]) < 0
+    assert float(lean_terms["reward/stand_foot_foreaft"]) == pytest.approx(
+        float(terms["reward/stand_foot_foreaft"])
+    )
     _, fast_terms = compute(inputs.replace(lin_vel_xy=jnp.asarray([0.6, 0])))
-    assert float(fast_terms["reward/stand_foot_foreaft"]) < 0
+    assert float(fast_terms["reward/stand_foot_foreaft"]) == pytest.approx(
+        float(terms["reward/stand_foot_foreaft"])
+    )
     aligned, _ = compute(inputs.replace(foot_foreaft=jnp.asarray(0.0)))
     assert float(aligned) > float(two)
     # Returning a recovery foot progressively reduces cost, including before contact.
@@ -128,6 +133,140 @@ def test_clearance_peaks_mid_swing_and_checks_each_sole_corner():
     assert float(compute_locomotion_reward(config, landing)[0]) == pytest.approx(
         0.0, abs=1e-8
     )
+
+
+@pytest.mark.parametrize("moving", [False, True])
+def test_shared_heading_and_slip_do_not_depend_on_gait_or_recovery(moving):
+    config = reward_config(foot_heading=-1.0, foot_slip=-0.5)
+    inputs = reward_inputs(
+        command=jnp.asarray([0.5 if moving else 0.0, 0.0, 0.0]),
+        gait_active=jnp.asarray(moving),
+        standing_reward_blend=jnp.asarray(0.0),
+        projected_gravity=jnp.asarray([0.4, 0.0, -0.9165]),
+        foot_heading_error=jnp.asarray([0.3, -0.3]),
+        foot_contact=jnp.asarray([True, False]),
+        desired_foot_contact=jnp.asarray([False, True]),
+        foot_linear_velocity=jnp.asarray([[0.2, 0.0, 0.0], [2.0, 0.0, 1.0]]),
+    )
+    _, terms = jax.jit(lambda x: compute_locomotion_reward(config, x))(inputs)
+    assert terms["reward/foot_heading"] == pytest.approx(-0.0018)
+    assert terms["reward/foot_slip"] == pytest.approx(-0.0004)
+    _, airborne = compute_locomotion_reward(
+        config, inputs.replace(foot_contact=jnp.zeros(2, dtype=bool))
+    )
+    assert airborne["reward/foot_slip"] == 0.0
+    assert airborne["reward/foot_heading"] == terms["reward/foot_heading"]
+    assert config.uses_foot_contact_metadata
+    assert reward_config(foot_heading=-1.0).uses_foot_metadata
+
+
+def test_mini_alignment_keeps_linear_tail_without_contact_cliff():
+    profile = locomotion_training_profile("bello_mini_locomotion")
+    config = reward_config(
+        stand_foot_foreaft=-0.25, standing=profile.reward_config.standing
+    )
+    inputs = reward_inputs(foot_contact=jnp.asarray([True, False]))
+    compute = jax.jit(lambda x: compute_locomotion_reward(config, x)[0])
+    costs = [
+        float(compute(inputs.replace(foot_foreaft=jnp.asarray(x))))
+        for x in (0.1, 0.2, 0.3)
+    ]
+    assert costs[1] - costs[0] == pytest.approx(-0.01)
+    assert costs[2] - costs[1] == pytest.approx(-0.01)
+
+
+def test_mini_thermal_and_shared_posture_cannot_be_erased_by_leaning():
+    config = locomotion_training_profile("bello_mini_locomotion").reward_config
+    inputs = reward_inputs(
+        actuator_force=jnp.asarray([15.0, 0.0]),
+        joint_pos_rel=jnp.asarray([0.2, 0.3]),
+        foot_clearance_samples=jnp.zeros((2, 4)),
+        swing_progress=jnp.zeros(2),
+    )
+    _, nominal = compute_locomotion_reward(config, inputs)
+    _, disturbed = compute_locomotion_reward(
+        config,
+        inputs.replace(
+            projected_gravity=jnp.asarray([0.5, 0.0, -0.866]),
+            lin_vel_xy=jnp.asarray([0.6, 0.0]),
+            foot_contact=jnp.asarray([True, False]),
+        ),
+    )
+    for name in ("stand_hip_roll_continuous_torque_excess", "joint_pose"):
+        assert nominal[f"reward/{name}"] < 0
+        assert disturbed[f"reward/{name}"] == nominal[f"reward/{name}"]
+    for name in (
+        "stand_still",
+        "stand_contact",
+        "stand_foot_motion",
+        "stand_foot_heading",
+        "stand_upright",
+        "stand_waist_deviation",
+        "hip_deviation",
+        "knee_deviation",
+        "gait_stance_slip",
+    ):
+        assert nominal[f"reward/{name}"] == 0
+        assert disturbed[f"reward/{name}"] == 0
+
+
+def test_mini_recovery_sequence_beats_persistent_stagger_and_falling():
+    # Controlled reward-input trajectories, not a dynamics/success test.
+    profile = locomotion_training_profile("bello_mini_locomotion")
+    inputs = reward_inputs(
+        base_height=jnp.asarray(0.87),
+        foot_separation=jnp.asarray(0.22),
+        nominal_stance_width=jnp.asarray(0.22),
+        minimum_foot_separation=jnp.asarray(0.12),
+        swing_progress=jnp.zeros(2),
+        foot_clearance_samples=jnp.zeros((2, 4)),
+    )
+    compute = jax.jit(
+        lambda x: compute_locomotion_reward(
+            profile.reward_config, x, profile.command_config
+        )[0]
+    )
+    recovery_return = 0.0
+    for step in range(500):
+        remaining = max(0.0, 1.0 - step / 100)
+        tilt = math.radians(18) * remaining
+        recovery_return += float(
+            compute(
+                inputs.replace(
+                    foot_foreaft=jnp.asarray(0.2 * remaining),
+                    lin_vel_xy=jnp.asarray([0.3 * remaining, 0.0]),
+                    projected_gravity=jnp.asarray([math.sin(tilt), 0, -math.cos(tilt)]),
+                    joint_pos_rel=jnp.asarray([0.3 * remaining, 0.0]),
+                    foot_contact=jnp.asarray([True, step >= 100]),
+                    foot_linear_velocity=jnp.asarray(
+                        [[0.0, 0.0, 0.0], [0.2 * remaining, 0.0, 0.0]]
+                    ),
+                )
+            )
+        )
+    tilt = math.radians(18)
+    staggered = inputs.replace(
+        foot_foreaft=jnp.asarray(0.2),
+        projected_gravity=jnp.asarray([math.sin(tilt), 0, -math.cos(tilt)]),
+        joint_pos_rel=jnp.asarray([0.3, 0.0]),
+    )
+    assert recovery_return > 500 * float(compute(staggered))
+    assert float(compute(inputs)) > float(compute(staggered))
+    assert float(compute(inputs.replace(done=jnp.asarray(True)))) < 0
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        (("joint", -1.0),),
+        (("joint", float("nan")),),
+        (("joint", 1.0), ("joint", 2.0)),
+        (("", 1.0),),
+    ],
+)
+def test_pose_weights_reject_invalid_values(entries):
+    with pytest.raises(ValueError, match="joint_pose_weights"):
+        RewardConfig(limits_pose=LimitsPoseRewardConfig(joint_pose_weights=entries))
 
 
 def test_stumble_grace_windows_and_contact_load():
