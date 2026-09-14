@@ -7,6 +7,6 @@
 [submodule "deps/Fast-SAM-3D-Body"]
 	path = deps/Fast-SAM-3D-Body
 	url = https://github.com/MotomindKR/Fast-SAM-3D-Body.git
-[submodule "deps/RTMW-SMPLX-Teleop"]
-	path = deps/RTMW-SMPLX-Teleop
-	url = https://github.com/MotomindKR/RTMW-SMPLX-Teleop.git
+[submodule "deps/pico-smplx-bridge"]
+	path = deps/pico-smplx-bridge
+	url = https://github.com/MotomindKR/pico-smplx-bridge.git

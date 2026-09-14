@@ -48,9 +48,32 @@ SMPLX_FINGER_TIP_NAMES = (
     "right_thumb_tip",
 )
 
+SMPLX_JOINT_NAMES = (
+    SMPLX_BODY_JOINT_NAMES
+    + ("jaw", "left_eye", "right_eye")
+    + tuple(
+        f"{side}_{finger}{joint}"
+        for side in ("left", "right")
+        for finger in ("index", "middle", "pinky", "ring", "thumb")
+        for joint in (1, 2, 3)
+    )
+)
+SMPLX_JOINT_PARENTS = (
+    tuple(SMPLX_BODY_JOINT_PARENTS)
+    + (15, 15, 15)
+    + tuple(
+        parent
+        for wrist, start in ((20, 25), (21, 40))
+        for base in range(start, start + 15, 3)
+        for parent in (wrist, base, base + 1)
+    )
+)
+
 
 __all__ = (
     "SMPLX_BODY_JOINT_NAMES",
     "SMPLX_BODY_JOINT_PARENTS",
     "SMPLX_FINGER_TIP_NAMES",
+    "SMPLX_JOINT_NAMES",
+    "SMPLX_JOINT_PARENTS",
 )

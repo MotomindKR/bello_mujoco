@@ -133,11 +133,11 @@ def test_hands_entrypoint_forces_cpu_backend(
     assert cli.os.environ["JAX_PLATFORM_NAME"] == "cpu"
 
 
-def test_hands_command_wires_rtmw_mapping_and_l6_transport(
+def test_hands_command_wires_smplx_mapping_and_l6_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import bello_mujoco.cli as cli
-    from bello_mujoco.hardware import hand_control, rtmw_hands
+    from bello_mujoco.hardware import hand_control, smplx_hands
 
     captured: dict[str, object] = {}
 
@@ -146,11 +146,11 @@ def test_hands_command_wires_rtmw_mapping_and_l6_transport(
             captured["can"] = config
 
     def fake_run(config: object, transport_factory: object) -> None:
-        captured["rtmw"] = config
+        captured["smplx"] = config
         captured["transport"] = transport_factory(config)  # type: ignore[operator]
 
     monkeypatch.setattr(hand_control, "LinkerHandsCanTransport", FakeTransport)
-    monkeypatch.setattr(rtmw_hands, "run_rtmw_hands", fake_run)
+    monkeypatch.setattr(smplx_hands, "run_smplx_hands", fake_run)
     with initialize_config_dir(
         version_base=None,
         config_dir=str(CONFIG_ROOT / "commands"),
@@ -159,6 +159,7 @@ def test_hands_command_wires_rtmw_mapping_and_l6_transport(
             config_name="hands",
             overrides=(
                 "protocol=linker_l6",
+                "smplx.neutral_model_path=/tmp/test-smplx.npz",
                 "right_hand_enabled=false",
                 "arm=true",
                 "calibration_confirmed=true",
@@ -177,8 +178,8 @@ def test_hands_command_wires_rtmw_mapping_and_l6_transport(
     assert can.model == "L6"
     assert can.interface == "can1"
     assert can.left_enabled and not can.right_enabled
-    runtime = captured["rtmw"]
-    assert isinstance(runtime, rtmw_hands.RtmwHandsConfig)
+    runtime = captured["smplx"]
+    assert isinstance(runtime, smplx_hands.SmplxHandsConfig)
     assert runtime.max_duration_seconds == pytest.approx(2.5)
     assert runtime.left_enabled and not runtime.right_enabled
     assert runtime.arm and runtime.calibration_confirmed

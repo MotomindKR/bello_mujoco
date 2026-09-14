@@ -1,34 +1,16 @@
 asset: bello_mini
 listen: 127.0.0.1:50056
-rtmw:
-  endpoint: 127.0.0.1:50055
+smplx:
+  endpoint: 127.0.0.1:50051
   neutral_model_path: ???
   tls_root_certificate_path: null
   tls_server_name_override: null
   connect_timeout_seconds: 5.0
   rpc_timeout_seconds: 2.0
-  human_height_m: 1.75
-  min_joint_confidence: 0.0
-  min_rotation_confidence: 0.0
-  max_required_rotation_residual_degrees: 35.0
-  max_pipeline_latency_ms: 250.0
-  transport_latency_budget_ms: 10.0
+  max_source_age_ms: 500
   max_source_interval_seconds: 0.70
-  max_source_age_ms: 1000
-  camera_to_world_quaternion_xyzw: [0.5, -0.5, 0.5, -0.5]
-  align_initial_heading: true
-  align_initial_floor: true
-  root_conditioning:
-    contact_enter_speed_mps: 0.20
-    contact_exit_speed_mps: 0.45
-    contact_enter_height_m: 0.06
-    contact_exit_height_m: 0.10
-    minimum_foot_confidence: 0.50
-    contact_enter_seconds: 0.08
-    contact_exit_seconds: 0.06
-    detection_filter_time_constant_seconds: 0.05
-    support_blend_time_constant_seconds: 0.06
-    maximum_interval_seconds: 0.20
+  transport_latency_budget_ms: 10.0
+  max_rate_hz: 60.0
 retarget:
   human_height_m: 1.66
   task_profile: live_upper_body

@@ -10,8 +10,8 @@ The YAML files linked below are the authoritative field/default reference.
 | `bello-eval` | [eval.yaml](../configs/commands/eval.yaml) | Linux CPU evaluation |
 | `bello-export-policy` | [export.yaml](../configs/commands/export.yaml) | ONNX/reference deployment bundle |
 | `bello-vast-train` | [vast_train.yaml](../configs/commands/vast_train.yaml) | Bounded remote training |
-| `bello-run-hands` | [hands.yaml](../configs/commands/hands.yaml) | RTMW-driven Linker hand control |
-| `bello-run-reference` | [reference.yaml](../configs/commands/reference.yaml) | Independent RTMW/GMR joint-reference producer |
+| `bello-run-hands` | [hands.yaml](../configs/commands/hands.yaml) | SMPL-X gRPC driven Linker hand control |
+| `bello-run-reference` | [reference.yaml](../configs/commands/reference.yaml) | Independent SMPL-X/GMR joint-reference producer |
 
 ## Training and evaluation
 
@@ -53,9 +53,25 @@ Policy control defaults to read-only preflight. `--arm` enables the staged
 operator-confirmed workflow for authorized commissioning. Physical deployment
 remains gated on trained-policy validation; see [hardware](hardware.md).
 
-RTMW upper-body following requires the live service and licensed SMPL-X model.
-Independent hand control uses classic CAN directly, not hardwared motor targets.
-Neither is required when running a fixed-arm locomotion policy.
+Live upper-body following requires a SMPL-X gRPC server and licensed neutral
+SMPL-X model. Start `pico-smplx-bridge` on the tracking PC, then run:
+
+```bash
+uv run bello-run-reference asset=bello_mini \
+  smplx.endpoint=192.168.0.216:50051 \
+  smplx.neutral_model_path=/path/to/SMPLX_NEUTRAL.npz
+uv run bello-run-hands \
+  smplx.endpoint=192.168.0.216:50051 \
+  smplx.neutral_model_path=/path/to/SMPLX_NEUTRAL.npz \
+  duration_seconds=10
+```
+
+The reference service listens on `127.0.0.1:50056` by default; `listen` changes
+that address. The hand command defaults to unarmed preflight and opens no CAN
+connection. Armed independent hand control uses classic CAN directly. Neither
+command is required for a fixed-arm locomotion policy. See
+[live references and hands](hardware.md#live-references-and-hands) for the pose
+contract, validity rules, and freshness settings.
 
 ## Remote jobs
 
