@@ -40,6 +40,8 @@ uv run bash scripts/protobuf.sh generate
 The same script generates the private SMPL-X bindings from
 `deps/pico-smplx-bridge/pose_stream.proto`. This submodule supplies the wire
 contract; Bello does not install or import the bridge's server or device SDK.
+CI checks out the private bridge using the `PICO_SMPLX_DEPLOY_KEY` repository
+secret, paired with a read-only deploy key on `pico-smplx-bridge`.
 
 ## Validation
 
