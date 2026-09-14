@@ -898,6 +898,7 @@ def _with_checkpoint_metadata_defaults(
                     "moving_ang_vel_z_error",
                     "action_acceleration",
                     "stand_hip_roll_continuous_torque_excess",
+                    "stand_motor_continuous_torque_excess",
                     "joint_force_peak",
                     "touchdown_impact",
                     "stand_still",

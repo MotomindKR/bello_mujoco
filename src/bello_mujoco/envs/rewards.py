@@ -207,6 +207,7 @@ class RewardWeights:
     action_limit: float = -1.0
     torque_l1: float = -1.2
     stand_hip_roll_continuous_torque_excess: float = 0.0
+    stand_motor_continuous_torque_excess: float = 0.0
     torque_peak: float = -12.0
     joint_force_peak: float = -4.0
     touchdown_impact: float = -4.0
@@ -452,6 +453,7 @@ class RewardInputs:
     minimum_foot_separation: jax.Array = 0.0
     foot_clearance_samples: jax.Array | None = None
     swing_progress: jax.Array | None = None
+    motor_continuous_torque: jax.Array | None = None
 
 
 def positive_huber(value: jax.Array) -> jax.Array:
@@ -570,6 +572,20 @@ def compute_locomotion_reward(
         jnp.mean(hip_roll_continuous_torque_excess),
         0.0,
     )
+    stand_motor_continuous_torque_excess = jnp.asarray(0.0)
+    if config.enabled("stand_motor_continuous_torque_excess"):
+        if inputs.motor_continuous_torque is None:
+            raise ValueError("standing motor torque reward requires continuous ratings")
+        if inputs.motor_continuous_torque.shape != inputs.actuator_force.shape:
+            raise ValueError("continuous torque ratings must cover all actuator forces")
+        excess = jnp.maximum(
+            jnp.abs(inputs.actuator_force) / (0.5 * inputs.motor_continuous_torque)
+            - 1.0,
+            0.0,
+        )
+        stand_motor_continuous_torque_excess = jnp.where(
+            standing_command, jnp.mean(excess), 0.0
+        )
     requested_policy_force = jnp.abs(
         inputs.requested_actuator_force[inputs.policy_joint_indices]
     )
@@ -836,6 +852,7 @@ def compute_locomotion_reward(
         "stand_hip_roll_continuous_torque_excess": (
             stand_hip_roll_continuous_torque_excess
         ),
+        "stand_motor_continuous_torque_excess": stand_motor_continuous_torque_excess,
         "torque_peak": torque_peak,
         "joint_force_peak": joint_force_peak,
         "touchdown_impact": touchdown_impact,
@@ -884,6 +901,10 @@ def reward_terms(config: RewardConfig) -> dict[str, float]:
 
 
 def validate_reward_config(config: RewardConfig) -> None:
+    if config.enabled("stand_motor_continuous_torque_excess") and config.enabled(
+        "stand_hip_roll_continuous_torque_excess"
+    ):
+        raise ValueError("choose all-motor or legacy hip-roll torque shaping, not both")
     if type(config.standing.contact_independent_alignment) is not bool:
         raise TypeError("standing.contact_independent_alignment must be a boolean")
     pose_weights = config.limits_pose.joint_pose_weights

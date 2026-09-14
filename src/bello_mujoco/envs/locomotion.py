@@ -36,6 +36,7 @@ from bello_mujoco.envs.rewards import (
     validate_reward_config,
 )
 from bello_mujoco.envs.foot_geometry import sole_geometry
+from bello_mujoco.robstride.ratings import MotorTorqueRatings, motor_torque_ratings
 from bello_mujoco.sim import (
     BelloModel,
     ModelRandomizationConfig,
@@ -563,6 +564,8 @@ class BelloLocomotionEnv:
     def __post_init__(self) -> None:
         self._validate_config()
         self._validate_model_metadata()
+        if self.reward_config.enabled("stand_motor_continuous_torque_excess"):
+            _ = self._motor_torque_ratings
         if self.reward_config.gait.phase_shaped_clearance or any(
             self.reward_config.enabled(name)
             for name in ("stand_foot_foreaft", "stand_foot_width", "foot_crossing")
@@ -2991,6 +2994,10 @@ class BelloLocomotionEnv:
         weights[low_weight_indices] = 0.01
         return jnp.asarray(weights)
 
+    @cached_property
+    def _motor_torque_ratings(self) -> MotorTorqueRatings:
+        return motor_torque_ratings(self.model.mj_model, self.model.robot)
+
     def _action_smoothness_weights(self) -> jax.Array:
         names = self.action_layout.names
         return jnp.asarray(
@@ -3307,6 +3314,16 @@ class BelloLocomotionEnv:
                 actuator_force=next_state.data.actuator_force,
                 requested_actuator_force=requested_actuator_force,
                 actuator_peak_force=jnp.asarray(self.model.actuator_peak_force),
+                motor_continuous_torque=(
+                    jnp.asarray(
+                        self._motor_torque_ratings.continuous_torque_nm,
+                        dtype=jnp.float32,
+                    )
+                    if self.reward_config.enabled(
+                        "stand_motor_continuous_torque_excess"
+                    )
+                    else None
+                ),
                 joint_force=self._leg_joint_force(next_state),
                 robot_weight=self._robot_weight(),
                 joint_limit_low=self._actuator_joint_limit_low(),

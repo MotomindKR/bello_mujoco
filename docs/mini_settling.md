@@ -49,11 +49,54 @@ before other costs. Larger errors retain a linear cost increase.
 Shared heading, pose, orientation and slip are not standing-blend gated.
 
 Signed crossing, stumble/impact shaping, hard effort limits and unclipped
-torque-demand penalties remain. The standing hip-roll soft thermal objective
-also remains: weight -8 above 10 Nm, now without recovery relaxation. It still
-follows the standing blend and does not impose a new moving-mode 10 Nm hard
-limit. General torque costs remain active in every mode. No blanket
-self-collision penalty is enabled without identifying contact pairs.
+torque-demand penalties remain. The former hip-roll-only objective is replaced
+by the all-motor standing torque penalty below. General torque costs remain
+active in every mode. No blanket self-collision penalty is enabled without
+identifying contact pairs.
+
+## All-motor standing torque penalty
+
+`stand_motor_continuous_torque_excess: -8.0` replaces
+`stand_hip_roll_continuous_torque_excess` (now zero in Mini). Both terms cannot
+be enabled together. For the 28 physical motors, including held upper-body
+motors, the new term is:
+
+```
+threshold_i = 0.5 * rated_output_torque_i
+excess_i = max(abs(applied_motor_torque_i) / threshold_i - 1, 0)
+reward = -8 * control_dt * standing_blend * is_standing * mean(excess_i)
+```
+
+It is a soft instantaneous cost, not a hard limit or an accumulated temperature
+model. It has no tilt/speed recovery gate. It is inactive for moving commands
+and follows the existing standing transition blend. Averaging now covers 28
+motors rather than two hip rolls: one motor at twice its threshold costs
+`0.16 / 28` per 20 ms step; all motors at twice threshold cost `0.16`.
+Peak constraints and moving-mode torque penalties are unchanged.
+
+| Model | Rated output torque (Nm) | Penalty threshold (Nm) | Mini motors |
+| --- | ---: | ---: | ---: |
+| [RS00](https://robstride.com/products/robStride00) | 5 | 2.5 | 6 wrists |
+| [RS02](https://robstride.com/products/robStride02) | 6 | 3 | 4 ankle motors |
+| [RS03](https://robstride.com/products/robStride03) | 20 | 10 | 2 waist, 4 hip roll/yaw, 4 shoulder pitch/roll |
+| [RS04](https://www.robstride.com/products/robStride04) | 40 | 20 | 2 hip pitch, 2 knees |
+| [RS06](https://www.robstride.com/products/robStride06) | 11 | 5.5 | 2 shoulder yaw, 2 elbows |
+
+These manufacturer ratings were checked on 2026-09-14. They serve as the
+continuous-torque reference, not a guarantee of indefinite static holding under
+arbitrary cooling/ambient conditions. The pinned protocol catalog has no rated
+torque field, so verified ratings are kept in `robstride/ratings.py`; motor
+identity/model assignments still come from the canonical pinned hardware
+description, not duplicated per-joint configuration. Unknown ratings, missing
+motor coverage, duplicate targets and non-unit actuator gears fail at load.
+
+Each model actuator is bound by its actual joint/tendon target. For differential
+ankles, `actuator_force` already represents each motor's tendon force/torque;
+the penalty does not apply 3 Nm separately to ankle pitch/roll joint torques.
+For example, two motor torques of -3/+3 Nm produce 6 Nm pitch and zero roll
+through the current differential while both motors remain at threshold.
+Motor direction signs do not change an absolute-torque penalty. The mapping is
+resolved at initialization; rollout math uses a constant rating vector.
 
 The 25% standing share, +/-15 cm torso COM range/curriculum, command ranges,
 tracking tolerances, extra stop step, gait cadence, lateral starts, IMU frames,
@@ -102,7 +145,8 @@ body axes after the robot turns.
 ## Validation boundary
 
 Tests cover shared reward activation, actual-contact slip, linear alignment
-tails, unchanged thermal costs under tilt/speed, explicit pose mappings,
+tails, unchanged motor torque costs under tilt/speed, all-motor/differential
+coverage, explicit pose mappings,
 reward-input recovery sequences, push interval boundaries and legacy metadata.
 Synthetic sequences are not dynamically feasible recovery demonstrations.
 A native no-policy check holding nominal servo targets tipped backward after
@@ -126,4 +170,5 @@ Reference review informed the structure, not a wholesale coefficient copy:
 - [Unitree G1](https://github.com/unitreerobotics/unitree_rl_lab/blob/4960b84732b0c2ec593dccbfe963fda1bcd7b1e3/source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/g1/29dof/velocity_env_cfg.py)
   retains selected hip/waist posture costs; its 2% explicit standing fraction
   is not our target. We adapt the structure, not its coefficients or command
-  distribution. Fore-aft alignment and the 10 Nm objective are Bello-specific.
+  distribution. Fore-aft alignment and the half-rated motor torque objective
+  are Bello-specific.

@@ -435,7 +435,8 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
         healthy_survival=2.25,
         moving_lin_vel_xy_error=-1.0,
         moving_ang_vel_z_error=-1.0,
-        stand_hip_roll_continuous_torque_excess=-8.0,
+        stand_hip_roll_continuous_torque_excess=0.0,
+        stand_motor_continuous_torque_excess=-8.0,
         stand_still=0.0,
         stand_contact=0.0,
         stand_foot_motion=0.0,
@@ -488,13 +489,10 @@ def test_supported_training_profiles_load_and_smoke_is_local() -> None:
     assert bello.reward_config.weights.moving_ang_vel_z_error == pytest.approx(0.0)
     assert mini.reward_config.weights.moving_ang_vel_z_error == pytest.approx(-1.0)
     assert (
-        mini.reward_config.weights.stand_hip_roll_continuous_torque_excess
+        mini.reward_config.weights.stand_motor_continuous_torque_excess
         == pytest.approx(-8.0)
     )
-    assert (
-        mini.reward_config.standing.hip_roll_continuous_torque_limit
-        == pytest.approx(10.0)
-    )
+    assert mini.reward_config.weights.stand_hip_roll_continuous_torque_excess == 0.0
     assert mini.reward_config.weights.stand_waist_deviation == 0.0
     pose_weights = dict(mini.reward_config.limits_pose.joint_pose_weights)
     assert set(pose_weights) == set(

@@ -121,7 +121,8 @@ Mini removes recovery relaxation and the overlapping standing stillness,
 contact, foot-motion, upright and joint-posture stack. Shared orientation,
 selective joint-pose, foot-heading and actual-contact slip costs remain active
 in all modes. Single-support corrective steps retain velocity-tracking rewards;
-standing hip-roll thermal shaping remains without tilt/speed relaxation.
+standing torque shaping covers all physical motors above half their model's
+rated output torque, without tilt/speed relaxation.
 Hard motor limits are never relaxed. Mini retains 25% of commands for standing
 and ramps random pushes over the first approximately 1B transitions. Paired
 walking and fixed-checkpoint standing/push evaluation videos expose recovery failures separately

@@ -164,6 +164,7 @@ reward_config:
     action_limit: -1.0
     torque_l1: -1.2
     stand_hip_roll_continuous_torque_excess: 0.0
+    stand_motor_continuous_torque_excess: 0.0
     torque_peak: -12.0
     joint_force_peak: -4.0
     touchdown_impact: -4.0

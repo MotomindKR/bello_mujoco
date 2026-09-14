@@ -40,7 +40,8 @@ reward_config:
     healthy_survival: 2.25
     moving_lin_vel_xy_error: -1.0
     moving_ang_vel_z_error: -1.0
-    stand_hip_roll_continuous_torque_excess: -8.0
+    stand_hip_roll_continuous_torque_excess: 0.0
+    stand_motor_continuous_torque_excess: -8.0
     stand_still: 0.0
     stand_contact: 0.0
     stand_foot_motion: 0.0

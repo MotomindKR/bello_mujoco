@@ -480,8 +480,8 @@ Mini enables `standing.contact_independent_alignment` for its two remaining
 standing placement costs, including single support. Costs use plain
 deadband-Huber errors, not `h/(1+h)`. A 20 cm stagger costs 0.0155 per 20 ms
 step and a 10 cm width error costs 0.0055. `recovery_relaxation` is false;
-neither tilt nor speed reduces posture, geometry or the retained standing
-hip-roll thermal penalty. No recovery timer is introduced. Gait timing,
+neither tilt nor speed reduces posture, geometry or the all-motor standing
+torque penalty. No recovery timer is introduced. Gait timing,
 crossing, effort limits and impact penalties remain active.
 
 The older contact-gated and bounded/recovery-floor modes remain available for
@@ -529,7 +529,8 @@ determines its mode.
 | `action_acceleration` | `-0.005` | Penalize change in applied action delta, using the same joint weighting. |
 | `action_limit` | `-1.0` | Penalize requested action beyond the soft action ratio. |
 | `torque_l1` | `-1.2` | Penalize physically applied torque normalized by each motor's peak torque. |
-| `stand_hip_roll_continuous_torque_excess` | `0.0` | During standing commands, penalize the mean applied hip-roll torque above `standing.hip_roll_continuous_torque_limit`, normalized by that limit. The threshold is `10 Nm`, half the RS03's `20 Nm` continuous rating. Bello Mini sets this weight to `-8.0`; both hip rolls holding `15 Nm` cost `0.08` per 50 Hz step. Moving commands do not activate this term. |
+| `stand_hip_roll_continuous_torque_excess` | `0.0` | Legacy hip-roll-only standing cost using `standing.hip_roll_continuous_torque_limit`. Disabled in current Mini; retained for old checkpoint semantics. |
+| `stand_motor_continuous_torque_excess` | `0.0` | Mean `max(abs(torque)/(0.5*rated_torque)-1, 0)` over all physical motor actuators, including holds and separate differential ankle motors. Mini sets -8.0. Standing-only, blend-gated, never recovery-relaxed. Requires verified per-model ratings and complete hardware-to-actuator coverage; cannot coexist with the legacy hip-roll term. |
 | `torque_peak` | `-12.0` | Quadratically penalize reconstructed unclipped servo demand above peak even though dynamics enforce the physical limit. |
 | `joint_force_peak` | `-4.0` | During commanded gait, quadratically penalize the two largest hip, knee, or ankle reaction-force excesses above `0.8` body weight. It is disabled for standing because adjacent joints in a support chain can report the same static load. This uses MuJoCo's parent-child linear interaction force, not actuator torque. |
 | `touchdown_impact` | `-4.0` | At the first raw contact across all physics substeps, penalize the larger of integrated normal load and peak normal force above `0.6` body weight plus actual pre-impact downward foot speed. Bounded squared `tanh` shaping limits isolated impacts from dominating an update. |
@@ -563,9 +564,10 @@ impact-to-tracking balance after the profile's tracking rewards were doubled,
 without changing the bounded touchdown formulation. Bello Mini inherits the same
 reward configuration except for a `-1.0` moving planar smooth-L1 error penalty
 and midpoint gait shaping: `gait_contact: -2.5`, `gait_swing_clearance: -1.0`,
-and a `0.075` m swing-clearance target. Mini retains a `-8.0` standing hip-roll
-torque-excess penalty above `10 Nm`, half the RS03's `20 Nm` continuous rating,
-without recovery relaxation. Its shared posture map weights waist yaw/roll 2,
+and a `0.075` m swing-clearance target. Mini uses a `-8.0` all-motor standing
+torque-excess penalty above half of each model's rated output torque, without
+recovery relaxation. [Rating sources and mapping](mini_settling.md#all-motor-standing-torque-penalty)
+explain thresholds and differential semantics. Its shared posture map weights waist yaw/roll 2,
 hip roll/yaw 1, ankles 0.1, and hip pitch/knees 0.05 under `joint_pose: -1`.
 These are soft costs in all modes; no extra whole-body standing-pose bonus is
 added. The nominal pose is not a fixed servo-target balance controller.

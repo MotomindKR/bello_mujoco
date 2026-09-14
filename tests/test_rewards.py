@@ -192,7 +192,7 @@ def test_mini_thermal_and_shared_posture_cannot_be_erased_by_leaning():
             foot_contact=jnp.asarray([True, False]),
         ),
     )
-    for name in ("stand_hip_roll_continuous_torque_excess", "joint_pose"):
+    for name in ("stand_motor_continuous_torque_excess", "joint_pose"):
         assert nominal[f"reward/{name}"] < 0
         assert disturbed[f"reward/{name}"] == nominal[f"reward/{name}"]
     for name in (
@@ -352,6 +352,7 @@ def reward_inputs(**updates) -> RewardInputs:
         actuator_force=jnp.zeros(2, dtype=jnp.float32),
         requested_actuator_force=jnp.zeros(2, dtype=jnp.float32),
         actuator_peak_force=jnp.ones(2, dtype=jnp.float32),
+        motor_continuous_torque=jnp.full(2, 20.0, dtype=jnp.float32),
         joint_force=jnp.zeros(2, dtype=jnp.float32),
         robot_weight=jnp.asarray(1.0, dtype=jnp.float32),
         joint_limit_low=jnp.asarray([-1.0, -1.0], dtype=jnp.float32),
@@ -1256,9 +1257,29 @@ def test_default_healthy_standing_return_is_positive_despite_joint_support_load(
     assert terminal_reward < 0.0
 
 
-def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
+@pytest.mark.parametrize(
+    "thermal_term",
+    [
+        "stand_hip_roll_continuous_torque_excess",
+        "stand_motor_continuous_torque_excess",
+    ],
+)
+def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled(
+    thermal_term,
+) -> None:
     config = RewardConfig(
-        weights=RewardWeights(**{field.name: 1.0 for field in fields(RewardWeights)})
+        weights=RewardWeights(
+            **{
+                field.name: float(field.name == thermal_term)
+                if field.name
+                in {
+                    "stand_hip_roll_continuous_torque_excess",
+                    "stand_motor_continuous_torque_excess",
+                }
+                else 1.0
+                for field in fields(RewardWeights)
+            }
+        )
     )
     moving_inputs = reward_inputs(
         swing_progress=jnp.asarray([0.5, 0.0]),
@@ -1361,6 +1382,9 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         f"reward/{field.name}" for field in fields(RewardWeights)
     }
     for name in moving_terms:
+        if not config.enabled(name.removeprefix("reward/")):
+            assert moving_terms[name] == standing_terms[name] == 0.0
+            continue
         coarse = moving_terms[name]
         fine = moving_fine[name]
         if coarse == 0.0:
