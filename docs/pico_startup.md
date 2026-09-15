@@ -6,7 +6,7 @@ consumes the reference producer and hardwared telemetry.
 
 | Process | Endpoint in this same-host example | Purpose |
 | --- | --- | --- |
-| PICO bridge | `127.0.0.1:50051` | SMPL-X body and hand poses |
+| PICO bridge | `127.0.0.1:50051` | Raw XRoboToolkit body and SMPL-X hand poses |
 | `bello-run-reference` | `127.0.0.1:50056` | GMR joint references |
 | `bello-hardwared` | `127.0.0.1:50055` | Robot telemetry and motor control |
 | Bello visualizer | `127.0.0.1:50054` | Remote controller intent |
@@ -58,9 +58,15 @@ terminal and leave it running:
 
 ```bash
 uv run bello-run-reference asset=bello_mini \
-  smplx.endpoint=127.0.0.1:50051 \
-  smplx.neutral_model_path="$SMPLX_MODEL"
+  xrobot.endpoint=127.0.0.1:50051
 ```
+
+Update and restart the tracking bridge before using this command: it must
+publish typed `xrobot_body` data. Body following no longer accepts `smplx.*`
+arguments and does not need `SMPLX_MODEL`; keep that model for the hand command.
+On the Jetson, run Python commands with `env -u LD_LIBRARY_PATH uv run ...`
+if the Nix library path conflicts with the system glibc. Do not apply this
+workaround to the Rust runtime shell.
 
 This is the GMR service, listening on port 50056. It opens no motor IO. Set
 `retarget.human_height_m` to the operator's height if it differs from the 1.66 m

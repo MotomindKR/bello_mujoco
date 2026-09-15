@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from importlib.resources import files
 import math
@@ -20,6 +20,7 @@ class GmrRetargetDefinition:
     source_human: str
     target_robot: str
     ik_config: Path
+    xrobot_ik_config: Path
     source_body_names: tuple[str, ...]
     output_body_names: tuple[str, ...]
     initial_joint_positions: tuple[tuple[str, float], ...]
@@ -27,8 +28,9 @@ class GmrRetargetDefinition:
     def __post_init__(self) -> None:
         if not self.source_human or not self.target_robot:
             raise ValueError("GMR source and target must not be empty")
-        if self.ik_config.is_absolute() or ".." in self.ik_config.parts:
-            raise ValueError("GMR ik_config must be a contained relative path")
+        for path in (self.ik_config, self.xrobot_ik_config):
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError("GMR ik_config must be a contained relative path")
         for field_name in ("source_body_names", "output_body_names"):
             values = getattr(self, field_name)
             if not values or any(not value for value in values):
@@ -40,6 +42,14 @@ class GmrRetargetDefinition:
             raise ValueError("GMR initial joint names must be unique and nonempty")
         if any(not math.isfinite(value) for _, value in self.initial_joint_positions):
             raise ValueError("GMR initial joint positions must be finite")
+
+    def for_xrobot(self) -> GmrRetargetDefinition:
+        return replace(
+            self,
+            source_human="xrobot",
+            ik_config=self.xrobot_ik_config,
+            source_body_names=tuple(name.title() for name in self.source_body_names),
+        )
 
     def config_path(self, gmr_root: Path) -> Path:
         return Path(gmr_root) / self.ik_config
@@ -219,6 +229,7 @@ def _gmr_retarget_definition(value: Any) -> GmrRetargetDefinition:
             "source_human",
             "target_robot",
             "ik_config",
+            "xrobot_ik_config",
             "source_body_names",
             "output_body_names",
             "initial_joint_positions",
@@ -229,6 +240,9 @@ def _gmr_retarget_definition(value: Any) -> GmrRetargetDefinition:
         source_human=_string(data["source_human"], "gmr.source_human"),
         target_robot=_string(data["target_robot"], "gmr.target_robot"),
         ik_config=Path(_string(data["ik_config"], "gmr.ik_config")),
+        xrobot_ik_config=Path(
+            _string(data["xrobot_ik_config"], "gmr.xrobot_ik_config")
+        ),
         source_body_names=_string_tuple(
             data["source_body_names"], "gmr.source_body_names"
         ),

@@ -1,8 +1,7 @@
 asset: bello_mini
 listen: 127.0.0.1:50056
-smplx:
+xrobot:
   endpoint: 127.0.0.1:50051
-  neutral_model_path: ???
   tls_root_certificate_path: null
   tls_server_name_override: null
   connect_timeout_seconds: 5.0

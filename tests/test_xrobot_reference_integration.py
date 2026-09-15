@@ -1,8 +1,6 @@
-"""Opt-in SMPL-X -> GMR -> reference RPC check; no hardware connection."""
+"""Opt-in direct XRoboToolkit -> GMR -> reference RPC; no licensed model or IO."""
 
 from concurrent.futures import ThreadPoolExecutor
-import os
-from pathlib import Path
 import threading
 import time
 
@@ -13,20 +11,17 @@ import pytest
 from bello_mujoco.hardware import _smplx_pb2 as pose_pb
 from bello_mujoco.hardware import reference_pb2 as ref_pb
 from bello_mujoco.hardware.reference_producer import ReferenceService
-from bello_mujoco.hardware.smplx_grpc import SmplxGrpcConfig
-from bello_mujoco.hardware.smplx_retarget import (
+from bello_mujoco.hardware.pico_grpc import PicoGrpcConfig
+from bello_mujoco.hardware.gmr_retarget import (
     GmrLiveRetargetConfig,
     GmrRetargeter,
     LiveGmrReferenceSource,
 )
-from bello_mujoco.hardware.smplx_stream import SmplxTargetGrpcStream
+from bello_mujoco.hardware.xrobot_stream import BODY_NAMES, XRobotGrpcStream
 
 
 @pytest.mark.integration
 def test_pose_stream_retargets_and_serves_named_robot_references():
-    model_path = os.environ.get("BELLO_SMPLX_MODEL")
-    if not model_path:
-        pytest.skip("set BELLO_SMPLX_MODEL to a licensed SMPLX_NEUTRAL.npz")
     from bello_mujoco.envs.locomotion import BelloLocomotionEnv
     from bello_mujoco.models.compiler import physical_model_config
     from bello_mujoco.robot_tasks import motion_task_definition
@@ -34,7 +29,7 @@ def test_pose_stream_retargets_and_serves_named_robot_references():
     env = BelloLocomotionEnv.load(
         physical_model_config(asset="bello_mini"), load_mjx=False
     )
-    profile = motion_task_definition("bello_mini").gmr
+    profile = motion_task_definition("bello_mini").gmr.for_xrobot()
     model = env.model
     held = model.hold_ctrl_indices
     changed = threading.Event()
@@ -42,17 +37,26 @@ def test_pose_stream_retargets_and_serves_named_robot_references():
     def poses(request, context):
         sequence = 1
         while context.is_active():
-            body = np.zeros((21, 3))
+            from scipy.spatial.transform import Rotation
+
+            rotations = np.zeros((24, 3))
             if changed.is_set():
-                body[17, 1] = 0.7  # Flex the left elbow.
+                rotations[18:22, 1] = 0.7
+            quaternions = Rotation.from_rotvec(rotations).as_quat(scalar_first=True)
             yield pose_pb.PoseFrame(
                 sequence=sequence,
                 source_timestamp_ns=sequence * 33_333_333,
                 device_id="synthetic",
-                calibration_id="neutral",
+                xrobot_body=pose_pb.XRobotBody(
+                    joint_names=BODY_NAMES,
+                    positions=np.tile([0, 1, 0], 24),
+                    orientations=quaternions.ravel(),
+                    frame="pico_native_y_up",
+                    valid=True,
+                ),
                 upstream_connected=True,
                 global_orient=[0] * 3,
-                body_pose=body.ravel(),
+                body_pose=[0] * 63,
                 left_hand_pose=[0] * 45,
                 right_hand_pose=[0] * 45,
                 root_translation=[0] * 3,
@@ -83,11 +87,10 @@ def test_pose_stream_retargets_and_serves_named_robot_references():
         port = server.add_insecure_port("127.0.0.1:0")
         server.start()
         try:
-            with SmplxTargetGrpcStream(
-                SmplxGrpcConfig(f"127.0.0.1:{port}", Path(model_path)),
-                profile.source_body_names,
-            ) as stream:
-                retargeter = GmrRetargeter(env, GmrLiveRetargetConfig())
+            with XRobotGrpcStream(PicoGrpcConfig(f"127.0.0.1:{port}")) as stream:
+                retargeter = GmrRetargeter(
+                    env, GmrLiveRetargetConfig(), profile=profile
+                )
                 with LiveGmrReferenceSource(stream, retargeter) as source:
                     source.wait_until_ready(10)
                     service = ReferenceService(

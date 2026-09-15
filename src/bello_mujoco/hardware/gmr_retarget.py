@@ -1,4 +1,4 @@
-"""Pinned GMR boundary for live SMPL-X reference retargeting."""
+"""Pinned upstream GMR boundary for named human body poses."""
 
 from __future__ import annotations
 
@@ -69,34 +69,36 @@ _SMPLX_RELAXED_STANDING_BODY_POSE = np.asarray(
 
 
 @dataclass(frozen=True)
-class SmplxTargetFrame:
-    """Global SMPL-X joint transforms in world coordinates and wxyz order."""
+class HumanTargetFrame:
+    """Named global body transforms in the source profile's Z-up GMR frame."""
 
     transforms: Mapping[str, tuple[np.ndarray, np.ndarray]]
     sequence: int
     source_timestamp_ns: int
-    source_age_ms: int
+    source_age_ms: float
     received_at: float
     foot_contacts: np.ndarray | None = None
+    track_id: str = ""
+
+    def age_ms(self) -> float:
+        return self.source_age_ms + (time.monotonic() - self.received_at) * 1000
 
 
-class SmplxTargetStream(Protocol):
+class HumanTargetStream(Protocol):
     """Blocking source boundary implemented by the corrected gRPC adapter."""
-
-    def standing_sample(self) -> SmplxTargetFrame: ...
 
     def wait_next(
         self,
         *,
         after_sequence: int | None,
         timeout_seconds: float,
-    ) -> SmplxTargetFrame | None: ...
+    ) -> HumanTargetFrame | None: ...
 
 
 def load_smplx_standing_sample(
     model_path: Path,
     source_body_names: tuple[str, ...],
-) -> SmplxTargetFrame:
+) -> HumanTargetFrame:
     """Pose the supplied neutral SMPL-X skeleton in a relaxed normal stand."""
 
     path = model_path.expanduser().resolve()
@@ -158,7 +160,7 @@ def load_smplx_standing_sample(
         raise ValueError("neutral SMPL-X model produced non-finite body joints")
     position_lookup = dict(zip(SMPLX_BODY_JOINT_NAMES, positions, strict=True))
     quaternion_lookup = dict(zip(SMPLX_BODY_JOINT_NAMES, quaternions, strict=True))
-    return SmplxTargetFrame(
+    return HumanTargetFrame(
         transforms={
             name: (
                 position_lookup[name].copy(),
@@ -195,8 +197,11 @@ class GmrRetargeter:
         env: Any,
         config: GmrLiveRetargetConfig = GmrLiveRetargetConfig(),
         validate_reference: Callable[[RobotReferenceFrame], None] | None = None,
+        *,
+        profile: GmrRetargetDefinition | None = None,
     ) -> None:
-        profile = motion_task_definition(env.model.robot.asset).gmr
+        if profile is None:
+            profile = motion_task_definition(env.model.robot.asset).gmr
         _configure_pinned_gmr_profile(
             profile, repository_root() / "deps" / "GMR", env.model.xml_path
         )
@@ -221,7 +226,6 @@ class GmrRetargeter:
         self._previous_timestamp_ns: int | None = None
         self._last_sequence: int | None = None
         self._cached: RobotReferenceFrame | None = None
-        self._standing_qpos: np.ndarray | None = None
 
     def _initialize(self, targets: dict[str, tuple[np.ndarray, np.ndarray]]) -> None:
         model = self.model
@@ -253,8 +257,8 @@ class GmrRetargeter:
         self.retargeter.configuration.update(initial)
         self._initialized = True
 
-    def standing(self, frame: SmplxTargetFrame) -> RobotReferenceFrame:
-        targets = validate_smplx_target_frame(
+    def standing(self, frame: HumanTargetFrame) -> RobotReferenceFrame:
+        targets = validate_human_target_frame(
             frame, self.profile.source_body_names, live=False
         )
         self._initialize(targets)
@@ -268,12 +272,11 @@ class GmrRetargeter:
         )
         if self.validate_reference is not None:
             self.validate_reference(result)
-        self._standing_qpos = qpos.copy()
         self._reset_live_state()
         return result
 
-    def retarget(self, frame: SmplxTargetFrame) -> RobotReferenceFrame:
-        targets = validate_smplx_target_frame(
+    def retarget(self, frame: HumanTargetFrame) -> RobotReferenceFrame:
+        targets = validate_human_target_frame(
             frame, self.profile.source_body_names, live=True
         )
         if self._last_sequence is not None:
@@ -281,7 +284,7 @@ class GmrRetargeter:
                 assert self._cached is not None
                 return self._cached
             if frame.sequence < self._last_sequence:
-                raise ReferenceDiscontinuity("SMPL-X source sequence moved backwards")
+                raise ReferenceDiscontinuity("Human source sequence moved backwards")
         dt = None
         if self._previous_timestamp_ns is not None:
             dt = (frame.source_timestamp_ns - self._previous_timestamp_ns) / 1.0e9
@@ -289,7 +292,7 @@ class GmrRetargeter:
                 0.0 < dt <= self.config.max_source_interval_seconds
             ):
                 raise ReferenceDiscontinuity(
-                    f"SMPL-X source interval is invalid: {dt:.6f} seconds"
+                    f"Human source interval is invalid: {dt:.6f} seconds"
                 )
         previous_solver_qpos = self.retargeter.configuration.data.qpos.copy()
         initialized = self._initialized
@@ -333,9 +336,7 @@ class GmrRetargeter:
         return qpos
 
     def reset_live(self) -> None:
-        if self._standing_qpos is None:
-            raise RuntimeError("GMR standing reference has not been initialized")
-        self.retargeter.configuration.update(self._standing_qpos)
+        self.retargeter.configuration.update(self.model.qpos0.copy())
         self._reset_live_state()
 
     def _reset_live_state(self) -> None:
@@ -351,7 +352,7 @@ class LiveGmrReferenceSource:
 
     def __init__(
         self,
-        stream: SmplxTargetStream,
+        stream: HumanTargetStream,
         retargeter: GmrRetargeter,
         *,
         poll_timeout_seconds: float = 0.1,
@@ -364,7 +365,6 @@ class LiveGmrReferenceSource:
         self._condition = threading.Condition()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._standing: RobotReferenceFrame | None = None
         self._latest: RobotReferenceFrame | None = None
         self._unavailable: ReferenceUnavailable | None = None
         self._terminal_error: BaseException | None = None
@@ -372,7 +372,6 @@ class LiveGmrReferenceSource:
     def __enter__(self) -> LiveGmrReferenceSource:
         if self._thread is not None:
             raise RuntimeError("GMR reference source is already running")
-        self._standing = self.retargeter.standing(self.stream.standing_sample())
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run,
@@ -392,11 +391,6 @@ class LiveGmrReferenceSource:
         self._thread = None
         return False
 
-    def standing(self) -> RobotReferenceFrame:
-        if self._standing is None:
-            raise RuntimeError("live GMR source is not running")
-        return self._standing
-
     def latest(self) -> RobotReferenceFrame:
         with self._condition:
             if self._terminal_error is not None:
@@ -405,7 +399,7 @@ class LiveGmrReferenceSource:
                 return self._latest
             if self._unavailable is not None:
                 raise self._unavailable
-            raise ReferenceUnavailable("no live SMPL-X frame has been retargeted")
+            raise ReferenceUnavailable("no live human frame has been retargeted")
 
     def wait_until_ready(self, timeout_seconds: float) -> RobotReferenceFrame:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0.0:
@@ -447,6 +441,7 @@ class LiveGmrReferenceSource:
                 continue
             except ReferenceUnavailable as error:
                 with self._condition:
+                    self._latest = None
                     self._unavailable = error
                     self._condition.notify_all()
                 continue
@@ -465,8 +460,8 @@ class LiveGmrReferenceSource:
             self._condition.notify_all()
 
 
-def validate_smplx_target_frame(
-    frame: SmplxTargetFrame,
+def validate_human_target_frame(
+    frame: HumanTargetFrame,
     source_body_names: tuple[str, ...],
     *,
     live: bool,
@@ -474,12 +469,17 @@ def validate_smplx_target_frame(
     missing = sorted(set(source_body_names) - set(frame.transforms))
     if missing:
         raise ReferenceUnavailable(
-            "SMPL-X frame is missing GMR target joints: " + ", ".join(missing)
+            "Human frame is missing GMR target joints: " + ", ".join(missing)
         )
-    if frame.sequence < 0 or frame.source_age_ms < 0:
-        raise ReferenceUnavailable("SMPL-X sequence and source age must be nonnegative")
+    if (
+        frame.sequence < 0
+        or not math.isfinite(frame.source_age_ms)
+        or frame.source_age_ms < 0
+        or not math.isfinite(frame.received_at)
+    ):
+        raise ReferenceUnavailable("Human sequence and source age must be nonnegative")
     if live and frame.source_timestamp_ns <= 0:
-        raise ReferenceUnavailable("live SMPL-X source timestamp must be positive")
+        raise ReferenceUnavailable("live human source timestamp must be positive")
     result = {}
     for name in source_body_names:
         position, quaternion = frame.transforms[name]
@@ -487,7 +487,7 @@ def validate_smplx_target_frame(
         quaternion = np.asarray(quaternion, dtype=np.float64)
         if position.shape != (3,) or not np.all(np.isfinite(position)):
             raise ReferenceUnavailable(
-                f"SMPL-X joint {name!r} position must be a finite 3-vector"
+                f"Human joint {name!r} position must be a finite 3-vector"
             )
         if quaternion.shape != (4,) or not np.all(np.isfinite(quaternion)):
             raise ReferenceUnavailable(

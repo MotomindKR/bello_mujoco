@@ -1,15 +1,10 @@
 from pathlib import Path
-from types import SimpleNamespace
-import time
 
 import numpy as np
 import pytest
 
-from bello_mujoco.hardware.reference import ReferenceUnavailable
 from bello_mujoco.hardware.smplx_contract import SMPLX_JOINT_PARENTS
-from bello_mujoco.hardware.smplx_grpc import SmplxGrpcConfig
 from bello_mujoco.hardware.smplx_kinematics import SmplxKinematics
-from bello_mujoco.hardware.smplx_stream import SmplxTargetGrpcStream
 
 
 @pytest.fixture
@@ -80,27 +75,3 @@ def test_model_rejects_noncanonical_hierarchy(model_path):
     np.savez(model_path, **values)
     with pytest.raises(ValueError, match="hierarchy"):
         SmplxKinematics(model_path)
-
-
-def test_gmr_adapter_filters_invalid_body_and_preserves_wire_timing(model_path):
-    stream = SmplxTargetGrpcStream(
-        SmplxGrpcConfig("localhost:1", model_path), ("pelvis", "left_wrist")
-    )
-    frame = SimpleNamespace(
-        body_valid=False,
-        rotations=np.zeros((55, 3)),
-        root_translation=np.array([0, 0.1, 0]),
-        sequence=7,
-        source_timestamp_ns=234,
-        source_age_ms=12,
-        received_at=time.monotonic(),
-    )
-    stream.transport = SimpleNamespace(wait_next=lambda **kwargs: frame)
-    with pytest.raises(ReferenceUnavailable, match="body tracking"):
-        stream.wait_next(after_sequence=None, timeout_seconds=1)
-    frame.body_valid = True
-    result = stream.wait_next(after_sequence=None, timeout_seconds=1)
-    assert result.sequence == 7 and result.source_timestamp_ns == 234
-    assert result.source_age_ms == 12 and result.received_at == frame.received_at
-    np.testing.assert_allclose(result.transforms["pelvis"][0], [0, 0, 1.1])
-    np.testing.assert_allclose(result.transforms["left_wrist"][0], [0, -0.75, 1.6])

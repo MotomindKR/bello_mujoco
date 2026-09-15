@@ -15,7 +15,7 @@ from bello_mujoco.hardware.fastsam import (
     _validate_stream_info,
     import_pinned_fastsam_proto,
 )
-from bello_mujoco.hardware.smplx_retarget import (
+from bello_mujoco.hardware.gmr_retarget import (
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
     load_smplx_standing_sample,

@@ -11,7 +11,7 @@ The YAML files linked below are the authoritative field/default reference.
 | `bello-export-policy` | [export.yaml](../configs/commands/export.yaml) | ONNX/reference deployment bundle |
 | `bello-vast-train` | [vast_train.yaml](../configs/commands/vast_train.yaml) | Bounded remote training |
 | `bello-run-hands` | [hands.yaml](../configs/commands/hands.yaml) | SMPL-X gRPC driven Linker hand control |
-| `bello-run-reference` | [reference.yaml](../configs/commands/reference.yaml) | Independent SMPL-X/GMR joint-reference producer |
+| `bello-run-reference` | [reference.yaml](../configs/commands/reference.yaml) | Direct XRoboToolkit/GMR joint-reference producer |
 
 ## Training and evaluation
 
@@ -53,13 +53,13 @@ Policy control defaults to read-only preflight. `--arm` enables the staged
 operator-confirmed workflow for authorized commissioning. Physical deployment
 remains gated on trained-policy validation; see [hardware](hardware.md).
 
-Live upper-body following requires a SMPL-X gRPC server and licensed neutral
-SMPL-X model. Start `pico-smplx-bridge` on the tracking PC, then run:
+Live upper-body following requires the updated tracking bridge with typed raw
+body poses. Only finger control needs the licensed neutral SMPL-X model.
+Start `pico-smplx-bridge` on the tracking PC, then run:
 
 ```bash
 uv run bello-run-reference asset=bello_mini \
-  smplx.endpoint=192.168.0.216:50051 \
-  smplx.neutral_model_path=/path/to/SMPLX_NEUTRAL.npz
+  xrobot.endpoint=192.168.0.216:50051
 uv run bello-run-hands \
   smplx.endpoint=192.168.0.216:50051 \
   smplx.neutral_model_path=/path/to/SMPLX_NEUTRAL.npz \

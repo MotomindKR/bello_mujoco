@@ -21,10 +21,10 @@ from bello_mujoco.fastsam_conditioning import (
     CausalFootConditionedRoot,
     FootConditionedRootConfig,
 )
-from bello_mujoco.hardware.smplx_retarget import (
+from bello_mujoco.hardware.gmr_retarget import (
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
-    SmplxTargetFrame,
+    HumanTargetFrame,
     load_smplx_standing_sample,
 )
 from bello_mujoco.hardware.reference import ReferenceDiscontinuity, ReferenceUnavailable
@@ -182,7 +182,7 @@ class FastSamSmplxStream:
         self._stop = threading.Event()
         self._generation = 0
         self._consumed_generation = 0
-        self._payload: SmplxTargetFrame | BaseException | None = None
+        self._payload: HumanTargetFrame | BaseException | None = None
         self._terminal_error: BaseException | None = None
         self._thread: threading.Thread | None = None
         self._channel: grpc.Channel | None = None
@@ -248,7 +248,7 @@ class FastSamSmplxStream:
         self._close_transport()
         return False
 
-    def standing_sample(self) -> SmplxTargetFrame:
+    def standing_sample(self) -> HumanTargetFrame:
         return self._standing_sample
 
     def wait_next(
@@ -256,7 +256,7 @@ class FastSamSmplxStream:
         *,
         after_sequence: int | None,
         timeout_seconds: float,
-    ) -> SmplxTargetFrame | None:
+    ) -> HumanTargetFrame | None:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0.0:
             raise ValueError("Fast-SAM poll timeout must be positive and finite")
         deadline = time.monotonic() + timeout_seconds
@@ -380,7 +380,7 @@ class FastSamSmplxStream:
                 ReferenceUnavailable(f"Fast-SAM tracking state is {state}: {reason}")
             )
 
-    def _parse_frame(self, message: Any) -> SmplxTargetFrame:
+    def _parse_frame(self, message: Any) -> HumanTargetFrame:
         received_at = time.monotonic()
         frame_id = int(message.frame_id)
         source_timestamp_ns = int(message.source_timestamp_ns)
@@ -498,7 +498,7 @@ class FastSamSmplxStream:
         source_age_ms = math.ceil(
             pipeline_latency_ms + self.config.transport_latency_budget_ms
         )
-        return SmplxTargetFrame(
+        return HumanTargetFrame(
             transforms={
                 name: (lookup[name].copy(), quaternion_lookup[name].copy())
                 for name in self.source_body_names
@@ -517,7 +517,7 @@ class FastSamSmplxStream:
         self._last_frame_id = None
         self._last_source_timestamp_ns = None
 
-    def _publish(self, payload: SmplxTargetFrame | BaseException) -> None:
+    def _publish(self, payload: HumanTargetFrame | BaseException) -> None:
         with self._condition:
             self._payload = payload
             self._generation += 1

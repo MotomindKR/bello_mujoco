@@ -123,13 +123,12 @@ preflight. They do not establish trained-policy stability on the full emulator.
 
 ## Live upper-body references
 
-Run SMPL-X/GMR retargeting as a separate CPU producer, with the PICO bridge
+Run direct XRoboToolkit/GMR retargeting as a separate CPU producer, with the PICO bridge
 already streaming on port 50051:
 
 ```bash
 uv run bello-run-reference asset=bello_mini \
-  smplx.endpoint=192.168.0.216:50051 \
-  smplx.neutral_model_path=/path/to/SMPLX_NEUTRAL.npz
+  xrobot.endpoint=192.168.0.216:50051
 ```
 
 Producer settings live in `configs/commands/reference.yaml`. Enable

@@ -6,7 +6,7 @@ import mujoco
 import numpy as np
 import pytest
 
-from bello_mujoco.hardware import smplx_retarget as module
+from bello_mujoco.hardware import gmr_retarget as module
 from bello_mujoco.hardware.reference import ReferenceDiscontinuity, ReferenceUnavailable
 
 
@@ -80,7 +80,7 @@ def boundary(monkeypatch):
 
 
 def frame(sequence=1, timestamp=1_000_000_000):
-    return module.SmplxTargetFrame(
+    return module.HumanTargetFrame(
         transforms={
             "pelvis": (np.array([1.0, 2.0, 3.0]), np.array([1.0, 0.0, 0.0, 0.0]))
         },
@@ -148,3 +148,39 @@ def test_missing_source_joint_rejected_before_solving(boundary):
     with pytest.raises(ReferenceUnavailable, match="missing"):
         boundary.retarget(invalid)
     assert boundary.retargeter.calls == 0
+
+
+def test_raw_live_source_starts_without_standing_sample_and_clears_outage(boundary):
+    import queue
+    import time
+
+    packets = queue.Queue()
+
+    class Stream:
+        def wait_next(self, *, after_sequence, timeout_seconds):
+            try:
+                item = packets.get(timeout=timeout_seconds)
+            except queue.Empty:
+                return None
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    with module.LiveGmrReferenceSource(Stream(), boundary) as source:
+        assert boundary.retargeter.calls == 0
+        packets.put(frame())
+        assert source.wait_until_ready(1).sequence == 1
+        packets.put(ReferenceUnavailable("body tracking lost"))
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            try:
+                source.latest()
+            except ReferenceUnavailable:
+                break
+            time.sleep(0.005)
+        else:
+            pytest.fail("outage kept publishing the previous valid pose")
+        packets.put(ReferenceDiscontinuity("clock restarted"))
+        packets.put(frame(sequence=1, timestamp=10))
+        assert source.wait_until_ready(1).sequence == 1
+        assert boundary.retargeter.calls == 2

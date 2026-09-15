@@ -35,6 +35,12 @@ Python hardware-client dependency. Live retargeting dependencies remain in the
 default `retargeting` dependency group.
 Physical deployment remains gated on [trained-policy commissioning](docs/hardware.md).
 
+Live PICO body following uses direct XRoboToolkit poses through the updated
+tracking bridge: `bello-run-reference asset=bello_mini xrobot.endpoint=HOST:50051`.
+The body command no longer accepts `smplx.*` or needs a neutral SMPL-X model.
+The independent hand command and viewer retain their SMPL-X path. Update the
+bridge before the reference producer; see [PICO startup](docs/pico_startup.md).
+
 ## Guides
 
 - [Commands](docs/commands.md) and [configuration locations](docs/training_configuration.md)

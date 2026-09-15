@@ -39,6 +39,7 @@ gmr:
   source_human: smplx
   target_robot: bello_mini
   ik_config: general_motion_retargeting/ik_configs/smplx_to_bello_mini.json
+  xrobot_ik_config: general_motion_retargeting/ik_configs/xrobot_to_bello_mini.json
   source_body_names:
     - pelvis
     - spine3

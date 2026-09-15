@@ -18,7 +18,10 @@ from bello_mujoco.hardware.smplx_grpc import (
 
 
 def config(**overrides):
-    return replace(SmplxGrpcConfig("localhost:1", Path("unused.npz")), **overrides)
+    return replace(
+        SmplxGrpcConfig("localhost:1", neutral_model_path=Path("unused.npz")),
+        **overrides,
+    )
 
 
 def packet(sequence=1, **overrides):
@@ -143,6 +146,41 @@ def server():
 
 def read(stream, after=None, timeout=1):
     return stream.wait_next(after_sequence=after, timeout_seconds=timeout)
+
+
+def test_direct_body_uses_shared_outage_barriers_without_smplx_calibration(server):
+    from bello_mujoco.hardware.pico_grpc import PicoGrpcConfig
+    from bello_mujoco.hardware.xrobot_stream import BODY_NAMES, XRobotGrpcStream
+
+    def raw(sequence):
+        message = packet(sequence, calibration_id="", body_calibrated=False)
+        message.xrobot_body.CopyFrom(
+            pb.XRobotBody(
+                joint_names=BODY_NAMES,
+                positions=np.tile([0, 1, 0], 24),
+                orientations=np.tile([1, 0, 0, 0], 24),
+                frame="pico_native_y_up",
+                valid=True,
+            )
+        )
+        return message
+
+    with XRobotGrpcStream(PicoGrpcConfig(f"127.0.0.1:{server.port}")) as stream:
+        server.packets.put(raw(10))
+        assert read(stream).sequence == 10
+        server.packets.put(raw(10))
+        assert read(stream, timeout=0.03) is None
+        server.packets.put(raw(1))
+        with pytest.raises(ReferenceDiscontinuity):
+            read(stream, after=10)
+        assert read(stream).sequence == 1
+        invalid = raw(2)
+        invalid.xrobot_body.valid = False
+        server.packets.put(invalid)
+        with pytest.raises(ReferenceUnavailable):
+            read(stream, after=1)
+        server.packets.put(raw(3))
+        assert read(stream, after=1).sequence == 3
 
 
 def test_local_grpc_single_delivery_and_missing_body_does_not_spin(server):

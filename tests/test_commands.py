@@ -25,6 +25,33 @@ from bello_mujoco.configuration import (
 )
 
 
+def test_reference_command_wires_direct_body_transport_without_model(
+    monkeypatch,
+) -> None:
+    from bello_mujoco import cli
+    from bello_mujoco.hardware import reference_producer
+
+    captured = []
+    monkeypatch.setattr(reference_producer, "run", captured.append)
+    with initialize_config_dir(
+        version_base=None, config_dir=str(CONFIG_ROOT / "commands")
+    ):
+        config = compose(
+            config_name="reference",
+            overrides=(
+                "xrobot.endpoint=synthetic:1234",
+                "retarget.human_height_m=1.75",
+            ),
+        )
+    cli._reference_hydra.__wrapped__(config)
+    assert captured[0].xrobot.endpoint == "synthetic:1234"
+    assert captured[0].retarget.human_height_m == 1.75
+    legacy = OmegaConf.to_container(config, resolve=True)
+    legacy["smplx"] = {"neutral_model_path": "/unused/model.npz"}
+    with pytest.raises((TypeError, ValueError), match="smplx"):
+        command_config(reference_producer.ProducerConfig, OmegaConf.create(legacy))
+
+
 def test_importing_command_surface_does_not_import_jax() -> None:
     result = subprocess.run(
         [
