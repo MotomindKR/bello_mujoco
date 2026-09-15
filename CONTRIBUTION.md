@@ -9,8 +9,8 @@
 - Initialize dependencies with `git submodule update --init --recursive`.
 - Change canonical robot or hardware descriptions in `bello-stack`; update the
   `deps/bello-stack` gitlink here only after that stack commit is available.
-- Change the locomotion pose producer or protobuf contract in
-  `RTMW-SMPLX-Teleop`; update the `deps/RTMW-SMPLX-Teleop` gitlink and Bello
+- Change the live SMPL-X pose producer or protobuf contract in
+  `pico-smplx-bridge`; update the `deps/pico-smplx-bridge` gitlink and Bello
   consumer validation together only after that producer commit is available.
 
 Use branch names in the form `<type>/<short-description>`. Supported types are
@@ -36,6 +36,12 @@ advancing the pinned revision to a version that changes either protocol:
 ```bash
 uv run bash scripts/protobuf.sh generate
 ```
+
+The same script generates the private SMPL-X bindings from
+`deps/pico-smplx-bridge/pose_stream.proto`. This submodule supplies the wire
+contract; Bello does not install or import the bridge's server or device SDK.
+CI checks out the private bridge using the `PICO_SMPLX_DEPLOY_KEY` repository
+secret, paired with a read-only deploy key on `pico-smplx-bridge`.
 
 ## Validation
 

@@ -6,17 +6,18 @@ can_probe_timeout_seconds: 0.5
 can_feedback_poll_interval_seconds: 0.2
 can_feedback_timeout_seconds: 0.5
 can_tx_spacing_seconds: 0.003
-rtmw_endpoint: 127.0.0.1:50055
-rtmw_tls_root_certificate_path: null
-rtmw_tls_server_name_override: null
-rtmw_connect_timeout_seconds: 5.0
-rtmw_rpc_timeout_seconds: 2.0
-rtmw_human_height_m: 1.75
-min_hand_confidence: 0.05
-max_pipeline_latency_ms: 250.0
-transport_latency_budget_ms: 10.0
-max_reference_age_ms: 1000
-max_source_interval_seconds: 0.70
+smplx:
+  endpoint: 127.0.0.1:50051
+  neutral_model_path: ???
+  tls_root_certificate_path: null
+  tls_server_name_override: null
+  connect_timeout_seconds: 5.0
+  rpc_timeout_seconds: 2.0
+  max_source_age_ms: 500
+  max_source_interval_seconds: 0.70
+  transport_latency_budget_ms: 10.0
+  max_rate_hz: 60.0
+max_reference_age_ms: 500
 control_rate_hz: 5.0
 smoothing_time_constant_ms: 100.0
 max_raw_rate_per_second: 510.0

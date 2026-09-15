@@ -19,7 +19,7 @@ jobs:
           echo "bello_stack=$(git rev-parse HEAD:deps/bello-stack)" >> "$GITHUB_OUTPUT"
           echo "gmr=$(git rev-parse HEAD:deps/GMR)" >> "$GITHUB_OUTPUT"
           echo "fast_sam=$(git rev-parse HEAD:deps/Fast-SAM-3D-Body)" >> "$GITHUB_OUTPUT"
-          echo "rtmw=$(git rev-parse HEAD:deps/RTMW-SMPLX-Teleop)" >> "$GITHUB_OUTPUT"
+          echo "smplx=$(git rev-parse HEAD:deps/pico-smplx-bridge)" >> "$GITHUB_OUTPUT"
       - name: Check out pinned Bello stack revision
         uses: actions/checkout@v6
         with:
@@ -42,13 +42,13 @@ jobs:
           ref: ${{ steps.dependencies.outputs.fast_sam }}
           path: deps/Fast-SAM-3D-Body
           persist-credentials: false
-      - name: Check out pinned RTMW revision
+      - name: Check out pinned SMPL-X bridge revision
         uses: actions/checkout@v6
         with:
-          repository: MotomindKR/RTMW-SMPLX-Teleop
-          ref: ${{ steps.dependencies.outputs.rtmw }}
-          path: deps/RTMW-SMPLX-Teleop
-          ssh-key: ${{ secrets.RTMW_DEPLOY_KEY }}
+          repository: MotomindKR/pico-smplx-bridge
+          ref: ${{ steps.dependencies.outputs.smplx }}
+          path: deps/pico-smplx-bridge
+          ssh-key: ${{ secrets.PICO_SMPLX_DEPLOY_KEY }}
           persist-credentials: false
       - name: Register dependency checkouts as pinned submodules
         run: |
@@ -57,7 +57,7 @@ jobs:
             deps/bello-stack \
             deps/GMR \
             deps/Fast-SAM-3D-Body \
-            deps/RTMW-SMPLX-Teleop
+            deps/pico-smplx-bridge
           do
             test "$(git rev-parse "HEAD:$submodule_path")" = \
               "$(git -C "$submodule_path" rev-parse HEAD)"

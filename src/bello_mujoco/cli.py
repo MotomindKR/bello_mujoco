@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Literal
 import hydra
 from omegaconf import DictConfig
 
+from bello_mujoco.hardware.smplx_grpc import SmplxGrpcConfig
+
 from bello_mujoco.configuration import (
     ExperimentName,
     command_config,
@@ -84,17 +86,8 @@ class HandsCommandConfig:
     can_feedback_poll_interval_seconds: float
     can_feedback_timeout_seconds: float
     can_tx_spacing_seconds: float
-    rtmw_endpoint: str
-    rtmw_tls_root_certificate_path: Path | None
-    rtmw_tls_server_name_override: str | None
-    rtmw_connect_timeout_seconds: float
-    rtmw_rpc_timeout_seconds: float
-    rtmw_human_height_m: float
-    min_hand_confidence: float
-    max_pipeline_latency_ms: float
-    transport_latency_budget_ms: float
+    smplx: SmplxGrpcConfig
     max_reference_age_ms: int
-    max_source_interval_seconds: float
     control_rate_hz: float
     smoothing_time_constant_ms: float
     max_raw_rate_per_second: float
@@ -351,7 +344,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
 def reference_entrypoint() -> None:
     os.environ["JAX_PLATFORMS"] = "cpu"
     _expand_path_overrides(
-        ("rtmw.neutral_model_path=", "rtmw.tls_root_certificate_path=")
+        ("smplx.neutral_model_path=", "smplx.tls_root_certificate_path=")
     )
     _reference_hydra()
 
@@ -368,7 +361,9 @@ def _reference_hydra(config: DictConfig) -> None:
 def hands_entrypoint() -> None:
     os.environ["JAX_PLATFORMS"] = "cpu"
     os.environ["JAX_PLATFORM_NAME"] = "cpu"
-    _expand_path_overrides(("rtmw_tls_root_certificate_path=",))
+    _expand_path_overrides(
+        ("smplx.neutral_model_path=", "smplx.tls_root_certificate_path=")
+    )
     _hands_hydra()
 
 
@@ -383,11 +378,11 @@ def _hands_hydra(config: DictConfig) -> None:
         LinkerHandsCanConfig,
         LinkerHandsCanTransport,
     )
-    from bello_mujoco.hardware.rtmw_hands import (
+    from bello_mujoco.hardware.smplx_hands import (
         HandGeometryConfig,
         HandRawCalibration,
-        RtmwHandsConfig,
-        run_rtmw_hands,
+        SmplxHandsConfig,
+        run_smplx_hands,
     )
 
     can_config = LinkerHandsCanConfig(
@@ -400,18 +395,9 @@ def _hands_hydra(config: DictConfig) -> None:
         feedback_timeout_seconds=command.can_feedback_timeout_seconds,
         tx_spacing_seconds=command.can_tx_spacing_seconds,
     )
-    hands_config = RtmwHandsConfig(
-        endpoint=command.rtmw_endpoint,
-        tls_root_certificate_path=command.rtmw_tls_root_certificate_path,
-        tls_server_name_override=command.rtmw_tls_server_name_override,
-        connect_timeout_seconds=command.rtmw_connect_timeout_seconds,
-        rpc_timeout_seconds=command.rtmw_rpc_timeout_seconds,
-        human_height_m=command.rtmw_human_height_m,
-        min_confidence=command.min_hand_confidence,
-        max_pipeline_latency_ms=command.max_pipeline_latency_ms,
-        transport_latency_budget_ms=command.transport_latency_budget_ms,
+    hands_config = SmplxHandsConfig(
+        smplx=command.smplx,
         max_reference_age_ms=command.max_reference_age_ms,
-        max_source_interval_seconds=command.max_source_interval_seconds,
         control_rate_hz=command.control_rate_hz,
         smoothing_time_constant_ms=command.smoothing_time_constant_ms,
         max_raw_rate_per_second=command.max_raw_rate_per_second,
@@ -438,13 +424,13 @@ def _hands_hydra(config: DictConfig) -> None:
         ),
     )
 
-    def transport_factory(_config: RtmwHandsConfig) -> LinkerHandsCanTransport:
+    def transport_factory(_config: SmplxHandsConfig) -> LinkerHandsCanTransport:
         return LinkerHandsCanTransport(can_config)
 
-    run_rtmw_hands(hands_config, transport_factory)
+    run_smplx_hands(hands_config, transport_factory)
     if not command.arm:
         print(
-            "RTMW hand preflight passed; SocketCAN was not opened and no hand "
+            "SMPL-X hand preflight passed; SocketCAN was not opened and no hand "
             "command was sent."
         )
 
