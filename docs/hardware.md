@@ -139,3 +139,11 @@ contain invalid contacts and large motor rates. See the compact
 hardwared motor targets. It defaults to read-only validation; see
 [hands.yaml](../configs/commands/hands.yaml). Hand arming is separate from policy
 arming and requires its own bus, device, calibration, and safety review.
+
+All six hand axes use proportional targets between their calibrated open and
+closed positions: a half-flexed finger requests the midpoint. The
+`smoothing_time_constant_ms` low-pass filter and `max_raw_rate_per_second` slew
+limit apply to finger flexion and thumb abduction alike. After tracking loss,
+control reseeds from measured hand positions and limits the first recovered
+command to one control period of movement. `control_rate_hz` sets the command
+rate (5 Hz by default).
