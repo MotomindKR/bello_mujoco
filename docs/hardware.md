@@ -68,6 +68,21 @@ when references are unavailable. Malformed messages or terminal producer errors
 stop control. FastSAM/RTMW integration libraries and their live shape/frame,
 confidence, and freshness checks remain available.
 
+GMR uses one default JSON per robot in `deps/GMR/general_motion_retargeting/ik_configs/`.
+The Mini default is `smplx_to_bello_mini.json`. Its solver and upstream scripts
+are unchanged; the caller registers the generated model and initializes the
+first target root plus the joint seed in `robots/*_motion.yaml` once per sequence.
+Each source frame then receives one upstream retarget call. There are no
+alternate live profiles, repeated settling passes, ground corrections, custom
+collision constraints, or deployment-only smoothing. The `retarget` command
+settings are subject height and maximum source interval only. Upstream's
+optional velocity limiter is not enabled by this caller; downstream target
+speed/limit checks remain mandatory.
+
+Selecting this default is not hardware commissioning. Complex motions still
+contain invalid contacts and large motor rates. See the compact
+[GMR validation handoff](../deps/GMR/BELLO_VALIDATION.md).
+
 `bello-run-hands` independently controls Linker hands over classic CAN, not
 hardwared motor targets. It defaults to read-only validation; see
 [hands.yaml](../configs/commands/hands.yaml). Hand arming is separate from policy

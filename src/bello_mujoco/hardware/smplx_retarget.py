@@ -209,38 +209,20 @@ def _quaternion_multiply(left: np.ndarray, right: np.ndarray) -> np.ndarray:
 
 @dataclass(frozen=True)
 class GmrLiveRetargetConfig:
-    """Real-time settings layered on a robot's pinned GMR contract."""
+    """Input timing and subject height for upstream GMR."""
 
     human_height_m: float = 1.66
-    task_profile: str | None = None
-    convergence_tolerance: float = 1.0e-4
     max_source_interval_seconds: float = 0.2
-    contact_max_speed_mps: float = 0.2
-    contact_height_margin_m: float = 0.03
 
     def __post_init__(self) -> None:
-        if self.task_profile is not None and (
-            not isinstance(self.task_profile, str)
-            or not self.task_profile
-            or self.task_profile.strip() != self.task_profile
-        ):
-            raise ValueError(
-                "GMR task_profile must be null or a nonempty trimmed string"
-            )
-        positive = {
-            "human_height_m": self.human_height_m,
-            "convergence_tolerance": self.convergence_tolerance,
-            "max_source_interval_seconds": self.max_source_interval_seconds,
-            "contact_max_speed_mps": self.contact_max_speed_mps,
-            "contact_height_margin_m": self.contact_height_margin_m,
-        }
-        for name, value in positive.items():
+        for name in ("human_height_m", "max_source_interval_seconds"):
+            value = getattr(self, name)
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be positive and finite")
 
 
 class GmrRetargeter:
-    """Stateful source-rate retargeter using the selected robot's GMR profile."""
+    """One upstream retarget call per source frame, without motion corrections."""
 
     def __init__(
         self,
@@ -248,82 +230,84 @@ class GmrRetargeter:
         config: GmrLiveRetargetConfig = GmrLiveRetargetConfig(),
         validate_reference: Callable[[RobotReferenceFrame], None] | None = None,
     ) -> None:
-        asset = env.model.robot.asset
-        profile = motion_task_definition(asset).gmr
-        gmr_root = repository_root() / "deps" / "GMR"
-        _configure_pinned_gmr_profile(profile, gmr_root)
-        retargeter_type = import_pinned_gmr_retargeter()
+        profile = motion_task_definition(env.model.robot.asset).gmr
+        _configure_pinned_gmr_profile(
+            profile, repository_root() / "deps" / "GMR", env.model.xml_path
+        )
         with redirect_stdout(io.StringIO()):
-            retargeter = retargeter_type(
+            retargeter = import_pinned_gmr_retargeter()(
                 src_human=profile.source_human,
                 tgt_robot=profile.target_robot,
                 actual_human_height=config.human_height_m,
                 solver="daqp",
                 damping=5.0e-1,
                 verbose=False,
-                use_velocity_limit=None,
-                robot_xml_path=env.model.xml_path,
-                task_profile=config.task_profile or profile.task_profile,
+                use_velocity_limit=False,
             )
-        retargeter.max_iter = 0
-        self.passes_per_frame = _positive_solver_count(
-            retargeter.offline_solver_config, "passes_per_frame"
-        )
-        self.settling_rounds = _positive_solver_count(
-            retargeter.offline_solver_config, "initial_settle_passes"
-        )
-        self.env = env
         self.profile = profile
         self.config = config
         self.validate_reference = validate_reference
         self.retargeter = retargeter
         self.model = retargeter.model
         _validate_model_identity(self.model, env.model.mj_model)
-        self._foot_geom_ids = tuple(retargeter.ground_clearance_geom_ids)
-        if len(self._foot_geom_ids) != len(profile.source_foot_body_names):
-            raise ValueError(
-                "GMR ground-clearance geoms must match the configured source feet"
-            )
-        self._ground_data = mujoco.MjData(self.model)
+        self._initialized = False
         self._previous_qpos: np.ndarray | None = None
         self._previous_timestamp_ns: int | None = None
-        self._previous_source_feet: np.ndarray | None = None
-        self._source_floor_height: float | None = None
-        self._live_ground_offset: float | None = None
         self._last_sequence: int | None = None
         self._cached: RobotReferenceFrame | None = None
         self._standing_qpos: np.ndarray | None = None
 
-    def standing(self, frame: SmplxTargetFrame) -> RobotReferenceFrame:
-        """Settle the canonical SMPL-X standing sample through pinned GMR."""
+    def _initialize(self, targets: dict[str, tuple[np.ndarray, np.ndarray]]) -> None:
+        model = self.model
+        root_body = model.body(self.retargeter.robot_root_name).id
+        if (
+            model.njnt == 0
+            or model.jnt_type[0] != mujoco.mjtJoint.mjJNT_FREE
+            or model.jnt_qposadr[0] != 0
+            or model.jnt_bodyid[0] != root_body
+        ):
+            raise ValueError("Configured GMR root must own the first free joint")
+        self.retargeter.update_targets(_copy_targets(targets))
+        position, quaternion = self.retargeter.scaled_human_data[
+            self.retargeter.human_root_name
+        ]
+        initial = model.qpos0.copy()
+        initial[:3], initial[3:7] = position, quaternion
+        for name, angle in self.profile.initial_joint_positions:
+            joint = model.joint(name)
+            if (
+                joint.type[0] != mujoco.mjtJoint.mjJNT_HINGE
+                or not joint.limited[0]
+                or not joint.range[0] <= angle <= joint.range[1]
+            ):
+                raise ValueError(f"Invalid GMR initial joint position: {name}")
+            initial[joint.qposadr[0]] = angle
+        if not np.isfinite(initial).all():
+            raise ReferenceDiscontinuity("Non-finite GMR initial pose")
+        self.retargeter.configuration.update(initial)
+        self._initialized = True
 
+    def standing(self, frame: SmplxTargetFrame) -> RobotReferenceFrame:
         targets = validate_smplx_target_frame(
             frame, self.profile.source_body_names, live=False
         )
-        previous = self._solve(targets)
-        for _ in range(self.settling_rounds - 1):
-            current = self._solve(targets)
-            if np.max(np.abs(current - previous)) < self.config.convergence_tolerance:
-                previous = current
-                break
-            previous = current
-        previous = self._normalize_standing(previous)
-        previous = self._ground_standing(previous)
-        self.retargeter.configuration.update(previous)
-        self._standing_qpos = previous.copy()
-        self._reset_live_state()
-        return RobotReferenceFrame(
-            qpos=previous,
+        self._initialize(targets)
+        qpos = self._solve(targets)
+        result = RobotReferenceFrame(
+            qpos=qpos,
             qvel=np.zeros(self.model.nv, dtype=np.float64),
             sequence=frame.sequence,
             source_age_ms=None,
             received_at=frame.received_at,
         )
+        if self.validate_reference is not None:
+            self.validate_reference(result)
+        self._standing_qpos = qpos.copy()
+        self._reset_live_state()
+        return result
 
     def retarget(self, frame: SmplxTargetFrame) -> RobotReferenceFrame:
-        """Retarget one new live source frame, caching repeated source frames."""
-
-        source_targets = validate_smplx_target_frame(
+        targets = validate_smplx_target_frame(
             frame, self.profile.source_body_names, live=True
         )
         if self._last_sequence is not None:
@@ -331,15 +315,7 @@ class GmrRetargeter:
                 assert self._cached is not None
                 return self._cached
             if frame.sequence < self._last_sequence:
-                raise ReferenceDiscontinuity(
-                    "SMPL-X source sequence moved backwards: "
-                    f"{frame.sequence} < {self._last_sequence}"
-                )
-        if (
-            self._previous_timestamp_ns is not None
-            and frame.source_timestamp_ns <= self._previous_timestamp_ns
-        ):
-            raise ReferenceDiscontinuity("SMPL-X source timestamp did not advance")
+                raise ReferenceDiscontinuity("SMPL-X source sequence moved backwards")
         dt = None
         if self._previous_timestamp_ns is not None:
             dt = (frame.source_timestamp_ns - self._previous_timestamp_ns) / 1.0e9
@@ -349,31 +325,18 @@ class GmrRetargeter:
                 raise ReferenceDiscontinuity(
                     f"SMPL-X source interval is invalid: {dt:.6f} seconds"
                 )
-        solver_qpos = self.retargeter.configuration.data.qpos.copy()
-        previous_source_feet = (
-            None
-            if self._previous_source_feet is None
-            else self._previous_source_feet.copy()
-        )
-        source_floor_height = self._source_floor_height
-        live_ground_offset = self._live_ground_offset
+        previous_solver_qpos = self.retargeter.configuration.data.qpos.copy()
+        initialized = self._initialized
         try:
-            qpos = self._ground_live(
-                self._solve(source_targets),
-                source_targets,
-                dt=dt,
-                source_contacts=frame.foot_contacts,
-            )
-            if self._previous_qpos is None:
-                qvel = np.zeros(self.model.nv, dtype=np.float64)
-            else:
+            qpos = self._solve(targets)
+            qvel = np.zeros(self.model.nv, dtype=np.float64)
+            if self._previous_qpos is not None:
                 assert dt is not None
-                qvel = np.empty(self.model.nv, dtype=np.float64)
                 mujoco.mj_differentiatePos(
                     self.model, qvel, dt, self._previous_qpos, qpos
                 )
-            if not np.all(np.isfinite(qpos)) or not np.all(np.isfinite(qvel)):
-                raise ReferenceDiscontinuity("GMR produced a non-finite reference")
+            if not np.isfinite(qvel).all():
+                raise ReferenceDiscontinuity("GMR produced non-finite velocity")
             result = RobotReferenceFrame(
                 qpos=qpos,
                 qvel=qvel,
@@ -384,130 +347,35 @@ class GmrRetargeter:
             if self.validate_reference is not None:
                 self.validate_reference(result)
         except BaseException:
-            self.retargeter.configuration.update(solver_qpos)
-            self._previous_source_feet = previous_source_feet
-            self._source_floor_height = source_floor_height
-            self._live_ground_offset = live_ground_offset
+            self.retargeter.configuration.update(previous_solver_qpos)
+            self._initialized = initialized
             raise
-        self.retargeter.configuration.update(qpos)
-        self._previous_qpos = qpos
+        self._previous_qpos = qpos.copy()
         self._previous_timestamp_ns = frame.source_timestamp_ns
         self._last_sequence = frame.sequence
         self._cached = result
         return result
 
-    def reset_live(self) -> None:
-        """Re-anchor GMR after a tracking discontinuity."""
+    def _solve(self, targets: dict[str, tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
+        if not self._initialized:
+            self._initialize(targets)
+        qpos = np.asarray(
+            self.retargeter.retarget(_copy_targets(targets)), dtype=np.float64
+        ).copy()
+        if qpos.shape != (self.model.nq,) or not np.isfinite(qpos).all():
+            raise ReferenceDiscontinuity("GMR returned invalid qpos")
+        return qpos
 
+    def reset_live(self) -> None:
         if self._standing_qpos is None:
             raise RuntimeError("GMR standing reference has not been initialized")
         self.retargeter.configuration.update(self._standing_qpos)
         self._reset_live_state()
 
-    def _solve(
-        self,
-        targets: dict[str, tuple[np.ndarray, np.ndarray]],
-    ) -> np.ndarray:
-        qpos = None
-        for _ in range(self.passes_per_frame):
-            qpos = self.retargeter.retarget(_copy_targets(targets))
-        assert qpos is not None
-        result = np.asarray(qpos, dtype=np.float64)
-        if result.shape != (self.model.nq,):
-            raise ReferenceDiscontinuity(
-                f"GMR returned qpos shape {result.shape}; expected {(self.model.nq,)}"
-            )
-        if not np.all(np.isfinite(result)):
-            raise ReferenceDiscontinuity("GMR returned non-finite qpos")
-        return result
-
-    def _ground_standing(self, qpos: np.ndarray) -> np.ndarray:
-        sole_z = self._foot_sole_z(qpos)
-        grounded = np.asarray(qpos, dtype=np.float64).copy()
-        grounded[self.env.model.root_qpos_adr + 2] -= float(np.min(sole_z))
-        return grounded
-
-    def _normalize_standing(self, qpos: np.ndarray) -> np.ndarray:
-        """Keep configured standing joints at the policy's canonical stance."""
-
-        normalized = np.asarray(qpos, dtype=np.float64).copy()
-        for joint_name in self.profile.standing_default_joint_names:
-            address = int(self.model.jnt_qposadr[self.model.joint(joint_name).id])
-            normalized[address] = self.env.model.default_qpos[address]
-        root = self.env.model.root_qpos_adr
-        w, x, y, z = normalized[root + 3 : root + 7]
-        yaw = math.atan2(
-            2.0 * (w * z + x * y),
-            1.0 - 2.0 * (y * y + z * z),
-        )
-        normalized[root + 3 : root + 7] = (
-            math.cos(0.5 * yaw),
-            0.0,
-            0.0,
-            math.sin(0.5 * yaw),
-        )
-        return normalized
-
-    def _ground_live(
-        self,
-        qpos: np.ndarray,
-        targets: Mapping[str, tuple[np.ndarray, np.ndarray]],
-        *,
-        dt: float | None,
-        source_contacts: np.ndarray | None,
-    ) -> np.ndarray:
-        source_feet = np.stack(
-            [
-                np.asarray(targets[body_name][0])
-                for body_name in self.profile.source_foot_body_names
-            ]
-        )
-        if self._source_floor_height is None:
-            self._source_floor_height = float(np.min(source_feet[:, 2]))
-        if self._previous_source_feet is None or dt is None:
-            source_speed = np.zeros(2, dtype=np.float64)
-        else:
-            source_speed = (
-                np.linalg.norm(source_feet - self._previous_source_feet, axis=1) / dt
-            )
-        if source_contacts is None:
-            contacts = (source_speed < self.config.contact_max_speed_mps) & (
-                source_feet[:, 2]
-                <= self._source_floor_height + self.config.contact_height_margin_m
-            )
-        else:
-            contacts = np.asarray(source_contacts, dtype=bool)
-            if contacts.shape != (2,):
-                raise ReferenceDiscontinuity(
-                    "SMPL-X source foot contacts must have shape (2,)"
-                )
-        self._previous_source_feet = source_feet
-        sole_z = self._foot_sole_z(qpos)
-        if np.any(contacts):
-            self._live_ground_offset = float(np.min(sole_z[contacts]))
-        elif self._live_ground_offset is None:
-            self._live_ground_offset = float(np.min(sole_z))
-        ground_offset = min(self._live_ground_offset, float(np.min(sole_z)))
-        grounded = np.asarray(qpos, dtype=np.float64).copy()
-        grounded[self.env.model.root_qpos_adr + 2] -= ground_offset
-        return grounded
-
-    def _foot_sole_z(self, qpos: np.ndarray) -> np.ndarray:
-        self._ground_data.qpos[:] = qpos
-        mujoco.mj_forward(self.model, self._ground_data)
-        heights = np.empty(len(self._foot_geom_ids), dtype=np.float64)
-        for output, geom_id in enumerate(self._foot_geom_ids):
-            rotation = self._ground_data.geom_xmat[geom_id].reshape(3, 3)
-            vertical_extent = np.abs(rotation[2]) @ self.model.geom_size[geom_id]
-            heights[output] = self._ground_data.geom_xpos[geom_id, 2] - vertical_extent
-        return heights
-
     def _reset_live_state(self) -> None:
+        self._initialized = False
         self._previous_qpos = None
         self._previous_timestamp_ns = None
-        self._previous_source_feet = None
-        self._source_floor_height = None
-        self._live_ground_offset = None
         self._last_sequence = None
         self._cached = None
 
@@ -671,6 +539,7 @@ def validate_smplx_target_frame(
 def _configure_pinned_gmr_profile(
     profile: GmrRetargetDefinition,
     gmr_root: Path,
+    model_path: Path,
 ) -> None:
     import_pinned_gmr_retargeter()
     config_path = profile.config_path(gmr_root).resolve()
@@ -681,16 +550,10 @@ def _configure_pinned_gmr_profile(
     if not config_path.is_file():
         raise FileNotFoundError(f"GMR profile config does not exist: {config_path}")
     params = sys.modules["_bello_pinned_gmr.params"]
+    params.ROBOT_XML_DICT[profile.target_robot] = Path(model_path)
     params.IK_CONFIG_DICT.setdefault(profile.source_human, {})[profile.target_robot] = (
         config_path
     )
-
-
-def _positive_solver_count(config: Mapping[str, Any], name: str) -> int:
-    value = config.get(name)
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise ValueError(f"GMR offline_solver.{name} must be a positive integer")
-    return value
 
 
 def import_pinned_gmr_retargeter() -> type[Any]:

@@ -107,10 +107,6 @@ def run(config: ProducerConfig) -> None:
     )
     from bello_mujoco.robot_tasks import motion_task_definition
 
-    if config.retarget.task_profile != "live_upper_body":
-        raise ValueError(
-            "joint-reference producer requires live_upper_body retargeting"
-        )
     env = BelloLocomotionEnv.load(
         physical_model_config(asset=config.asset), load_mjx=False
     )

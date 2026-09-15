@@ -39,7 +39,6 @@ gmr:
   source_human: smplx
   target_robot: bello_mini
   ik_config: general_motion_retargeting/ik_configs/smplx_to_bello_mini.json
-  task_profile: universal
   source_body_names:
     - pelvis
     - spine3
@@ -55,9 +54,6 @@ gmr:
     - right_shoulder
     - right_elbow
     - right_wrist
-  source_foot_body_names:
-    - left_foot
-    - right_foot
   output_body_names:
     - pelvis_link
     - left_hip_roll_link
@@ -73,38 +69,8 @@ gmr:
     - right_shoulder_roll_link
     - right_elbow_link
     - right_wrist_roll_link
-  standing_default_joint_names:
-    - left_hip_pitch_joint
-    - left_hip_roll_joint
-    - left_hip_yaw_joint
-    - left_knee_joint
-    - left_ankle_pitch_joint
-    - left_ankle_roll_joint
-    - right_hip_pitch_joint
-    - right_hip_roll_joint
-    - right_hip_yaw_joint
-    - right_knee_joint
-    - right_ankle_pitch_joint
-    - right_ankle_roll_joint
-  knee_pole:
-    reference_flexion_radians: 0.8726646259971648
-    sample_minimum_flexion_radians: 0.3490658503988659
-    sample_minimum_distance_meters: 0.04
-    smoothing_frames: 5
-    legs:
-      - name: left
-        source_hip_body_name: left_hip
-        source_knee_body_name: left_knee
-        source_foot_body_name: left_foot
-        target_hip_body_name: left_hip_roll_link
-        target_knee_body_name: left_knee_link
-        target_foot_body_name: left_ankle_roll_link
-        target_knee_joint_name: left_knee_joint
-      - name: right
-        source_hip_body_name: right_hip
-        source_knee_body_name: right_knee
-        source_foot_body_name: right_foot
-        target_hip_body_name: right_hip_roll_link
-        target_knee_body_name: right_knee_link
-        target_foot_body_name: right_ankle_roll_link
-        target_knee_joint_name: right_knee_joint
+  initial_joint_positions:
+    left_shoulder_pitch_joint: -1.0
+    left_elbow_pitch_joint: -0.35
+    right_shoulder_pitch_joint: -1.0
+    right_elbow_pitch_joint: -0.35

@@ -31,11 +31,7 @@ rtmw:
     maximum_interval_seconds: 0.20
 retarget:
   human_height_m: 1.66
-  task_profile: live_upper_body
-  convergence_tolerance: 0.0001
   max_source_interval_seconds: 0.70
-  contact_max_speed_mps: 0.2
-  contact_height_margin_m: 0.03
 hydra:
   job:
     chdir: false
