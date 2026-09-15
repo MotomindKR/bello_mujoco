@@ -87,9 +87,7 @@ def test_pose_stream_retargets_and_serves_named_robot_references():
                 SmplxGrpcConfig(f"127.0.0.1:{port}", Path(model_path)),
                 profile.source_body_names,
             ) as stream:
-                retargeter = GmrRetargeter(
-                    env, GmrLiveRetargetConfig(task_profile="live_upper_body")
-                )
+                retargeter = GmrRetargeter(env, GmrLiveRetargetConfig())
                 with LiveGmrReferenceSource(stream, retargeter) as source:
                     source.wait_until_ready(10)
                     service = ReferenceService(
