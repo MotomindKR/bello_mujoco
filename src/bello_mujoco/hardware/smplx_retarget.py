@@ -30,13 +30,13 @@ from bello_mujoco.hardware.reference import (
 from bello_mujoco.repository import repository_root
 from bello_mujoco.robot_tasks import GmrRetargetDefinition, motion_task_definition
 
-# SMPL-X's model frame has +y up. This proper rotation produces the same
-# z-up, x-forward, y-left convention used by the offline AMASS pipeline.
-_SMPLX_MODEL_TO_WORLD = np.asarray(
-    ((0.0, 0.0, -1.0), (-1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
-    dtype=np.float64,
+from bello_mujoco.hardware.smplx_kinematics import (
+    MODEL_TO_WORLD as _SMPLX_MODEL_TO_WORLD,
+    MODEL_TO_WORLD_WXYZ as SMPLX_MODEL_TO_WORLD_WXYZ,
+    rotation_matrix_from_rotvec,
+    quaternion_from_rotvec,
+    quaternion_multiply,
 )
-SMPLX_MODEL_TO_WORLD_WXYZ = (0.5, 0.5, -0.5, -0.5)
 
 # Repository-owned, hand-authored relaxed stand in SMPL-X body-pose order.
 # This is deliberately independent of licensed motion datasets.
@@ -129,8 +129,8 @@ def load_smplx_standing_sample(
     rotations = np.empty((joint_count, 3, 3), dtype=np.float64)
     quaternions = np.empty((joint_count, 4), dtype=np.float64)
     for index, parent in enumerate(body_parents):
-        local_rotation = _rotation_matrix_from_rotvec(local_rotvecs[index])
-        local_quaternion = _quaternion_from_rotvec(local_rotvecs[index])
+        local_rotation = rotation_matrix_from_rotvec(local_rotvecs[index])
+        local_quaternion = quaternion_from_rotvec(local_rotvecs[index])
         if parent < 0:
             positions[index] = 0.0
             rotations[index] = local_rotation
@@ -140,11 +140,11 @@ def load_smplx_standing_sample(
             rest_positions[index] - rest_positions[parent]
         )
         rotations[index] = rotations[parent] @ local_rotation
-        quaternions[index] = _quaternion_multiply(quaternions[parent], local_quaternion)
+        quaternions[index] = quaternion_multiply(quaternions[parent], local_quaternion)
     positions = positions @ _SMPLX_MODEL_TO_WORLD.T
     quaternions = np.stack(
         [
-            _quaternion_multiply(
+            quaternion_multiply(
                 np.asarray(SMPLX_MODEL_TO_WORLD_WXYZ, dtype=np.float64), quaternion
             )
             for quaternion in quaternions
@@ -171,40 +171,6 @@ def load_smplx_standing_sample(
         source_age_ms=0,
         received_at=time.monotonic(),
     )
-
-
-def _rotation_matrix_from_rotvec(rotvec: np.ndarray) -> np.ndarray:
-    vector = np.asarray(rotvec, dtype=np.float64)
-    angle = float(np.linalg.norm(vector))
-    if angle < 1.0e-12:
-        return np.eye(3, dtype=np.float64)
-    axis = vector / angle
-    x, y, z = axis
-    skew = np.asarray(((0.0, -z, y), (z, 0.0, -x), (-y, x, 0.0)))
-    return np.eye(3) + math.sin(angle) * skew + (1.0 - math.cos(angle)) * (skew @ skew)
-
-
-def _quaternion_from_rotvec(rotvec: np.ndarray) -> np.ndarray:
-    vector = np.asarray(rotvec, dtype=np.float64)
-    angle = float(np.linalg.norm(vector))
-    if angle < 1.0e-12:
-        return np.asarray((1.0, 0.0, 0.0, 0.0))
-    scale = math.sin(0.5 * angle) / angle
-    return np.concatenate((np.asarray((math.cos(0.5 * angle),)), scale * vector))
-
-
-def _quaternion_multiply(left: np.ndarray, right: np.ndarray) -> np.ndarray:
-    lw, lx, ly, lz = np.asarray(left, dtype=np.float64)
-    rw, rx, ry, rz = np.asarray(right, dtype=np.float64)
-    result = np.asarray(
-        (
-            lw * rw - lx * rx - ly * ry - lz * rz,
-            lw * rx + lx * rw + ly * rz - lz * ry,
-            lw * ry - lx * rz + ly * rw + lz * rx,
-            lw * rz + lx * ry - ly * rx + lz * rw,
-        )
-    )
-    return result / np.linalg.norm(result)
 
 
 @dataclass(frozen=True)

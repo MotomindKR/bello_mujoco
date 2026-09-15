@@ -123,10 +123,13 @@ preflight. They do not establish trained-policy stability on the full emulator.
 
 ## Live upper-body references
 
-Run RTMW/GMR retargeting as a separate CPU producer:
+Run SMPL-X/GMR retargeting as a separate CPU producer, with the PICO bridge
+already streaming on port 50051:
 
 ```bash
-uv run bello-run-reference asset=bello_mini rtmw.neutral_model_path=/path/to/SMPLX_NEUTRAL.npz
+uv run bello-run-reference asset=bello_mini \
+  smplx.endpoint=192.168.0.216:50051 \
+  smplx.neutral_model_path=/path/to/SMPLX_NEUTRAL.npz
 ```
 
 Producer settings live in `configs/commands/reference.yaml`. Enable
@@ -142,4 +145,4 @@ messages or terminal producer errors stop control. The polling worker stores
 only the latest result and cannot block the policy loop. Joint references and
 policy motor ownership must be disjoint. Synthetic tests cover live following,
 producer outage, malformed references, and unchanged policy-owned targets;
-live camera/retargeter commissioning is separate.
+live tracking/retargeter commissioning is separate.

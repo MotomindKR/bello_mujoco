@@ -91,6 +91,7 @@ markers = [
 extend-exclude = [
   "src/bello_mujoco/hardware/_pose_pb2.py",
   "src/bello_mujoco/hardware/_remote_pb2.py",
+  "src/bello_mujoco/hardware/_smplx_pb2.py",
   "src/bello_mujoco/hardware/reference_pb2.py",
 ]
 target-version = "py312"

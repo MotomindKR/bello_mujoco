@@ -1,4 +1,4 @@
-"""Independent RTMW/GMR producer of latest URDF joint references; no motor IO."""
+"""Independent SMPL-X/GMR producer of latest URDF joint references; no motor IO."""
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -9,7 +9,7 @@ import numpy as np
 
 from bello_mujoco.hardware import reference_pb2 as pb
 from bello_mujoco.hardware.reference import ReferenceUnavailable, RobotReferenceSource
-from bello_mujoco.hardware.rtmw import RtmwGrpcConfig
+from bello_mujoco.hardware.smplx_grpc import SmplxGrpcConfig
 from bello_mujoco.hardware.smplx_retarget import GmrLiveRetargetConfig
 from bello_mujoco.robot import AssetName
 
@@ -18,7 +18,7 @@ from bello_mujoco.robot import AssetName
 class ProducerConfig:
     asset: AssetName
     listen: str
-    rtmw: RtmwGrpcConfig
+    smplx: SmplxGrpcConfig
     retarget: GmrLiveRetargetConfig
 
 
@@ -100,7 +100,7 @@ class ReferenceService:
 def run(config: ProducerConfig) -> None:
     from bello_mujoco.envs.locomotion import BelloLocomotionEnv
     from bello_mujoco.models.compiler import physical_model_config
-    from bello_mujoco.hardware.rtmw import RtmwSmplxStream
+    from bello_mujoco.hardware.smplx_stream import SmplxTargetGrpcStream
     from bello_mujoco.hardware.smplx_retarget import (
         GmrRetargeter,
         LiveGmrReferenceSource,
@@ -113,7 +113,7 @@ def run(config: ProducerConfig) -> None:
     model = env.model
     indices = model.hold_ctrl_indices
     profile = motion_task_definition(config.asset).gmr
-    with RtmwSmplxStream(config.rtmw, profile.source_body_names) as stream:
+    with SmplxTargetGrpcStream(config.smplx, profile.source_body_names) as stream:
         retargeter = GmrRetargeter(env, config.retarget)
         with LiveGmrReferenceSource(stream, retargeter) as source:
             service = ReferenceService(

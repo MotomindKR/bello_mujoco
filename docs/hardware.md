@@ -61,12 +61,64 @@ The [emulator](emulator.md) owns its robot model independently of policy bundles
 
 ## Live references and hands
 
-`bello-run-reference` runs RTMW/GMR retargeting separately and publishes named
-joint references. It requires the live producer and a licensed SMPL-X model.
-Rust owns arm following, target speed/limit checks, and the transition to nominal
-when references are unavailable. Malformed messages or terminal producer errors
-stop control. FastSAM/RTMW integration libraries and their live shape/frame,
-confidence, and freshness checks remain available.
+The live path consists of three processes:
+
+```text
+PICO -> pico-smplx-bridge :50051 -> bello-run-reference (GMR) :50056 -> Rust policy runner
+                              -> bello-run-hands -> Linker CAN
+```
+
+`bello-run-reference` reconstructs a neutral SMPL-X skeleton from streamed pose
+parameters, runs GMR, and publishes named URDF joint references. It never opens
+motor IO. Rust owns arm following, target speed/limit checks, and the transition
+to nominal when references are unavailable. Malformed messages or terminal
+producer errors stop control. The separate FastSAM adapter remains available.
+
+Both Bello consumers use the `pico.smplx.v1.PoseStream/StreamPoses` contract in
+the pinned `deps/pico-smplx-bridge/pose_stream.proto`. Any server implementing
+that contract can supply poses. The submodule supplies the schema, and
+`scripts/protobuf.sh` generates Bello's bindings with its own locked toolchain.
+Bello does not install the bridge with pip or import its PICO SDK/server code.
+Run the bridge separately on the tracking PC as described in its README.
+
+Set `smplx.endpoint` and `smplx.neutral_model_path` in either command. The licensed
+`SMPLX_NEUTRAL.npz` model is external and is not included in either repository.
+FK uses the model's zero-shape skeleton: root orientation, 21 body rotations,
+and 15 rotations per hand, all axis-angle radians. Hands follow SMPL-X's
+index/middle/pinky/ring/thumb order. Jaw and eyes are neutral; shape and facial
+expression are not streamed. Root translation is calibrated pelvis displacement
+in metres, offset by the neutral model's standing pelvis height. The input is
+right-handed, Y-up; GMR receives the existing Bello Z-up basis. Fingertips use
+neutral mesh landmarks attached rigidly to their distal bones, not full mesh
+skinning.
+
+Body following requires calibrated, valid body tracking. Each enabled hand is
+accepted independently when calibrated and all 15 joint-valid flags are set;
+body tracking is not required for hand control. Invalid components are never
+interpreted as a valid zero pose. Latest-only delivery does not replay a backlog
+or refresh duplicate observations. Device/calibration changes, sequence resets,
+source clock discontinuities, and reconnects reset downstream tracking state.
+
+Freshness uses the producer's packet age plus `smplx.transport_latency_budget_ms`
+and elapsed local monotonic time. The budget is an allowance, not measured
+one-way network latency; source timestamps belong to the headset clock.
+`smplx.max_source_age_ms` rejects stale input, `smplx.max_source_interval_seconds`
+detects gaps, and `smplx.rpc_timeout_seconds` reconnects silent subscriptions.
+`smplx.connect_timeout_seconds` bounds the wait for the first message after
+each connection attempt.
+`smplx.max_rate_hz` requests a bounded stream rate. Optional
+`smplx.tls_root_certificate_path` and `smplx.tls_server_name_override` configure
+TLS; the bridge's default local deployment uses plaintext gRPC.
+
+To exercise both RPC boundaries with the real model and GMR, without hardware:
+
+```bash
+BELLO_SMPLX_MODEL=/path/to/SMPLX_NEUTRAL.npz \
+  uv run pytest -q -m integration tests/test_smplx_reference_integration.py
+```
+
+This uses a synthetic pose producer and a local reference service. It validates
+numerical retargeting and named joint delivery, not physical robot behavior.
 
 GMR uses one default JSON per robot in `deps/GMR/general_motion_retargeting/ik_configs/`.
 The Mini default is `smplx_to_bello_mini.json`. Its solver and upstream scripts

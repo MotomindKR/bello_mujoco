@@ -1,4 +1,4 @@
-"""Standalone Linker Hand transport for RTMW-driven hand control."""
+"""Standalone Linker Hand transport for SMPL-X-driven hand control."""
 
 from __future__ import annotations
 
