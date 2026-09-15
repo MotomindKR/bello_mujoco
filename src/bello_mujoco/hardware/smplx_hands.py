@@ -405,14 +405,6 @@ class SmplxHandCommandFilter:
         self._state: dict[HandSide, np.ndarray] = {}
         self._updated_at: dict[HandSide, float] = {}
 
-    def reset(self, side: HandSide | None = None) -> None:
-        if side is None:
-            self._state.clear()
-            self._updated_at.clear()
-            return
-        self._state.pop(side, None)
-        self._updated_at.pop(side, None)
-
     def seed(
         self,
         side: HandSide,
@@ -611,7 +603,7 @@ def run_smplx_hands(
                     after_sequence=last_sequence,
                     timeout_seconds=timeout,
                 )
-            except (SmplxHandsDiscontinuity, SmplxHandsUnavailable) as error:
+            except SmplxHandsUnavailable as error:
                 if not stale:
                     _LOGGER.warning("SMPLX hand target unavailable: %s", error)
                 latest = None

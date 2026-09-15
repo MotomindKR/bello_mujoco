@@ -6,6 +6,7 @@
 - [Robot descriptions](robot_assets.md)
 - [BeyondMimic tracking](motion_tracking.md)
 - [Hardware](hardware.md), [emulator](emulator.md), and [Lima](macos_vcan.md)
+- [PICO tracking and hand-control startup](pico_startup.md)
 - [Vast.ai](vast_ai.md)
 
 ## Code map

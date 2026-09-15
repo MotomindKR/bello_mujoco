@@ -173,7 +173,7 @@ def test_stream_maps_each_hand_independently_without_body_tracking(monkeypatch, 
     assert frame.source_age_ms == 20 and frame.received_at == packet.received_at
 
 
-def test_mapping_is_invariant_to_camera_rigid_transform() -> None:
+def test_mapping_is_invariant_to_world_rigid_transform() -> None:
     mapper = SmplxHandLandmarkMapper(hands_config())
     joints, tips = curled_landmarks()
     expected = map_landmarks(mapper, "right", joints, tips)
@@ -788,7 +788,7 @@ def test_side_missing_then_valid_before_tick_requires_probe_and_newer_frame(
         )
         if right_available:
             return result
-        return replace(result, right=None, right_unavailable_reason="low confidence")
+        return replace(result, right=None, right_unavailable_reason="invalid tracking")
 
     monkeypatch.setattr(smplx_hands, "time", SimpleNamespace(monotonic=monotonic))
 

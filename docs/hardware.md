@@ -61,6 +61,9 @@ The [emulator](emulator.md) owns its robot model independently of policy bundles
 
 ## Live references and hands
 
+See the [PICO startup guide](pico_startup.md) for process order, Ubuntu service
+commands, local port assignments, and proportional hand control.
+
 The live path consists of three processes:
 
 ```text
