@@ -164,8 +164,8 @@ def test_hands_command_wires_smplx_mapping_and_l6_transport(
                 "arm=true",
                 "calibration_confirmed=true",
                 "duration_seconds=2.5",
-                "flexion_open_threshold=0.25",
-                "flexion_close_threshold=0.75",
+                "smoothing_time_constant_ms=80.0",
+                "max_raw_rate_per_second=300.0",
                 "left_open_positions=[250,240,230,220,210,200]",
                 "left_closed_positions=[10,20,30,40,50,60]",
             ),
@@ -183,8 +183,8 @@ def test_hands_command_wires_smplx_mapping_and_l6_transport(
     assert runtime.max_duration_seconds == pytest.approx(2.5)
     assert runtime.left_enabled and not runtime.right_enabled
     assert runtime.arm and runtime.calibration_confirmed
-    assert runtime.flexion_open_threshold == pytest.approx(0.25)
-    assert runtime.flexion_close_threshold == pytest.approx(0.75)
+    assert runtime.smoothing_time_constant_ms == pytest.approx(80.0)
+    assert runtime.max_raw_rate_per_second == pytest.approx(300.0)
     assert runtime.left_calibration.open_positions == (
         250,
         240,

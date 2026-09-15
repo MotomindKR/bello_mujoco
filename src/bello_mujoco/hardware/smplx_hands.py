@@ -35,7 +35,6 @@ HAND_POSITION_ORDER = (
 
 _SIDES: tuple[HandSide, HandSide] = ("left", "right")
 _FINGERS = ("index", "middle", "ring", "pinky", "thumb")
-_FLEXION_AXES = (0, 2, 3, 4, 5)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -121,8 +120,6 @@ class SmplxHandsConfig:
     control_rate_hz: float = 5.0
     smoothing_time_constant_ms: float = 100.0
     max_raw_rate_per_second: float = 510.0
-    flexion_open_threshold: float = 0.35
-    flexion_close_threshold: float = 0.65
     max_duration_seconds: float | None = None
     left_enabled: bool = True
     right_enabled: bool = True
@@ -142,15 +139,6 @@ class SmplxHandsConfig:
         ):
             raise ValueError(
                 "SMPLX hands smoothing_time_constant_ms must be finite and nonnegative"
-            )
-        for name in ("flexion_open_threshold", "flexion_close_threshold"):
-            value = getattr(self, name)
-            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
-                raise ValueError(f"SMPLX hands {name} must be finite and in [0, 1]")
-        if self.flexion_open_threshold >= self.flexion_close_threshold:
-            raise ValueError(
-                "SMPLX hands flexion_open_threshold must be less than "
-                "flexion_close_threshold"
             )
         if self.max_duration_seconds is not None and (
             not math.isfinite(self.max_duration_seconds)
@@ -410,23 +398,12 @@ class SmplxHandLandmarkMapper:
 
 
 class SmplxHandCommandFilter:
-    """Binary flexion hysteresis plus filtered thumb-abduction control."""
+    """Proportional control with smoothing and slew limits on all six axes."""
 
     def __init__(self, config: SmplxHandsConfig) -> None:
         self.config = config
         self._state: dict[HandSide, np.ndarray] = {}
         self._updated_at: dict[HandSide, float] = {}
-        self._flexion_closed: dict[HandSide, np.ndarray] = {}
-
-    def reset(self, side: HandSide | None = None) -> None:
-        if side is None:
-            self._state.clear()
-            self._updated_at.clear()
-            self._flexion_closed.clear()
-            return
-        self._state.pop(side, None)
-        self._updated_at.pop(side, None)
-        self._flexion_closed.pop(side, None)
 
     def seed(
         self,
@@ -451,14 +428,6 @@ class SmplxHandCommandFilter:
         measured = np.asarray(positions, dtype=np.float64)
         self._state[side] = measured
         self._updated_at[side] = now
-        calibration = self.config.calibration(side)
-        opened = np.asarray(calibration.open_positions, dtype=np.float64)
-        closed = np.asarray(calibration.closed_positions, dtype=np.float64)
-        span = closed - opened
-        normalized = np.zeros(6, dtype=np.float64)
-        usable = np.abs(span) > np.finfo(np.float64).eps
-        normalized[usable] = (measured[usable] - opened[usable]) / span[usable]
-        self._flexion_closed[side] = normalized[list(_FLEXION_AXES)] >= 0.5
 
     def resume(self, side: HandSide, *, now: float) -> None:
         """Resume from the last command with one control period of authority."""
@@ -478,33 +447,7 @@ class SmplxHandCommandFilter:
         if not math.isfinite(now):
             raise ValueError("hand filter timestamp must be finite")
         side = target.side
-        normalized = np.asarray(target.normalized_positions, dtype=np.float64)
-        if normalized.shape != (6,) or not np.all(np.isfinite(normalized)):
-            raise ValueError("normalized hand target must contain six finite values")
-        if np.any((normalized < 0.0) | (normalized > 1.0)):
-            raise ValueError("normalized hand target values must be in [0, 1]")
-        closed = np.array(
-            self._flexion_closed.get(side, np.zeros(len(_FLEXION_AXES), dtype=bool)),
-            copy=True,
-        )
-        flexion = normalized[list(_FLEXION_AXES)]
-        closed[(~closed) & (flexion >= self.config.flexion_close_threshold)] = True
-        closed[closed & (flexion <= self.config.flexion_open_threshold)] = False
-        self._flexion_closed[side] = closed
-        binary = np.array(normalized, copy=True)
-        binary[list(_FLEXION_AXES)] = closed.astype(np.float64)
-        return self._filter_raw_target(side, binary, now=now)
-
-    def _filter_raw_target(
-        self,
-        side: HandSide,
-        normalized: np.ndarray,
-        *,
-        now: float,
-    ) -> RawHandPositions:
-        desired = self.config.calibration(side).raw_target(
-            tuple(float(value) for value in normalized)  # type: ignore[arg-type]
-        )
+        desired = self.config.calibration(side).raw_target(target.normalized_positions)
         previous = self._state.get(side)
         previous_at = self._updated_at.get(side)
         if previous is None or previous_at is None:
@@ -520,8 +463,6 @@ class SmplxHandCommandFilter:
             filtered = previous + np.clip(
                 low_passed - previous, -maximum_delta, maximum_delta
             )
-        flexion_axes = list(_FLEXION_AXES)
-        filtered[flexion_axes] = desired[flexion_axes]
         filtered = np.clip(filtered, 0.0, 255.0)
         self._state[side] = filtered
         self._updated_at[side] = now
@@ -602,8 +543,8 @@ def run_smplx_hands(
     """Follow the latest fresh SMPLX hand pose until stopped.
 
     Missing, stale, or disconnected SMPLX input suspends position writes for the
-    affected side. Flexion axes are binary; only thumb abduction uses the
-    configured low-pass and slew limits.
+    affected side. All six axes follow proportional targets with the configured
+    low-pass and slew limits.
     """
 
     stop = stop_event if stop_event is not None else threading.Event()
@@ -662,7 +603,7 @@ def run_smplx_hands(
                     after_sequence=last_sequence,
                     timeout_seconds=timeout,
                 )
-            except (SmplxHandsDiscontinuity, SmplxHandsUnavailable) as error:
+            except SmplxHandsUnavailable as error:
                 if not stale:
                     _LOGGER.warning("SMPLX hand target unavailable: %s", error)
                 latest = None
@@ -729,6 +670,7 @@ def run_smplx_hands(
                     if primed_after is not None:
                         if latest.sequence <= primed_after:
                             continue
+                        position_filter.resume(side, now=now)
                         side_active[side] = True
                         side_primed_after_sequence[side] = None
                     else:

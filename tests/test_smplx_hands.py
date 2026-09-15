@@ -173,7 +173,7 @@ def test_stream_maps_each_hand_independently_without_body_tracking(monkeypatch, 
     assert frame.source_age_ms == 20 and frame.received_at == packet.received_at
 
 
-def test_mapping_is_invariant_to_camera_rigid_transform() -> None:
+def test_mapping_is_invariant_to_world_rigid_transform() -> None:
     mapper = SmplxHandLandmarkMapper(hands_config())
     joints, tips = curled_landmarks()
     expected = map_landmarks(mapper, "right", joints, tips)
@@ -214,7 +214,7 @@ def test_thumb_adduction_is_palm_local_and_side_correct() -> None:
     assert right.normalized_positions[1] == pytest.approx(1.0)
 
 
-def test_command_filter_keeps_flexion_binary_with_inverted_calibration() -> None:
+def test_command_filter_limits_all_axes_with_inverted_calibration() -> None:
     config = hands_config(
         smoothing_time_constant_ms=0.0,
         max_raw_rate_per_second=100.0,
@@ -227,10 +227,10 @@ def test_command_filter_keeps_flexion_binary_with_inverted_calibration() -> None
     opened = SmplxHandTarget("left", (0.0,) * 6)
     closed = SmplxHandTarget("left", (1.0,) * 6)
     assert command_filter.update(opened, now=1.0) == (200, 0, 0, 0, 0, 0)
-    assert command_filter.update(closed, now=1.1) == (0, 10, 255, 255, 255, 255)
+    assert command_filter.update(closed, now=1.1) == (190, 10, 10, 10, 10, 10)
 
 
-def test_command_filter_applies_lpf_only_to_thumb_abduction() -> None:
+def test_command_filter_applies_lpf_to_all_axes() -> None:
     config = hands_config(
         smoothing_time_constant_ms=500.0, max_raw_rate_per_second=10000.0
     )
@@ -240,10 +240,10 @@ def test_command_filter_applies_lpf_only_to_thumb_abduction() -> None:
     command_filter.update(opened, now=1.0)
     actual = command_filter.update(closed, now=1.5)
     expected = math.floor(255.0 * math.exp(-1.0) + 0.5)
-    assert actual == (0, expected, 0, 0, 0, 0)
+    assert actual == (expected,) * 6
 
 
-def test_command_filter_slew_limit_applies_only_to_thumb_abduction() -> None:
+def test_command_filter_limits_first_recovered_step_on_all_axes() -> None:
     config = hands_config(
         control_rate_hz=10.0,
         smoothing_time_constant_ms=0.0,
@@ -253,56 +253,70 @@ def test_command_filter_slew_limit_applies_only_to_thumb_abduction() -> None:
     command_filter.seed("right", (200,) * 6, now=1.0)
     command_filter.resume("right", now=20.0)
     actual = command_filter.update(SmplxHandTarget("right", (1.0,) * 6), now=20.0)
-    assert actual == (0, 190, 0, 0, 0, 0)
+    assert actual == (190,) * 6
 
 
-def test_command_filter_uses_binary_flexion_hysteresis() -> None:
+def test_command_filter_follows_partial_flexion_without_latching() -> None:
     config = hands_config(
         smoothing_time_constant_ms=0.0,
         max_raw_rate_per_second=10000.0,
-        flexion_open_threshold=0.35,
-        flexion_close_threshold=0.65,
     )
     command_filter = SmplxHandCommandFilter(config)
     first = command_filter.update(
         SmplxHandTarget("left", (0.7, 0.0, 0.7, 0.2, 0.8, 0.4)), now=1.0
     )
-    deadband = command_filter.update(
+    halfway = command_filter.update(
         SmplxHandTarget("left", (0.5, 0.0, 0.5, 0.5, 0.5, 0.5)), now=1.1
     )
     opened = command_filter.update(
         SmplxHandTarget("left", (0.3, 0.0, 0.3, 0.3, 0.3, 0.3)), now=1.2
     )
-    assert first == (0, 255, 0, 255, 0, 255)
-    assert deadband == first
-    assert opened == (255,) * 6
+    assert first == (77, 255, 77, 204, 51, 153)
+    assert halfway == (128, 255, 128, 128, 128, 128)
+    assert opened == (179, 255, 179, 179, 179, 179)
 
 
-def test_command_filter_reseed_resets_binary_flexion_latches() -> None:
-    config = hands_config(
-        smoothing_time_constant_ms=0.0, max_raw_rate_per_second=10000.0
-    )
+def test_command_filter_reseed_uses_measured_positions_for_every_axis() -> None:
+    config = hands_config(smoothing_time_constant_ms=0.0, max_raw_rate_per_second=100.0)
     command_filter = SmplxHandCommandFilter(config)
     closed = SmplxHandTarget("right", (1.0,) * 6)
-    ambiguous = SmplxHandTarget("right", (0.5,) * 6)
+    halfway = SmplxHandTarget("right", (0.5,) * 6)
     assert command_filter.update(closed, now=1.0) == (0,) * 6
-    command_filter.seed("right", (255,) * 6, now=1.1)
+    command_filter.seed("right", (255, 200, 180, 50, 80, 90), now=1.1)
     command_filter.resume("right", now=1.2)
-    assert command_filter.update(ambiguous, now=1.2) == (255, 128, 255, 255, 255, 255)
+    assert command_filter.update(halfway, now=1.2) == (235, 180, 160, 70, 100, 110)
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    "side",
     (
-        {"flexion_open_threshold": -0.1},
-        {"flexion_close_threshold": 1.1},
-        {"flexion_open_threshold": 0.5, "flexion_close_threshold": 0.5},
-        {"flexion_open_threshold": 0.7, "flexion_close_threshold": 0.6},
+        "left",
+        "right",
     ),
 )
-def test_config_rejects_invalid_flexion_hysteresis(overrides: dict[str, float]) -> None:
-    with pytest.raises(ValueError, match="flexion_"):
-        hands_config(**overrides)
+def test_proportional_targets_interpolate_each_calibrated_range(side) -> None:
+    calibration = HandRawCalibration(
+        open_positions=(200, 0, 250, 10, 90, 120),
+        closed_positions=(0, 200, 50, 210, 190, 120),
+    )
+    command_filter = SmplxHandCommandFilter(
+        hands_config(
+            smoothing_time_constant_ms=0,
+            max_raw_rate_per_second=10000,
+            **{f"{side}_calibration": calibration},
+        )
+    )
+    for now, amount, expected in (
+        (1.0, 0.0, (200, 0, 250, 10, 90, 120)),
+        (2.0, 0.25, (150, 50, 200, 60, 115, 120)),
+        (3.0, 0.5, (100, 100, 150, 110, 140, 120)),
+        (4.0, 0.75, (50, 150, 100, 160, 165, 120)),
+        (5.0, 1.0, (0, 200, 50, 210, 190, 120)),
+    ):
+        assert (
+            command_filter.update(SmplxHandTarget(side, (amount,) * 6), now=now)
+            == expected
+        )
 
 
 def target_frame(*, received_at: float | None = None) -> SmplxHandsFrame:
@@ -462,12 +476,20 @@ def test_outage_during_recovery_probe_prevents_obsolete_write() -> None:
     assert commands == []
 
 
-def test_armed_run_emits_only_binary_flexion_for_live_target() -> None:
+@pytest.mark.parametrize(
+    ("rate_limit", "expected"),
+    [(1e9, (51, 128, 51, 51, 51, 51)), (100.0, (235,) * 6)],
+)
+def test_armed_run_follows_proportional_target_with_bounded_recovery(
+    monkeypatch: pytest.MonkeyPatch, rate_limit: float, expected: tuple[int, ...]
+) -> None:
     stop = threading.Event()
     commands: list[tuple[int, ...]] = []
     calls = 0
+    now = 100.0
+    monkeypatch.setattr(smplx_hands, "time", SimpleNamespace(monotonic=lambda: now))
     target = replace(
-        target_frame(),
+        target_frame(received_at=now),
         left=SmplxHandTarget("left", (0.8, 0.5, 0.8, 0.8, 0.8, 0.8)),
         right=None,
     )
@@ -480,12 +502,13 @@ def test_armed_run_emits_only_binary_flexion_for_live_target() -> None:
             return False
 
         def wait_next(self, *, timeout_seconds: float, **_arguments: object):
-            nonlocal calls
+            nonlocal calls, now
             calls += 1
             if calls == 1:
                 return target
             if calls == 2:
-                return replace(target, sequence=2, received_at=time.monotonic())
+                now += 3.0  # Waiting for another observation must not allow a jump.
+                return replace(target, sequence=2, received_at=now)
             time.sleep(timeout_seconds)
             return None
 
@@ -509,13 +532,13 @@ def test_armed_run_emits_only_binary_flexion_for_live_target() -> None:
             calibration_confirmed=True,
             right_enabled=False,
             smoothing_time_constant_ms=0.0,
-            max_raw_rate_per_second=1000000000.0,
+            max_raw_rate_per_second=rate_limit,
         ),
         transport,
         stop_event=stop,
         stream_factory=lambda _config: FakeStream(),
     )
-    assert commands == [(0, 128, 0, 0, 0, 0)]
+    assert commands == [expected]
 
 
 def test_target_expiring_during_recovery_probe_sends_no_positions(
@@ -662,7 +685,7 @@ def test_smplx_outage_suspends_writes_and_recovery_refreshes_and_reseeds(
         stream_factory=lambda _config: FakeStream(),
     )
     assert refreshes == [(255, 200, 255, 255, 255, 255), (255, 50, 255, 255, 255, 255)]
-    assert commands == [(0, 180, 0, 0, 0, 0), (0, 30, 0, 0, 0, 0)]
+    assert commands == [(235, 180, 235, 235, 235, 235), (235, 30, 235, 235, 235, 235)]
 
 
 def test_missing_smplx_frames_send_no_positions() -> None:
@@ -765,7 +788,7 @@ def test_side_missing_then_valid_before_tick_requires_probe_and_newer_frame(
         )
         if right_available:
             return result
-        return replace(result, right=None, right_unavailable_reason="low confidence")
+        return replace(result, right=None, right_unavailable_reason="invalid tracking")
 
     monkeypatch.setattr(smplx_hands, "time", SimpleNamespace(monotonic=monotonic))
 
