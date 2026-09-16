@@ -290,24 +290,8 @@ pub async fn run(
         .map(|p| OpenOptions::new().write(true).create_new(true).open(p))
         .transpose()?;
     let preflight = hardware.feedback(proto::GroupState::Idle).await?;
-    let mut limits = policy.policy.target_limits.clone();
-    for group in &hardware.groups {
-        for motor in group.motors() {
-            let index = policy
-                .policy
-                .metadata
-                .coordinates
-                .iter()
-                .position(|c| c == motor.coordinate())
-                .context("missing hardware coordinate")?;
-            limits.restrict_motor(
-                index,
-                motor.limits().position_min(),
-                motor.limits().position_max(),
-            )?;
-        }
-    }
-    limits.validate(&preflight.motor_position)?;
+    let limits = hardware.target_limits.clone();
+    limits.startup_target(&preflight.motor_position)?;
     if let Some(motion) = &motion {
         motion.check_feedback(&preflight)?;
     }
@@ -325,10 +309,26 @@ pub async fn run(
             motion.check_feedback(&initial)?;
         }
         nominal(&policy, &initial, &config)?;
-        limits.validate(&initial.motor_position)?;
+        let startup_target = limits.startup_target(&initial.motor_position)?;
+        if startup_target != initial.motor_position {
+            eprintln!(
+                "Adjusted initial HOLD target inside command limits; measured feedback was within quantization tolerance."
+            );
+        }
+        if let Some(log) = &mut log {
+            serde_json::to_writer(
+                &mut *log,
+                &serde_json::json!({
+                    "event": "startup_target", "measured_motor_position": initial.motor_position,
+                    "motor_target": startup_target
+                }),
+            )?;
+            log.write_all(b"\n")?;
+            log.flush()?;
+        }
         let mut targets = CommandTargets {
             limits,
-            previous: initial.motor_position.clone(),
+            previous: startup_target.clone(),
             limited_count: 0,
         };
         for group in &hardware.groups {
@@ -346,14 +346,7 @@ pub async fn run(
         }
         let frames = controls
             .iter()
-            .map(|c| {
-                frame(
-                    c.group(),
-                    &policy,
-                    &initial.motor_position,
-                    config.gain_scale,
-                )
-            })
+            .map(|c| frame(c.group(), &policy, &startup_target, config.gain_scale))
             .collect::<Result<Vec<_>>>()?;
         let results = join_all(
             controls
@@ -382,8 +375,7 @@ pub async fn run(
             if let Some(motion) = &motion {
                 motion.check_feedback(&sample)?;
             }
-            let ramp: Vec<f64> = initial
-                .motor_position
+            let ramp: Vec<f64> = startup_target
                 .iter()
                 .zip(&target)
                 .map(|(a, b)| a + step as f64 / steps as f64 * (b - a))

@@ -191,6 +191,7 @@ dependencies = [
  "npyz",
  "ort",
  "prost",
+ "robstride-protocol",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -1173,6 +1174,14 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "robstride-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yaml_ng",
 ]
 
 [[package]]

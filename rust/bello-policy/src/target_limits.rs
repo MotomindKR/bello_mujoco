@@ -41,6 +41,35 @@ pub struct LimitedTarget {
 }
 
 impl TargetLimits {
+    /// Feedback is quantized; outgoing commands still use the exact envelope.
+    pub fn startup_target(&self, measured: &[f64]) -> Result<Vec<f64>> {
+        ensure!(
+            measured.len() == self.default.len() && measured.iter().all(|v| v.is_finite()),
+            "nonfinite or malformed startup feedback"
+        );
+        // Match hardwared's default two-encoding-interval allowance, not a pose offset.
+        let motor_tolerance = 2. * robstride_protocol::CONTROL_POSITION_SPAN / u16::MAX as f64;
+        for (i, row) in self.rows.iter().enumerate() {
+            let tolerance = row.coefficients.abs().element_sum() * motor_tolerance;
+            let value = row.value(measured);
+            ensure!(
+                value >= row.bounds[0] - tolerance && value <= row.bounds[1] + tolerance,
+                "startup feedback constraint {i}: {value} outside {:?} (quantization tolerance {tolerance})",
+                row.bounds
+            );
+        }
+        let target = self.project(measured)?;
+        for (i, ((next, previous), step)) in
+            target.iter().zip(measured).zip(&self.steps).enumerate()
+        {
+            ensure!(
+                (next - previous).abs() <= *step,
+                "startup target {i} exceeds maximum position step from measured feedback"
+            );
+        }
+        Ok(target)
+    }
+
     pub fn new(document: &serde_json::Value, default: &[f32]) -> Result<Self> {
         let s: Settings = serde_json::from_value(document.clone())?;
         let n = default.len();
@@ -267,5 +296,53 @@ mod tests {
         assert!(limits.project(&[0., 0., 0.2]).unwrap()[2] < 0.1);
         limits.restrict_motor(2, -3., 3.).unwrap();
         assert!(limits.project(&[0., 0., 0.2]).unwrap()[2] < 0.1);
+    }
+
+    #[test]
+    fn startup_quantization_never_widens_command_bounds() {
+        let limits = TargetLimits::new(
+            &serde_json::json!({
+                "motor_limits": [[0., 1.2]], "joint_limits": [[0., 2.]],
+                "joint_from_motor": [[1.]], "position_step_limits": [0.1]
+            }),
+            &[0.45],
+        )
+        .unwrap();
+        for measured in [-0.00019180590524214836, 1.200191805905242] {
+            assert!(limits.validate(&[measured]).is_err());
+            let target = limits.startup_target(&[measured]).unwrap();
+            limits.validate(&target).unwrap();
+            assert!((target[0] - measured).abs() < 0.001);
+        }
+        assert_eq!(limits.startup_target(&[0.3]).unwrap(), [0.3]);
+        for measured in [-0.002, 1.202, f64::NAN, f64::INFINITY] {
+            assert!(limits.startup_target(&[measured]).is_err());
+        }
+        assert!(limits.startup_target(&[]).is_err());
+    }
+
+    #[test]
+    fn startup_propagates_quantization_through_coupling_and_checks_first_step() {
+        let limits = TargetLimits::new(
+            &serde_json::json!({
+                "motor_limits": [[-2., 2.], [-2., 2.]],
+                "joint_limits": [[-1.2, 1.2], [-0.3, 0.5]],
+                "joint_from_motor": [[2., 2.], [-0.5, 0.5]],
+                "position_step_limits": [0.1, 0.1]
+            }),
+            &[0., 0.],
+        )
+        .unwrap();
+        let measured = [0.3006, 0.3006];
+        assert!(limits.validate(&measured).is_err());
+        limits
+            .validate(&limits.startup_target(&measured).unwrap())
+            .unwrap();
+        assert!(limits.startup_target(&[0.302, 0.302]).is_err());
+        let tight_steps = TargetLimits {
+            steps: vec![0.0001; 2],
+            ..limits
+        };
+        assert!(tight_steps.startup_target(&measured).is_err());
     }
 }

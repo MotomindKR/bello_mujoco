@@ -401,6 +401,7 @@ def bundle(
         "bad_reference",
         "remote_absent",
         "limited",
+        "startup_quantization",
     ],
 )
 def test_native_operator_lifecycle_and_failure_cleanup(
@@ -408,6 +409,8 @@ def test_native_operator_lifecycle_and_failure_cleanup(
 ):
     _, _, source = rust_policy
     fake = SyntheticHardware(hardware_proto)
+    if failure == "startup_quantization":
+        fake.positions[0] = -0.00019180590524214836
     server, pool, endpoint = start_services(fake)
     policy = tmp_path / "policy.zip"
     limits = (
@@ -419,9 +422,13 @@ def test_native_operator_lifecycle_and_failure_cleanup(
         if failure == "limited"
         else None
     )
+    if failure == "startup_quantization":
+        limits = dict(motor_limits=[[0, 1.2], [-3, 3], [-3, 3]])
     policy.write_bytes(
         bundle(
-            source, metadata_updates=limits, target=[1.5, 1.5, 0.4] if limits else None
+            source,
+            metadata_updates=limits,
+            target=[1.5, 1.5, 0.4] if failure == "limited" else None,
         )
     )
     settings = yaml.safe_load(
@@ -510,10 +517,25 @@ def test_native_operator_lifecycle_and_failure_cleanup(
         os.write(master, b"IDLE\n")
         code = process.wait(timeout=3)
         assert (code == 0) == (
-            failure in (None, "follow", "outage", "remote_absent", "limited")
+            failure
+            in (
+                None,
+                "follow",
+                "outage",
+                "remote_absent",
+                "limited",
+                "startup_quantization",
+            )
         ), transcript.decode(errors="replace")
         assert fake.calls[-2:] == ["disable", "release"]
         log = [json.loads(line) for line in log_path.read_text().splitlines()]
+        if failure == "startup_quantization":
+            targets = np.asarray(fake.targets)
+            assert np.all(targets[:, 0] >= 0)
+            assert 0 <= targets[0, 0] < 0.001
+            startup = next(row for row in log if row.get("event") == "startup_target")
+            assert startup["measured_motor_position"][0] < 0
+            assert startup["motor_target"][0] == targets[0, 0]
         if failure == "reject":
             assert any(
                 row.get("event") == "command_rejected"
@@ -542,6 +564,64 @@ def test_native_operator_lifecycle_and_failure_cleanup(
             os.kill(process.pid, signal.SIGKILL)
         process.wait(timeout=3)
         os.close(master)
+        fake.closed.set()
+        server.stop(0).wait()
+        pool.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("position", [-0.00019180590524214836, -0.002])
+def test_readonly_preflight_quantization_tolerance(
+    rust_policy, hardware_proto, position, tmp_path
+):
+    run, _, source = rust_policy
+    fake = SyntheticHardware(hardware_proto)
+    fake.positions[0] = position
+    server, pool, endpoint = start_services(fake)
+    settings = yaml.safe_load(
+        (
+            Path(__file__).parents[1] / "rust/bello-policy/config/hardware.yaml"
+        ).read_text()
+    )
+    settings.update(endpoint=endpoint, groups=["limb"])
+    settings["control"]["remote"]["endpoint"] = endpoint
+    try:
+        result = run(
+            content=bundle(
+                source, metadata_updates=dict(motor_limits=[[0, 1.2], [-3, 3], [-3, 3]])
+            ),
+            hardware_config=settings,
+        )
+        if position > -0.001:
+            assert result.returncode == 0, result.stderr
+            assert json.loads(result.stdout)["startup_motor_target"][0] >= 0
+        else:
+            assert result.returncode != 0
+            assert "startup feedback constraint" in result.stderr
+            master, slave = pty.openpty()
+            try:
+                armed = subprocess.run(
+                    [
+                        os.environ["BELLO_POLICY_BIN"],
+                        "--policy",
+                        str(tmp_path / "deployment.zip"),
+                        "--source",
+                        str(source),
+                        "--hardware-config",
+                        str(tmp_path / "hardware.yaml"),
+                        "--arm",
+                    ],
+                    stdin=slave,
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                )
+            finally:
+                os.close(slave)
+                os.close(master)
+            assert armed.returncode != 0
+            assert "startup feedback constraint" in armed.stderr
+        assert not fake.calls
+    finally:
         fake.closed.set()
         server.stop(0).wait()
         pool.shutdown(wait=True)

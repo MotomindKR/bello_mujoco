@@ -64,6 +64,7 @@ pub struct Hardware {
     pub robot: Robot,
     pub groups: Vec<MotorGroup>,
     pub config: Config,
+    pub target_limits: crate::target_limits::TargetLimits,
     motors: Vec<String>,
 }
 
@@ -128,9 +129,11 @@ impl Hardware {
             "hardware/policy IMU frame mismatch"
         );
         let mut motors = Vec::new();
+        let mut target_limits = runtime.policy.target_limits.clone();
         for (i, coordinate) in metadata.coordinates.iter().enumerate() {
             let motor = by_coordinate[coordinate.as_str()];
             let limits = motor.limits();
+            target_limits.restrict_motor(i, limits.position_min(), limits.position_max())?;
             for (name, value, low, high) in [
                 (
                     "nominal position",
@@ -162,6 +165,7 @@ impl Hardware {
             robot,
             groups,
             config,
+            target_limits,
             motors,
         })
     }

@@ -15,6 +15,7 @@ anyhow = "1"
 bello-hardware-client = { path = "deps/bello-stack/components/bello-hardware-client" }
 bello-remote-api = { path = "deps/bello-stack/components/bello-remote-api" }
 bello-pose-api = { path = "deps/bello-stack/components/bello-pose-api" }
+robstride-protocol = { path = "deps/bello-stack/components/robstride-protocol" }
 clap = "4"
 serde = "1"
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }

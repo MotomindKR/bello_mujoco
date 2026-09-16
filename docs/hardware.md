@@ -47,6 +47,15 @@ Unrelated motors are not slowed. This is a hard envelope, not action smoothing.
 Hardwared independently rejects motor, joint and step violations; it never
 silently modifies an accepted command. Nonfinite requests fail.
 
+Startup feedback may lie outside a bound by up to two Robstride position-encoding
+intervals; joint-space tolerance is propagated through the transmission. This
+allows quantization around zero without widening any command limit. HOLD starts
+from a feasible target projected from that measurement, checks its step from
+feedback, and ramps from that corrected target. Larger feedback violations fail
+before acquiring control. The original feedback is never modified; the
+`startup_target` log event records it alongside the initial command. Read-only
+preflight performs the same check and reports the proposed startup target.
+
 Bundles carry exact URDF joint bounds, the motor-to-joint transform, motor bounds
 and `position_step_limits` from the pinned hardware description. Live hardware
 motor bounds can only tighten the bundle envelope. A stricter local hardwared

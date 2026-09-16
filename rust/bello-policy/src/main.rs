@@ -85,6 +85,9 @@ async fn main() -> Result<()> {
             .await;
         }
         let sample = hardware.feedback(GroupState::Idle).await?;
+        let startup_target = hardware
+            .target_limits
+            .startup_target(&sample.motor_position)?;
         if let Some(live) = &live {
             live.check_feedback(&sample)?;
         }
@@ -92,7 +95,8 @@ async fn main() -> Result<()> {
         println!(
             "{}",
             serde_json::json!({"hardware_preflight": "passed", "armed": false,
-            "observation": preview.observation, "nominal_motor_target": runtime.policy.metadata.default_position})
+            "observation": preview.observation, "nominal_motor_target": runtime.policy.metadata.default_position,
+            "startup_motor_target": startup_target})
         );
         return Ok(());
     }
