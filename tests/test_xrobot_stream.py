@@ -100,3 +100,26 @@ def test_body_age_not_fresh_outer_packet_decides_availability():
     message.xrobot_body.valid = False
     with pytest.raises(ReferenceUnavailable):
         parse_frame(message, config)
+
+
+@pytest.mark.parametrize("missing", ["source_timestamp_ns", "device_id"])
+@pytest.mark.parametrize("outage", ["invalid", "packet_stale", "body_stale"])
+def test_outage_with_missing_identity_is_recoverable(missing, outage):
+    message = packet()
+    message.ClearField(missing)
+    if outage == "invalid":
+        message.xrobot_body.valid = False
+    elif outage == "packet_stale":
+        message.packet_age_seconds = 1
+    else:
+        message.xrobot_body.age_seconds = 1
+    with pytest.raises(ReferenceUnavailable, match="invalid or stale"):
+        parse_frame(message, PicoGrpcConfig("localhost:1"))
+
+
+@pytest.mark.parametrize("missing", ["source_timestamp_ns", "device_id"])
+def test_fresh_body_still_requires_timestamp_and_identity(missing):
+    message = packet()
+    message.ClearField(missing)
+    with pytest.raises(ValueError, match="timestamp and device identity"):
+        parse_frame(message, PicoGrpcConfig("localhost:1"))

@@ -51,8 +51,6 @@ def parse_frame(message: pb.PoseFrame, config: PicoGrpcConfig) -> HumanTargetFra
         raise ValueError(
             "Tracking bridge must publish typed xrobot_body; upgrade it first"
         )
-    if message.source_timestamp_ns <= 0 or not message.device_id:
-        raise ValueError("XRoboToolkit frame requires a timestamp and device identity")
     body = message.xrobot_body
     if body.frame != "pico_native_y_up":
         raise ValueError("XRoboToolkit body must use pico_native_y_up coordinates")
@@ -63,6 +61,8 @@ def parse_frame(message: pb.PoseFrame, config: PicoGrpcConfig) -> HumanTargetFra
     age += config.transport_latency_budget_ms
     if not body.valid or age > config.max_source_age_ms:
         raise ReferenceUnavailable("XRoboToolkit body is invalid or stale")
+    if message.source_timestamp_ns <= 0 or not message.device_id:
+        raise ValueError("XRoboToolkit frame requires a timestamp and device identity")
     if len(body.joint_names) != len(BODY_NAMES) or set(body.joint_names) != set(
         BODY_NAMES
     ):

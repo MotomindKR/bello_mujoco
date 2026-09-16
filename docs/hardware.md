@@ -38,6 +38,12 @@ set `control.remote.endpoint` to `http://host.lima.internal:50054` for the nativ
 Mac visualizer. The reference endpoint, limits, and logging controls live in
 the [Rust configuration](../rust/bello-policy/config/hardware.yaml).
 
+Before acquiring control, the runner checks measured motor positions against
+the bundle's nominal pose. `control.max_nominal_error_radians` defaults to
+0.5 radians for direct coordinates; coupled coordinates use
+`control.max_coupled_nominal_error_radians` (1.0 radian). Existing machine-local
+YAML copies retain their own values and must be updated separately.
+
 ## Isolated emulator control
 
 Add `--arm` only for an explicitly authorized commissioning run. Follow the
