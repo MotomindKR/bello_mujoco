@@ -63,8 +63,11 @@ confirms motor disable after stopping. Failures, remote abort, SIGINT, or SIGTER
 request damping first. Without an `IDLE` confirmation, it sends no explicit
 disable; hardwared's watchdog and lease-expiry safety remain authoritative.
 
-Remote commands require a neutral sample before accepting an armed controller;
-stale/disconnected input requests standing. The checkpoint owns command mapping
+The remote-command service is not a startup dependency: the runner starts with
+zero velocity commands and connects/reconnects in the background. Each connection
+requires a neutral sample before accepting an armed controller;
+stale/disconnected input requests standing, not motor disable. Received aborts
+remain latched and malformed messages still stop control. The checkpoint owns command mapping
 and slewing. Optional JSONL policy logs use a new file, never overwrite one.
 
 Synthetic lifecycle checks cover rejection, stale feedback, remote abort,

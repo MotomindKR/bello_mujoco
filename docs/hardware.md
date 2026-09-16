@@ -27,7 +27,12 @@ cargo run --locked -p bello-policy -- --policy outputs/policy.zip --source . \
   --hardware-config rust/bello-policy/config/hardware.yaml
 ```
 
-Start hardwared and the remote-command service first. Preflight checks source,
+Start hardwared first. The gamepad/remote-command service may start later: the
+policy runner starts with zero velocity commands and connects in the background.
+Missing or stale remote input requests standing, not motor disable; it is not an
+emergency stop. On connection or reconnection, an armed neutral sample is required
+before accepting movement. The interactive HOLD/RUN/IDLE sequence is unchanged.
+Preflight checks source,
 inventory, coordinate coverage, nominal targets/gains, IMU frames, group state,
 and telemetry freshness without acquiring control or writing motor targets.
 Use [Lima/vCAN](macos_vcan.md) for commissioning, not physical CAN.

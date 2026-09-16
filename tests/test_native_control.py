@@ -398,6 +398,7 @@ def bundle(
         "follow",
         "outage",
         "bad_reference",
+        "remote_absent",
     ],
 )
 def test_native_operator_lifecycle_and_failure_cleanup(
@@ -416,6 +417,8 @@ def test_native_operator_lifecycle_and_failure_cleanup(
     settings.update(endpoint=endpoint, groups=["limb"])
     settings["control"].update(ramp_seconds=0.08, max_duration_seconds=0.15)
     settings["control"]["remote"]["endpoint"] = endpoint
+    if failure == "remote_absent":
+        settings["control"]["remote"]["endpoint"] = "http://127.0.0.1:0"
     if failure in ("follow", "outage", "bad_reference"):
         settings["control"].update(
             max_duration_seconds=0.8,
@@ -489,9 +492,9 @@ def test_native_operator_lifecycle_and_failure_cleanup(
         assert "disable" not in fake.calls
         os.write(master, b"IDLE\n")
         code = process.wait(timeout=3)
-        assert (code == 0) == (failure in (None, "follow", "outage")), (
-            transcript.decode(errors="replace")
-        )
+        assert (code == 0) == (
+            failure in (None, "follow", "outage", "remote_absent")
+        ), transcript.decode(errors="replace")
         assert fake.calls[-2:] == ["disable", "release"]
         if failure in ("follow", "outage"):
             targets = np.asarray(fake.targets)

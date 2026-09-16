@@ -140,6 +140,9 @@ with its machine-local profile and a connected gamepad. For the same-host
 example, pass `--hardware-endpoint http://127.0.0.1:50055`; its remote service
 listens on 50054. The Mini example also expects the state estimator on 50053.
 Keep the visualizer's **Commanding** toggle off while the policy owns motors.
+It may start after the policy runner: absent/stale gamepad commands request
+standing, and connection/reconnection requires neutral input before movement.
+The policy's HOLD/RUN confirmations are still required.
 
 Copy the policy settings into ignored output and edit the copy:
 

@@ -1,5 +1,5 @@
 //! Latest operator intent, neutral rearming, and latched remote abort.
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use bello_remote_api::{
     WatchCommandRequest, WatchCommandResponse,
     remote_command_service_client::RemoteCommandServiceClient,
@@ -94,7 +94,8 @@ pub struct Source {
 }
 
 impl Source {
-    pub async fn connect(config: &Config, timeout: Duration) -> Result<Self> {
+    /// Start neutral immediately; connect/reconnect independently of control startup.
+    pub fn start(config: &Config, timeout: Duration) -> Result<Self> {
         ensure!(
             config.staleness_ms > 0 && config.staleness_ms < 60_000,
             "invalid remote staleness limit"
@@ -115,10 +116,17 @@ impl Source {
                         .map(|r| r.into_inner())
                         .map_err(anyhow::Error::from)
                 };
-                if let Ok(mut stream) = connection.await {
+                if let Ok(Ok(mut stream)) = tokio::time::timeout(timeout, connection).await {
+                    let mut receiving = false;
                     while let Ok(Some(message)) = stream.message().await {
                         match gate.receive(message, Instant::now(), stale) {
                             Ok(sample) => {
+                                if !receiving {
+                                    eprintln!(
+                                        "Remote command stream connected; neutral input required before movement."
+                                    );
+                                    receiving = true;
+                                }
                                 let _ = tx.send_replace(Ok(sample));
                                 backoff = Duration::from_millis(100);
                             }
@@ -128,38 +136,23 @@ impl Source {
                             }
                         }
                     }
+                    if receiving {
+                        eprintln!(
+                            "Remote command stream disconnected; requesting standing and reconnecting."
+                        );
+                    }
                 }
                 let _ = tx.send_replace(Ok(gate.disconnected()));
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(1));
             }
         });
-        let mut source = Self {
+        eprintln!("Remote commands start neutral; connecting in the background.");
+        Ok(Self {
             latest,
             task,
             stale,
-        };
-        tokio::time::timeout(timeout, async {
-            loop {
-                source.sample()?;
-                if source
-                    .latest
-                    .borrow()
-                    .as_ref()
-                    .is_ok_and(|s| s.received.is_some_and(|t| t.elapsed() <= stale))
-                {
-                    return Ok::<_, anyhow::Error>(());
-                }
-                source
-                    .latest
-                    .changed()
-                    .await
-                    .context("remote task exited")?;
-            }
         })
-        .await
-        .context("remote readiness timed out")??;
-        Ok(source)
     }
 
     /// A stale/disconnected source requests standing; abort remains latched.
@@ -189,6 +182,136 @@ impl Drop for Source {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bello_remote_api::remote_command_service_server::{
+        RemoteCommandService, RemoteCommandServiceServer,
+    };
+    use tokio::{net::TcpListener, sync::mpsc};
+    use tonic::{Request, Response, Status};
+
+    type MessageSender = mpsc::UnboundedSender<Result<WatchCommandResponse, Status>>;
+
+    struct Remote(mpsc::UnboundedSender<MessageSender>);
+
+    #[tonic::async_trait]
+    impl RemoteCommandService for Remote {
+        type WatchCommandStream = std::pin::Pin<
+            Box<dyn futures_util::Stream<Item = Result<WatchCommandResponse, Status>> + Send>,
+        >;
+
+        async fn watch_command(
+            &self,
+            _: Request<WatchCommandRequest>,
+        ) -> Result<Response<Self::WatchCommandStream>, Status> {
+            let (tx, rx) = mpsc::unbounded_channel();
+            self.0.send(tx).unwrap();
+            Ok(Response::new(Box::pin(futures_util::stream::unfold(
+                rx,
+                |mut rx| async { rx.recv().await.map(|item| (item, rx)) },
+            ))))
+        }
+    }
+
+    async fn next_connection(rx: &mut mpsc::UnboundedReceiver<MessageSender>) -> MessageSender {
+        tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    async fn deliver(source: &mut Source, tx: &MessageSender, message: WatchCommandResponse) {
+        let previous = source.latest.borrow_and_update().as_ref().unwrap().received;
+        tx.send(Ok(message)).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                source.latest.changed().await.unwrap();
+                let latest = source.latest.borrow_and_update();
+                if latest.as_ref().map_or(true, |s| s.received != previous) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn starts_without_service_then_connects_and_rearms_after_outages() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = Config {
+            endpoint: format!("http://{}", listener.local_addr().unwrap()),
+            staleness_ms: 100,
+        };
+        let mut source = Source::start(&config, Duration::from_millis(50)).unwrap();
+        assert_eq!(source.sample().unwrap(), [0.; 3]);
+        // TCP accepts, but no gRPC service exists yet. Handshake timeouts must retry.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(source.sample().unwrap(), [0.; 3]);
+        let (connections, mut rx) = mpsc::unbounded_channel();
+        let incoming = futures_util::stream::unfold(listener, |listener| async {
+            Some((listener.accept().await.map(|(stream, _)| stream), listener))
+        });
+        let server = tokio::spawn(
+            tonic::transport::Server::builder()
+                .add_service(RemoteCommandServiceServer::new(Remote(connections)))
+                .serve_with_incoming(incoming),
+        );
+        let mut tx = next_connection(&mut rx).await;
+        // An earlier timed-out handshake may have reached the server first.
+        while tx.is_closed() {
+            tx = next_connection(&mut rx).await;
+        }
+        deliver(&mut source, &tx, message(1, 0.5)).await;
+        assert_eq!(source.sample().unwrap(), [0.; 3]);
+        deliver(&mut source, &tx, message(2, 0.)).await;
+        deliver(&mut source, &tx, message(3, 0.5)).await;
+        assert_eq!(source.sample().unwrap(), [0.5, 0., 0.]);
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(source.sample().unwrap(), [0.; 3]);
+        deliver(&mut source, &tx, message(4, 0.5)).await;
+        assert_eq!(source.sample().unwrap(), [0.; 3]);
+
+        tx.send(Err(Status::unavailable("synthetic disconnect")))
+            .unwrap();
+        let tx = next_connection(&mut rx).await;
+        assert_eq!(source.sample().unwrap(), [0.; 3]);
+        deliver(&mut source, &tx, message(1, 0.5)).await;
+        assert_eq!(source.sample().unwrap(), [0.; 3]);
+        deliver(&mut source, &tx, message(2, 0.)).await;
+        deliver(&mut source, &tx, message(3, 0.5)).await;
+        assert_eq!(source.sample().unwrap(), [0.5, 0., 0.]);
+        let mut abort = message(4, 0.);
+        abort.abort_active = true;
+        deliver(&mut source, &tx, abort).await;
+        assert!(
+            source
+                .sample()
+                .unwrap_err()
+                .to_string()
+                .contains("remote abort")
+        );
+        tx.send(Err(Status::unavailable("synthetic disconnect")))
+            .unwrap();
+        let tx = next_connection(&mut rx).await;
+        deliver(&mut source, &tx, message(1, 0.)).await;
+        assert!(
+            source
+                .sample()
+                .unwrap_err()
+                .to_string()
+                .contains("remote abort")
+        );
+        deliver(&mut source, &tx, message(2, f64::NAN)).await;
+        assert!(
+            source
+                .sample()
+                .unwrap_err()
+                .to_string()
+                .contains("invalid remote stream")
+        );
+        server.abort();
+    }
+
     fn message(sequence: u64, forward: f64) -> WatchCommandResponse {
         WatchCommandResponse {
             sequence,

@@ -238,7 +238,7 @@ pub async fn run(
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     policy.remote_command([0.; 3], config.joystick_command_scale)?;
     let rpc = Duration::from_secs_f64(config.rpc_timeout_seconds);
-    let remote = remote::Source::connect(&config.remote, rpc).await?;
+    let remote = remote::Source::start(&config.remote, rpc)?;
     let mut following = if config.following.enabled {
         Some(crate::following::Following::new(
             config.following.clone(),
