@@ -32,6 +32,6 @@ control:
   joystick_command_scale: 1.0
   max_loop_lag_seconds: 0.10
   max_duration_seconds: null
-  max_nominal_error_radians: 0.25
+  max_nominal_error_radians: 0.5
   max_coupled_nominal_error_radians: 1.0
   policy_log_path: null
