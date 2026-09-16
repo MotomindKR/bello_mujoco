@@ -19,6 +19,7 @@ pub mod hardware;
 pub mod locomotion;
 pub mod motion;
 pub mod remote;
+pub mod target_limits;
 
 #[derive(Debug, Deserialize)]
 pub struct PolicyMetadata {
@@ -152,6 +153,7 @@ pub struct PolicyOutput {
 }
 
 pub struct Policy {
+    pub target_limits: target_limits::TargetLimits,
     session: Session,
     pub metadata: PolicyMetadata,
     pub reference_motion: Option<Vec<u8>>,
@@ -213,6 +215,8 @@ impl Policy {
         metadata.validate()?;
         metadata.require_source(source)?;
         validate_graph(&session, &metadata)?;
+        let target_limits =
+            target_limits::TargetLimits::new(&document, &metadata.default_position)?;
         let mut physics_xml = Vec::new();
         archive
             .by_name("physics.xml")
@@ -229,6 +233,7 @@ impl Policy {
             None
         };
         Ok(Self {
+            target_limits,
             session,
             metadata,
             reference_motion,

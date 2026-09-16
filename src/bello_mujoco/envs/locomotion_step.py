@@ -1,6 +1,8 @@
 """Shared scalar and batched locomotion physics and transition bookkeeping."""
 
 from __future__ import annotations
+
+from bello_mujoco.envs.actions import limit_motor_step
 from functools import partial
 from typing import TYPE_CHECKING
 import jax
@@ -278,6 +280,7 @@ def step(
         env.action_clip,
     )
     ctrl, motor_saturation = env._action_target_details(action)
+    ctrl = limit_motor_step(ctrl, state.data.ctrl, env.model.target_limits)
     data = state.data.replace(ctrl=ctrl)
     (
         data,
@@ -350,6 +353,11 @@ def step_batch(
     ctrl, motor_saturation = jax.vmap(env._action_target_details)(
         action, joint_angle_offset
     )
+    ctrl = jax.vmap(
+        lambda target, previous: limit_motor_step(
+            target, previous, env.model.target_limits
+        )
+    )(ctrl, state.data.ctrl)
     data = state.data.replace(
         ctrl=ctrl,
         _impl=state.data._impl.replace(nworld=batch_size),

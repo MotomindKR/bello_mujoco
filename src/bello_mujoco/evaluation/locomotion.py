@@ -18,6 +18,7 @@ import rerun.blueprint as rrb
 from rerun.urdf import UrdfTree
 
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
+from bello_mujoco.envs.actions import limit_motor_step
 from bello_mujoco.envs.gait import (
     advance_gait_phase,
     advance_standing_blend,
@@ -657,6 +658,13 @@ def run_rerun_evaluation(
             )
             action_delta = action_np - last_action
             ctrl = mujoco_action_to_ctrl(env, action_np)
+            ctrl = np.asarray(
+                limit_motor_step(
+                    jnp.asarray(ctrl),
+                    jnp.asarray(mj_data.ctrl),
+                    env.model.target_limits,
+                )
+            )
             state = mujoco_eval_state(
                 env,
                 mj_data,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 import math
 from typing import TYPE_CHECKING, Literal
@@ -231,6 +232,12 @@ class BelloModel:
     default_ctrl: np.ndarray
     root_qpos_adr: int
     root_qvel_adr: int
+
+    @cached_property
+    def target_limits(self):
+        from bello_mujoco.models.target_limits import model_target_limits
+
+        return model_target_limits(self)
 
     @property
     def actuator_coordinate_names(self) -> tuple[str, ...]:

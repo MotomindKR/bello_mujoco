@@ -37,6 +37,30 @@ inventory, coordinate coverage, nominal targets/gains, IMU frames, group state,
 and telemetry freshness without acquiring control or writing motor targets.
 Use [Lima/vCAN](macos_vcan.md) for commissioning, not physical CAN.
 
+## Target limits
+
+The runner constrains every HOLD, RUN and live-tracking target against both motor
+and URDF joint position bounds. Coupled motors move together: an unsafe request is
+shortened along the line from the feasible nominal pose, then from the previous
+accepted target to respect the hardware description's maximum position step.
+Unrelated motors are not slowed. This is a hard envelope, not action smoothing.
+Hardwared independently rejects motor, joint and step violations; it never
+silently modifies an accepted command. Nonfinite requests fail.
+
+Bundles carry exact URDF joint bounds, the motor-to-joint transform, motor bounds
+and `position_step_limits` from the pinned hardware description. Live hardware
+motor bounds can only tighten the bundle envelope. A stricter local hardwared
+step setting can still reject a request and requires a matching export.
+The ONNX `motor_target` output is a proposal; the runner applies the final envelope
+after live upper-body following. Training and CPU evaluation use the same
+connected-coordinate limiting rule. Older trained weights have not been trained
+with this rule and require recommissioning even when packaged for the new runner.
+
+JSONL `command.motor_target` records the submitted target;
+`command.requested_motor_target` records the proposal. `target_limited` events
+and periodic warnings report intervention; `command_rejected` events retain
+the failed request. Repeated limiting is a diagnostic, not proof of stability.
+
 For local settings, copy the hardware YAML to ignored `outputs/` and point
 `--hardware-config` at that file. Keep the tracked checkout clean. In Lima,
 set `control.remote.endpoint` to `http://host.lima.internal:50054` for the native

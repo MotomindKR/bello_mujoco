@@ -189,16 +189,53 @@ async fn send(
     policy: &Locomotion,
     target: &[f64],
     config: &Config,
-) -> Result<()> {
+    targets: &mut CommandTargets,
+    log: &mut Option<File>,
+) -> Result<crate::target_limits::LimitedTarget> {
+    let command = targets.limits.constrain(target, &targets.previous)?;
     let frames = controls
         .iter()
-        .map(|c| frame(c.group(), policy, target, config.gain_scale))
+        .map(|c| frame(c.group(), policy, &command.motor_target, config.gain_scale))
         .collect::<Result<Vec<_>>>()?;
     let results = join_all(controls.iter_mut().zip(frames).map(|(c, f)| c.send(f))).await;
     for result in results {
-        result?;
+        if let Err(error) = result {
+            if let Some(log) = log {
+                serde_json::to_writer(
+                    &mut *log,
+                    &serde_json::json!({"event": "command_rejected", "command": command, "error": error.to_string()}),
+                )?;
+                log.write_all(b"\n")?;
+                log.flush()?;
+            }
+            return Err(error.into());
+        }
     }
-    Ok(())
+    targets.previous.clone_from(&command.motor_target);
+    if command.limited {
+        targets.limited_count += 1;
+        if targets.limited_count == 1 || targets.limited_count.is_multiple_of(50) {
+            eprintln!(
+                "Constrained motor/joint/step targets in {} commands; inspect policy log before commissioning.",
+                targets.limited_count
+            );
+        }
+        if let Some(log) = log {
+            serde_json::to_writer(
+                &mut *log,
+                &serde_json::json!({"event": "target_limited", "command": command, "limited_count": targets.limited_count}),
+            )?;
+            log.write_all(b"\n")?;
+            log.flush()?;
+        }
+    }
+    Ok(command)
+}
+
+struct CommandTargets {
+    limits: crate::target_limits::TargetLimits,
+    previous: Vec<f64>,
+    limited_count: u64,
 }
 
 async fn pace(deadline: &mut tokio::time::Instant, period: Duration, lag: Duration) -> Result<()> {
@@ -253,6 +290,24 @@ pub async fn run(
         .map(|p| OpenOptions::new().write(true).create_new(true).open(p))
         .transpose()?;
     let preflight = hardware.feedback(proto::GroupState::Idle).await?;
+    let mut limits = policy.policy.target_limits.clone();
+    for group in &hardware.groups {
+        for motor in group.motors() {
+            let index = policy
+                .policy
+                .metadata
+                .coordinates
+                .iter()
+                .position(|c| c == motor.coordinate())
+                .context("missing hardware coordinate")?;
+            limits.restrict_motor(
+                index,
+                motor.limits().position_min(),
+                motor.limits().position_max(),
+            )?;
+        }
+    }
+    limits.validate(&preflight.motor_position)?;
     if let Some(motion) = &motion {
         motion.check_feedback(&preflight)?;
     }
@@ -270,6 +325,12 @@ pub async fn run(
             motion.check_feedback(&initial)?;
         }
         nominal(&policy, &initial, &config)?;
+        limits.validate(&initial.motor_position)?;
+        let mut targets = CommandTargets {
+            limits,
+            previous: initial.motor_position.clone(),
+            limited_count: 0,
+        };
         for group in &hardware.groups {
             let options = ControlOptions::new(&config.client_name)
                 .command_validity(Duration::from_secs_f64(config.command_validity_seconds))
@@ -327,7 +388,15 @@ pub async fn run(
                 .zip(&target)
                 .map(|(a, b)| a + step as f64 / steps as f64 * (b - a))
                 .collect();
-            send(&mut controls, &policy, &ramp, &config).await?;
+            send(
+                &mut controls,
+                &policy,
+                &ramp,
+                &config,
+                &mut targets,
+                &mut log,
+            )
+            .await?;
             pace(&mut deadline, period, lag).await?;
         }
         operator.prompt(
@@ -340,7 +409,15 @@ pub async fn run(
                 motion.check_feedback(&sample)?;
             }
             nominal(&policy, &sample, &config)?;
-            send(&mut controls, &policy, &target, &config).await?;
+            send(
+                &mut controls,
+                &policy,
+                &target,
+                &config,
+                &mut targets,
+                &mut log,
+            )
+            .await?;
             if let Some(line) = operator.line()? {
                 ensure!(line == "RUN", "expected exact RUN");
                 break;
@@ -383,12 +460,20 @@ pub async fn run(
                     active_period = step.period;
                 }
                 let target: Vec<f64> = step.target.iter().map(|v| *v as f64).collect();
-                send(&mut controls, &policy, &target, &config).await?;
-                previous_target = step.target;
+                let command = send(
+                    &mut controls,
+                    &policy,
+                    &target,
+                    &config,
+                    &mut targets,
+                    &mut log,
+                )
+                .await?;
+                previous_target = command.motor_target.iter().map(|v| *v as f32).collect();
                 if let Some(log) = &mut log {
                     serde_json::to_writer(
                         &mut *log,
-                        &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "motion": step.log}),
+                        &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "motion": step.log, "command": command}),
                     )?;
                     log.write_all(b"\n")?;
                     log.flush()?;
@@ -409,11 +494,19 @@ pub async fn run(
                 false
             };
             let target: Vec<f64> = step.motor_target.iter().map(|v| *v as f64).collect();
-            send(&mut controls, &policy, &target, &config).await?;
+            let command = send(
+                &mut controls,
+                &policy,
+                &target,
+                &config,
+                &mut targets,
+                &mut log,
+            )
+            .await?;
             if let Some(log) = &mut log {
                 serde_json::to_writer(
                     &mut *log,
-                    &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "policy": step, "following_live": following_live}),
+                    &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "policy": step, "following_live": following_live, "command": command}),
                 )?;
                 log.write_all(b"\n")?;
                 log.flush()?;

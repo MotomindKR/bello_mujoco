@@ -341,6 +341,7 @@ def bundle(
         joint_names=["first", "held", "last"],
         joint_limits=[[-3, 3]] * 3,
         motor_limits=[[-3, 3]] * 3,
+        position_step_limits=[2.0] * 3,
         default_joint_position=[0.2, -0.3, 0.4],
         policy_from_hardware=np.eye(3).tolist(),
         left_axis=[0, 1],
@@ -399,6 +400,7 @@ def bundle(
         "outage",
         "bad_reference",
         "remote_absent",
+        "limited",
     ],
 )
 def test_native_operator_lifecycle_and_failure_cleanup(
@@ -408,7 +410,20 @@ def test_native_operator_lifecycle_and_failure_cleanup(
     fake = SyntheticHardware(hardware_proto)
     server, pool, endpoint = start_services(fake)
     policy = tmp_path / "policy.zip"
-    policy.write_bytes(bundle(source))
+    limits = (
+        dict(
+            joint_from_motor=[[0.5, 0.5, 0], [-0.5, 0.5, 0], [0, 0, 1]],
+            joint_limits=[[-0.4, 0.6], [-0.3, 0.5], [-1, 2]],
+            position_step_limits=[0.1, 0.2, 0.3],
+        )
+        if failure == "limited"
+        else None
+    )
+    policy.write_bytes(
+        bundle(
+            source, metadata_updates=limits, target=[1.5, 1.5, 0.4] if limits else None
+        )
+    )
     settings = yaml.safe_load(
         (
             Path(__file__).parents[1] / "rust/bello-policy/config/hardware.yaml"
@@ -416,6 +431,8 @@ def test_native_operator_lifecycle_and_failure_cleanup(
     )
     settings.update(endpoint=endpoint, groups=["limb"])
     settings["control"].update(ramp_seconds=0.08, max_duration_seconds=0.15)
+    log_path = tmp_path / "policy.jsonl"
+    settings["control"]["policy_log_path"] = str(log_path)
     settings["control"]["remote"]["endpoint"] = endpoint
     if failure == "remote_absent":
         settings["control"]["remote"]["endpoint"] = "http://127.0.0.1:0"
@@ -493,9 +510,26 @@ def test_native_operator_lifecycle_and_failure_cleanup(
         os.write(master, b"IDLE\n")
         code = process.wait(timeout=3)
         assert (code == 0) == (
-            failure in (None, "follow", "outage", "remote_absent")
+            failure in (None, "follow", "outage", "remote_absent", "limited")
         ), transcript.decode(errors="replace")
         assert fake.calls[-2:] == ["disable", "release"]
+        log = [json.loads(line) for line in log_path.read_text().splitlines()]
+        if failure == "reject":
+            assert any(
+                row.get("event") == "command_rejected"
+                and "requested_motor_target" in row["command"]
+                for row in log
+            )
+        if failure == "limited":
+            targets = np.asarray(fake.targets)
+            joint = targets @ np.asarray(limits["joint_from_motor"]).T
+            assert np.all(joint >= np.asarray(limits["joint_limits"])[:, 0])
+            assert np.all(joint <= np.asarray(limits["joint_limits"])[:, 1])
+            assert np.all(
+                np.abs(np.diff(targets, axis=0))
+                <= np.asarray(limits["position_step_limits"]) + 1e-7
+            )
+            assert any(row.get("event") == "target_limited" for row in log)
         if failure in ("follow", "outage"):
             targets = np.asarray(fake.targets)
             np.testing.assert_allclose(targets[:, 0], 0.2)

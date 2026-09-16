@@ -29,7 +29,11 @@ from bello_mujoco.envs.geometry import (
 )
 from bello_mujoco.envs.contacts import contact_forces, debounce_contact
 from bello_mujoco.envs.randomization import randomize_spawn, apply_push_batch
-from bello_mujoco.envs.actions import bounded_motor_target, motor_default
+from bello_mujoco.envs.actions import (
+    bounded_motor_target,
+    motor_default,
+    project_motor_target,
+)
 from bello_mujoco.envs.rewards import (
     CommandConfig,
     RewardConfig,
@@ -87,6 +91,7 @@ class BelloLocomotionEnv:
             physics_dt=float(self.model.mj_model.opt.timestep),
         )
         self._validate_model_metadata()
+        _ = self.model.target_limits
         if self.reward_config.enabled("stand_motor_continuous_torque_excess"):
             _ = self._motor_continuous_torque
         if self.reward_config.gait.phase_shaped_clearance or any(
@@ -920,7 +925,9 @@ class BelloLocomotionEnv:
             self.action_clip,
         )
         saturation = jnp.mean((jnp.abs(action) > self.action_clip).astype(jnp.float32))
-        return ctrl, saturation
+        return project_motor_target(
+            ctrl, jnp.asarray(self.model.default_ctrl), self.model.target_limits
+        ), saturation
 
     def _joint_angle_offset_batch(self, batch_size: int) -> jax.Array:
         offset = jnp.asarray(self.model.joint_angle_offset, dtype=jnp.float32)

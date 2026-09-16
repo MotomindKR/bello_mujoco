@@ -259,7 +259,10 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
             transcript.decode(errors="replace")
         )
         assert fake.calls[-2:] == ["disable", "release"]
-        rows = [json.loads(line)["motion"] for line in log.read_text().splitlines()]
+        events = [json.loads(line) for line in log.read_text().splitlines()]
+        rows = [row["motion"] for row in events if "motion" in row]
+        if failure == "reject":
+            assert any(row.get("event") == "command_rejected" for row in events)
         phases = [row["phase"] for row in rows]
         assert "transition_to_motion" in phases
         targets = np.asarray([row["motor_target"] for row in rows])

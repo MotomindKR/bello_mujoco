@@ -23,9 +23,7 @@ def test_asymmetric_motor_mapping_is_batched_and_preserves_held_controls():
 
 
 @pytest.mark.parametrize("fixture", ["bello_asset", "bello_mini_asset"])
-def test_policy_controls_motors_independently_and_keeps_physical_tendons(
-    request, fixture
-):
+def test_policy_limits_motor_requests_and_keeps_physical_tendons(request, fixture):
     env = BelloLocomotionEnv.from_compiled(
         request.getfixturevalue(fixture), load_mjx=False
     )
@@ -39,9 +37,11 @@ def test_policy_controls_motors_independently_and_keeps_physical_tendons(
         ctrl = np.asarray(env.action_to_ctrl(action))
         changed = np.flatnonzero(np.abs(ctrl - model.default_ctrl) > 1e-6)
         np.testing.assert_array_equal(changed, [motor_id])
-        assert ctrl[motor_id] == pytest.approx(
-            0.5 * (model.default_ctrl[motor_id] + limits[motor_id, 1])
-        )
+        requested = 0.5 * (model.default_ctrl[motor_id] + limits[motor_id, 1])
+        assert model.default_ctrl[motor_id] <= ctrl[motor_id] <= requested + 1e-7
+        mapped = model.target_limits.matrix @ ctrl
+        assert np.all(mapped >= model.target_limits.bounds[:, 0] - 1e-7)
+        assert np.all(mapped <= model.target_limits.bounds[:, 1] + 1e-7)
         np.testing.assert_allclose(mujoco_action_to_ctrl(env, action), ctrl)
 
     data = mujoco.MjData(model.mj_model)
@@ -57,23 +57,20 @@ def test_policy_controls_motors_independently_and_keeps_physical_tendons(
     )
 
 
-def test_randomized_motor_neutral_preserves_motor_endpoints(bello_mini_asset):
+def test_randomized_motor_neutral_preserves_feasible_envelope(bello_mini_asset):
     env = BelloLocomotionEnv.from_compiled(bello_mini_asset, load_mjx=False)
     offsets = jnp.asarray(
         np.random.default_rng(3).uniform(-0.02, 0.02, (4, env.model.mj_model.nu)),
         dtype=jnp.float32,
     )
     limits = env.model.mj_model.actuator_ctrlrange
-    policy = env.model.policy_ctrl_indices
-    for sign, column in ((-1.0, 0), (1.0, 1)):
+    for sign in (-1.0, 1.0):
         targets = jax.jit(jax.vmap(env.action_to_ctrl))(
             jnp.full((4, env.action_size), sign), offsets
         )
-        np.testing.assert_allclose(
-            targets[:, policy],
-            np.broadcast_to(limits[policy, column], (4, env.action_size)),
-            atol=1e-6,
-        )
+        mapped = np.asarray(targets) @ env.model.target_limits.matrix.T
+        assert np.all(mapped >= env.model.target_limits.bounds[:, 0] - 1e-6)
+        assert np.all(mapped <= env.model.target_limits.bounds[:, 1] + 1e-6)
     targets = jax.vmap(env.action_to_ctrl)(jnp.zeros((4, env.action_size)), offsets)
     expected = jax.vmap(lambda offset: motor_default(env.model, offset))(offsets)
     np.testing.assert_allclose(

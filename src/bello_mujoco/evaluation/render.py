@@ -25,6 +25,7 @@ from bello_mujoco.envs.foot_geometry import (
     heightfield_surface_normal,
 )
 from bello_mujoco.envs.observations import noisy_feedback
+from bello_mujoco.envs.actions import limit_motor_step
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.locomotion_state import BelloState
 from bello_mujoco.envs.gait import gait_frequency, resolve_gait_command_transition
@@ -301,6 +302,11 @@ def render_policy_rollout(
                 stats["push_applied"] = 1
             previous_ctrl = mj_data.ctrl.copy()
             requested_ctrl = mujoco_action_to_ctrl(env, action)
+            requested_ctrl = limit_motor_step(
+                jnp.asarray(requested_ctrl),
+                jnp.asarray(previous_ctrl),
+                env.model.target_limits,
+            )
             for substep in range(env.decimation):
                 mj_data.ctrl[:] = env.delayed_ctrl(
                     previous_ctrl, requested_ctrl, substep

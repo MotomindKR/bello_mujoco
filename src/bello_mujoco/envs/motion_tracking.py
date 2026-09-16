@@ -18,7 +18,12 @@ import numpy as np
 from bello_mujoco.actuators import ActuatorConfig
 from bello_mujoco.models.compiler import ModelConfig, CompiledRobot
 from bello_mujoco.contracts import CONTROL_DECIMATION, ActionLayout, ObservationLayout
-from bello_mujoco.envs.actions import bounded_motor_target, motor_default
+from bello_mujoco.envs.actions import (
+    bounded_motor_target,
+    motor_default,
+    project_motor_target,
+    limit_motor_step,
+)
 from bello_mujoco.envs.geometry import (
     pair_contains_each,
     quat_rotate,
@@ -167,6 +172,7 @@ class BelloMotionTrackingEnv:
     config: MotionTrackingEnvConfig = MotionTrackingEnvConfig()
 
     def __post_init__(self) -> None:
+        _ = self.model.target_limits
         if self.model.actuator_joint_names != self.motion.joint_names:
             raise ValueError("model and motion actuator orders do not match")
         actuator_count = self.model.mj_model.nu
@@ -1043,8 +1049,11 @@ class BelloMotionTrackingEnv:
             jnp.asarray(logical_target),
             precision=jax.lax.Precision.HIGHEST,
         )
-        limits = jnp.asarray(self.model.mj_model.actuator_ctrlrange)
-        return jnp.clip(requested_ctrl, limits[:, 0], limits[:, 1])
+        return project_motor_target(
+            requested_ctrl,
+            jnp.asarray(self.model.default_ctrl),
+            self.model.target_limits,
+        )
 
     @property
     def beyondmimic_action_scale(self) -> jax.Array:
@@ -1077,8 +1086,14 @@ class BelloMotionTrackingEnv:
         limits = jnp.asarray(self.model.mj_model.actuator_ctrlrange)
         if self.config.formulation == "beyondmimic":
             target = default.at[policy].add(self.beyondmimic_action_scale * action)
-            return jnp.clip(target, limits[:, 0], limits[:, 1])
-        return bounded_motor_target(action, default, limits, policy, self.action_clip)
+            target = jnp.clip(target, limits[:, 0], limits[:, 1])
+        else:
+            target = bounded_motor_target(
+                action, default, limits, policy, self.action_clip
+            )
+        return project_motor_target(
+            target, jnp.asarray(self.model.default_ctrl), self.model.target_limits
+        )
 
     def _initial_ctrl(self, joint_default_offset: jax.Array) -> jax.Array:
         logical_target = jnp.asarray(self.model.default_joint_target)
@@ -1089,7 +1104,11 @@ class BelloMotionTrackingEnv:
     def action_target(self, state: MotionTrackingState, action: jax.Array) -> jax.Array:
         """Convert one normalized policy action into native actuator targets."""
 
-        return self.action_to_ctrl(action, state.joint_default_offset)
+        return limit_motor_step(
+            self.action_to_ctrl(action, state.joint_default_offset),
+            state.data.ctrl,
+            self.model.target_limits,
+        )
 
     def _relative_body_targets(
         self, state: MotionTrackingState, reference: MotionSample
