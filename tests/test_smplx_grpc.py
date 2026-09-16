@@ -166,6 +166,13 @@ def test_direct_body_uses_shared_outage_barriers_without_smplx_calibration(serve
         return message
 
     with XRobotGrpcStream(PicoGrpcConfig(f"127.0.0.1:{server.port}")) as stream:
+        stale = raw(10)
+        stale.source_timestamp_ns = 0
+        stale.packet_age_seconds = 53_000
+        stale.xrobot_body.valid = False
+        server.packets.put(stale)
+        with pytest.raises(ReferenceUnavailable):
+            read(stream)
         server.packets.put(raw(10))
         assert read(stream).sequence == 10
         server.packets.put(raw(10))
@@ -176,6 +183,8 @@ def test_direct_body_uses_shared_outage_barriers_without_smplx_calibration(serve
         assert read(stream).sequence == 1
         invalid = raw(2)
         invalid.xrobot_body.valid = False
+        invalid.ClearField("source_timestamp_ns")
+        invalid.ClearField("device_id")
         server.packets.put(invalid)
         with pytest.raises(ReferenceUnavailable):
             read(stream, after=1)
