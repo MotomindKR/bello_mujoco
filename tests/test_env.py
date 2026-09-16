@@ -617,7 +617,11 @@ def test_actor_feedback_low_pass_matches_hardware_first_order_response(
         )
     )
     timestep = env.control_timestep
-    filtered = env._low_pass_actor_feedback(previous, measured, timestep)
+    from bello_mujoco.envs.observations import filter_feedback
+
+    filtered = filter_feedback(
+        previous, measured, timestep, env.config.observation_low_pass_filter
+    )
     acceleration, angular_velocity, gravity, position, velocity = unpack_feedback(
         filtered
     )

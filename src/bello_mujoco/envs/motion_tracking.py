@@ -10,6 +10,7 @@ from typing import Literal
 import chex
 import jax
 import jax.numpy as jnp
+from bello_mujoco.envs.observations import sample_feedback_delay
 import mujoco
 from mujoco import mjx
 import numpy as np
@@ -1175,16 +1176,7 @@ class BelloMotionTrackingEnv:
         return jnp.concatenate((self._actor_feedback(data)[None, :], history[:-1]))
 
     def _sample_observation_delay(self, rng: jax.Array | None) -> jax.Array:
-        config = self.config.observation_latency
-        if not config.enabled or rng is None:
-            return jnp.asarray(0, dtype=jnp.int32)
-        return jax.random.randint(
-            rng,
-            (),
-            minval=config.delay_steps[0],
-            maxval=config.delay_steps[1] + 1,
-            dtype=jnp.int32,
-        )
+        return sample_feedback_delay(self.config.observation_latency, rng)
 
     def _sample_reference_time(
         self, rng: jax.Array, sampling_failure_ema: jax.Array

@@ -20,7 +20,11 @@ from bello_mujoco.evaluation.video import (
     open_rollout_video_resources,
     write_video_frame,
 )
-from bello_mujoco.envs.foot_geometry import sole_support_positions
+from bello_mujoco.envs.foot_geometry import (
+    sole_support_positions,
+    heightfield_surface_normal,
+)
+from bello_mujoco.envs.observations import noisy_feedback
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.locomotion_state import BelloState
 from bello_mujoco.envs.gait import gait_frequency, resolve_gait_command_transition
@@ -138,7 +142,9 @@ class NativeObservationPipeline:
             if self._history is None:
                 feedback = env._actor_feedback(state)
                 if env.config.observation_low_pass_filter.noise_before_filter:
-                    feedback = env._noisy_actor_feedback(feedback, feedback_key)
+                    feedback = noisy_feedback(
+                        feedback, env.config.observation.noise, feedback_key
+                    )
                 self._history = jnp.repeat(
                     feedback[None, :], env.maximum_observation_delay_steps + 1, axis=0
                 )
@@ -973,24 +979,10 @@ def mujoco_terrain_surface_normal(
         return np.broadcast_to(terrain_up, output_shape)
 
     terrain_geom_id = int(env.model.terrain_geom_ids[0])
-    epsilon = np.float32(1.0e-3)
-    x_offset = np.asarray([epsilon, 0.0], dtype=np.float32)
-    y_offset = np.asarray([0.0, epsilon], dtype=np.float32)
-    gradient_x = (
-        terrain_surface_height(env.model.mj_model, terrain_geom_id, world_xy + x_offset)
-        - terrain_surface_height(
-            env.model.mj_model, terrain_geom_id, world_xy - x_offset
-        )
-    ) / (2.0 * epsilon)
-    gradient_y = (
-        terrain_surface_height(env.model.mj_model, terrain_geom_id, world_xy + y_offset)
-        - terrain_surface_height(
-            env.model.mj_model, terrain_geom_id, world_xy - y_offset
-        )
-    ) / (2.0 * epsilon)
-    normal = np.stack([-gradient_x, -gradient_y, np.ones_like(gradient_x)], axis=-1)
-    return normal / np.maximum(
-        np.linalg.norm(normal, axis=-1, keepdims=True), np.float32(1.0e-8)
+    return heightfield_surface_normal(
+        world_xy,
+        lambda xy: terrain_surface_height(env.model.mj_model, terrain_geom_id, xy),
+        array_module=np,
     )
 
 

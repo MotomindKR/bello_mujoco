@@ -18,19 +18,16 @@ from bello_mujoco.models.ratings import motor_continuous_torque
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.observations import (
     build_observation,
-    noisy_feedback,
-    filter_feedback,
+    advance_feedback_history,
+    sample_feedback_delay,
 )
 from bello_mujoco.envs.geometry import (
     quat_rotate_inverse,
     quat_rotate,
     yaw_quat,
     projected_gravity_tilt_angle,
-    pair_contains,
-    pair_contains_each,
-    foot_terrain_contact_membership,
-    pair_both_contained,
 )
+from bello_mujoco.envs.contacts import contact_forces, debounce_contact
 from bello_mujoco.envs.randomization import randomize_spawn, apply_push_batch
 from bello_mujoco.envs.actions import bounded_motor_target, motor_default
 from bello_mujoco.envs.rewards import (
@@ -41,7 +38,11 @@ from bello_mujoco.envs.rewards import (
     command_is_standing,
     compute_locomotion_reward,
 )
-from bello_mujoco.envs.foot_geometry import sole_geometry, sole_support_positions
+from bello_mujoco.envs.foot_geometry import (
+    sole_geometry,
+    sole_support_positions,
+    heightfield_surface_normal,
+)
 from bello_mujoco.sim import BelloModel, WarpConfig, load_model, load_compiled_model
 from bello_mujoco.terrain import TerrainConfig, terrain_surface_height_jax
 
@@ -856,33 +857,17 @@ class BelloLocomotionEnv:
         state: BelloState,
         rng: jax.Array | None = None,
     ) -> jax.Array:
-        measured = self._actor_feedback(state)
-        if self.config.observation_low_pass_filter.noise_before_filter:
-            measured = self._noisy_actor_feedback(measured, rng)
-        feedback = self._low_pass_actor_feedback(
-            history[0], measured, self.control_timestep
-        )
-        return jnp.concatenate((feedback[None, :], history[:-1]))
-
-    def _noisy_actor_feedback(self, measured, rng):
-        return noisy_feedback(measured, self.config.observation.noise, rng)
-
-    def _low_pass_actor_feedback(self, previous, measured, timestep):
-        return filter_feedback(
-            previous, measured, timestep, self.config.observation_low_pass_filter
+        return advance_feedback_history(
+            history,
+            self._actor_feedback(state),
+            rng,
+            self.control_timestep,
+            self.config.observation.noise,
+            self.config.observation_low_pass_filter,
         )
 
     def _sample_observation_delay(self, rng: jax.Array | None) -> jax.Array:
-        config = self.config.observation_latency
-        if not config.enabled or rng is None:
-            return jnp.asarray(0, dtype=jnp.int32)
-        return jax.random.randint(
-            rng,
-            (),
-            minval=config.delay_steps[0],
-            maxval=config.delay_steps[1] + 1,
-            dtype=jnp.int32,
-        )
+        return sample_feedback_delay(self.config.observation_latency, rng)
 
     def action_to_ctrl(
         self,
@@ -1508,8 +1493,8 @@ class BelloLocomotionEnv:
                 ),
                 joint_force=self._leg_joint_force(next_state),
                 robot_weight=self._robot_weight(),
-                joint_limit_low=self._actuator_joint_limit_low(),
-                joint_limit_high=self._actuator_joint_limit_high(),
+                joint_limit_low=self._actuator_joint_limits[:, 0],
+                joint_limit_high=self._actuator_joint_limits[:, 1],
                 policy_joint_indices=jnp.asarray(self.model.policy_ctrl_indices),
                 foot_contact=foot_contact,
                 foot_touchdown=foot_touchdown,
@@ -1585,34 +1570,14 @@ class BelloLocomotionEnv:
         reward = sum(sanitized.values(), jnp.zeros_like(reward))
         return reward, sanitized
 
-    def debounce_foot_contact(
-        self, state: BelloState, raw_foot_contact: jax.Array, done: jax.Array
-    ) -> tuple[jax.Array, jax.Array]:
-        raw_contact = raw_foot_contact.astype(bool)
-        previous_contact = state.last_foot_contact.astype(bool)
-        changed = raw_contact != previous_contact
-        on_threshold = jnp.asarray(
-            self.config.contact.foot_contact_on_seconds, dtype=jnp.float32
-        )
-        off_threshold = jnp.asarray(
-            self.config.contact.foot_contact_off_seconds, dtype=jnp.float32
-        )
-        threshold = jnp.where(raw_contact, on_threshold, off_threshold)
-        next_debounce_time = jnp.where(
-            changed,
-            state.foot_contact_debounce_time + self.control_timestep,
-            jnp.zeros_like(state.foot_contact_debounce_time),
-        )
-        accepted = changed & (next_debounce_time + 1e-6 >= threshold)
-        filtered_contact = jnp.where(accepted, raw_contact, previous_contact)
-        next_debounce_time = jnp.where(
-            accepted | ~changed,
-            jnp.zeros_like(next_debounce_time),
-            next_debounce_time,
-        )
-        return (
-            filtered_contact.astype(jnp.float32),
-            jnp.where(done, jnp.zeros_like(next_debounce_time), next_debounce_time),
+    def debounce_foot_contact(self, state: BelloState, raw_foot_contact, done):
+        return debounce_contact(
+            raw_foot_contact,
+            state.last_foot_contact,
+            state.foot_contact_debounce_time,
+            done,
+            self.config.contact,
+            self.control_timestep,
         )
 
     def _reward_link(self, term_name: str) -> str:
@@ -1647,108 +1612,17 @@ class BelloLocomotionEnv:
             return term.link
         return self.root_link_name
 
-    def _contact_terms(
-        self, state: BelloState, world_id: jax.Array
-    ) -> tuple[
-        jax.Array,
-        jax.Array,
-        jax.Array,
-        jax.Array,
-        jax.Array,
-        jax.Array,
-    ]:
-        foot_body_ids = jnp.asarray(self.model.foot_body_ids)
-        foot_count = foot_body_ids.shape[0]
-        if (
-            self.model.terrain_geom_ids.size == 0
-            and self.model.robot_geom_ids.size == 0
-        ):
-            return (
-                jnp.zeros(foot_count, dtype=jnp.float32),
-                jnp.zeros(foot_count, dtype=jnp.float32),
-                self._foot_world_linear_velocity(state),
-                self._foot_angular_speed(state),
-                jnp.asarray(0.0, dtype=jnp.float32),
-                jnp.asarray(0.0, dtype=jnp.float32),
-            )
-
-        impl = state.data._impl
-        contact_geom = jnp.asarray(impl.contact__geom, dtype=jnp.int32)
-        contact_geom = jnp.clip(contact_geom, 0, self.model.mj_model.ngeom - 1)
-        nacon = jnp.ravel(jnp.asarray(impl.nacon, dtype=jnp.int32))[0]
-        contact_worldid = jnp.asarray(impl.contact__worldid, dtype=jnp.int32)
-        active = (jnp.arange(contact_geom.shape[0], dtype=jnp.int32) < nacon) & (
-            contact_worldid == jnp.asarray(world_id, dtype=jnp.int32)
+    def _contact_terms(self, state: BelloState, world_id: jax.Array):
+        contact, force, undesired, collision = contact_forces(
+            self.model, self.config.contact, state.data, world_id
         )
-        contact_efc_address = jnp.asarray(impl.contact__efc_address, dtype=jnp.int32)
-        normal_efc_address = contact_efc_address[:, 0]
-        efc_force = jnp.asarray(impl.efc__force, dtype=jnp.float32)
-        clipped_address = jnp.clip(normal_efc_address, 0, efc_force.shape[0] - 1)
-        normal_force = jnp.where(
-            normal_efc_address >= 0,
-            jnp.abs(efc_force[clipped_address]),
-            jnp.zeros_like(normal_efc_address, dtype=jnp.float32),
-        )
-        foot_forceful_contact = normal_force > jnp.asarray(
-            self.config.contact.foot_contact_force_threshold, dtype=jnp.float32
-        )
-        undesired_forceful_contact = normal_force > jnp.asarray(
-            self.config.contact.undesired_contact_force_threshold, dtype=jnp.float32
-        )
-        self_collision_forceful_contact = normal_force > jnp.asarray(
-            self.config.contact.self_collision_force_threshold, dtype=jnp.float32
-        )
-
-        geom_body_ids = jnp.asarray(self.model.geom_body_ids)
-        contact_body = geom_body_ids[contact_geom]
-        terrain_contact = pair_contains(contact_geom, self.model.terrain_geom_ids)
-        self_collision_slot = (
-            active
-            & self_collision_forceful_contact
-            & pair_both_contained(contact_geom, self.model.robot_geom_ids)
-        )
-        foot_membership = foot_terrain_contact_membership(
-            contact_geom,
-            self.model.geom_body_ids,
-            self.model.foot_body_ids,
-            self.model.foot_geom_ids,
-            self.model.terrain_geom_ids,
-        )
-        foot_terrain_contact_slot = active & jnp.any(foot_membership, axis=1)
-        foot_contact_slot = foot_terrain_contact_slot & foot_forceful_contact
-        foot_contact = jnp.any(
-            foot_contact_slot[:, None] & foot_membership,
-            axis=0,
-        ).astype(jnp.float32)
-        foot_normal_force = jnp.sum(
-            jnp.where(
-                foot_terrain_contact_slot[:, None] & foot_membership,
-                normal_force[:, None],
-                0.0,
-            ),
-            axis=0,
-        )
-        undesired_contact_slot = (
-            active
-            & terrain_contact
-            & undesired_forceful_contact
-            & pair_contains(contact_geom, self.model.nonfoot_robot_geom_ids)
-        )
-        undesired_contact = jnp.sum(
-            jnp.any(
-                undesired_contact_slot[:, None]
-                & pair_contains_each(contact_body, self.model.nonfoot_robot_body_ids),
-                axis=0,
-            ).astype(jnp.float32)
-        )
-        self_collision = jnp.sum(self_collision_slot.astype(jnp.float32))
         return (
-            foot_contact,
-            foot_normal_force,
+            contact,
+            force,
             self._foot_world_linear_velocity(state),
             self._foot_angular_speed(state),
-            undesired_contact,
-            self_collision,
+            undesired,
+            collision,
         )
 
     def _foot_height(
@@ -1870,22 +1744,10 @@ class BelloLocomotionEnv:
             )
             return jnp.broadcast_to(terrain_up, output_shape)
 
-        epsilon = jnp.asarray(1.0e-3, dtype=jnp.float32)
-        x_offset = jnp.asarray([1.0e-3, 0.0], dtype=jnp.float32)
-        y_offset = jnp.asarray([0.0, 1.0e-3], dtype=jnp.float32)
-        gradient_x = (
-            self._terrain_height(world_xy + x_offset, world_id)
-            - self._terrain_height(world_xy - x_offset, world_id)
-        ) / (2.0 * epsilon)
-        gradient_y = (
-            self._terrain_height(world_xy + y_offset, world_id)
-            - self._terrain_height(world_xy - y_offset, world_id)
-        ) / (2.0 * epsilon)
-        normal = jnp.stack(
-            [-gradient_x, -gradient_y, jnp.ones_like(gradient_x)], axis=-1
-        )
-        return normal / jnp.maximum(
-            jnp.linalg.norm(normal, axis=-1, keepdims=True), 1.0e-8
+        return heightfield_surface_normal(
+            world_xy,
+            lambda xy: self._terrain_height(xy, world_id),
+            array_module=jnp,
         )
 
     def _foot_world_linear_velocity(self, state: BelloState) -> jax.Array:
@@ -1926,13 +1788,9 @@ class BelloLocomotionEnv:
         frame_delta = quat_rotate_inverse(frame_yaw, foot_delta)
         return jnp.abs(jnp.dot(frame_delta, self._locomotion_right_axis()))
 
-    def _actuator_joint_limit_low(self) -> jax.Array:
-        joint_ids = jnp.asarray(self.model.actuator_joint_ids)
-        return jnp.asarray(self.model.mj_model.jnt_range)[joint_ids, 0]
-
-    def _actuator_joint_limit_high(self) -> jax.Array:
-        joint_ids = jnp.asarray(self.model.actuator_joint_ids)
-        return jnp.asarray(self.model.mj_model.jnt_range)[joint_ids, 1]
+    @property
+    def _actuator_joint_limits(self) -> jax.Array:
+        return jnp.asarray(self.model.mj_model.jnt_range)[self.model.actuator_joint_ids]
 
 
 def require_index_range(name: str, indices: np.ndarray, upper_bound: int) -> None:

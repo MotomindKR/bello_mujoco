@@ -6,6 +6,22 @@ import mujoco
 import numpy as np
 
 
+def heightfield_surface_normal(world_xy, terrain_height, *, array_module):
+    """Finite-difference normals shared by NumPy evaluation and JAX rollouts."""
+    xp = array_module
+    epsilon = xp.asarray(1.0e-3, dtype=xp.float32)
+    offsets = xp.asarray([[1.0e-3, 0.0], [0.0, 1.0e-3]], dtype=xp.float32)
+    gradients = [
+        (terrain_height(world_xy + delta) - terrain_height(world_xy - delta))
+        / (2.0 * epsilon)
+        for delta in offsets
+    ]
+    normal = xp.stack(
+        [-gradients[0], -gradients[1], xp.ones_like(gradients[0])], axis=-1
+    )
+    return normal / xp.maximum(xp.linalg.norm(normal, axis=-1, keepdims=True), 1.0e-8)
+
+
 def sole_support_positions(
     *,
     geom_position,

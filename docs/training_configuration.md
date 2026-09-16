@@ -29,7 +29,10 @@ owning dataclass and YAML together, without aliases or parallel CLI defaults.
 
 - `gait.py`: cadence, directional start, command slew, delayed stop, standing blend.
 - `actions.py`: motor targets and calibration offsets.
-- `observations.py`: actor/critic assembly, noise, filtering.
+- `observations.py`: actor/critic assembly, noise, filtering, feedback history,
+  and shared delay sampling.
+- `contacts.py`: contact-force classification and contact debouncing.
+- `foot_geometry.py`: sole geometry, support points, and shared terrain normals.
 - `randomization.py`: spawn and pushes.
 - `rewards.py`: tracking, alignment, crossing, clearance, contact, force, smoothness.
 - `locomotion_state.py` and `locomotion_config.py`: rollout state and typed settings.

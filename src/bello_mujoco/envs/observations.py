@@ -57,6 +57,26 @@ def filter_feedback(
     return jnp.concatenate(filtered)
 
 
+def advance_feedback_history(history, measured, rng, timestep, noise, filtering):
+    """Pre-filter noise and retain newest-first feedback, without delaying commands."""
+    if filtering.noise_before_filter:
+        measured = noisy_feedback(measured, noise, rng)
+    feedback = filter_feedback(history[0], measured, timestep, filtering)
+    return jnp.concatenate((feedback[None, :], history[:-1]))
+
+
+def sample_feedback_delay(config, rng):
+    if not config.enabled or rng is None:
+        return jnp.asarray(0, dtype=jnp.int32)
+    return jax.random.randint(
+        rng,
+        (),
+        minval=config.delay_steps[0],
+        maxval=config.delay_steps[1] + 1,
+        dtype=jnp.int32,
+    )
+
+
 def build_observation(
     terms,
     gait_features,
