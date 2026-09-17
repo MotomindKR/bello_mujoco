@@ -699,6 +699,7 @@ def test_motion_preflight_exports_and_restores_before_training() -> None:
     ast.parse(block)
     assert "load_motion_policy_runtime(checkpoint, use_viewer_model=True)" in block
     assert "load_checkpoint_update(paths[0]) < 1" in block
+    assert 'directory.glob("smoke_*/final")' in block
     assert "render_motion_policy(" in block
     assert "export_checkpoint(ExportConfig(" in block
     assert script.index("motion_preflight_checkpoint_restored") < script.rindex(

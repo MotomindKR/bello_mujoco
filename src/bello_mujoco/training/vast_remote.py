@@ -316,7 +316,7 @@ from bello_mujoco.motion.runtime import load_motion_policy_runtime
 from bello_mujoco.training.checkpoint import load_checkpoint_update
 
 directory = Path(sys.argv[1])
-paths = list(directory.glob("smoke_*"))
+paths = list(directory.glob("smoke_*/final"))
 if len(paths) != 1 or load_checkpoint_update(paths[0]) < 1:
     raise RuntimeError("motion preflight did not save exactly one updated checkpoint")
 checkpoint = paths[0]
