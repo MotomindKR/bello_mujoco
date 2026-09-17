@@ -49,6 +49,7 @@ from bello_mujoco.envs.foot_geometry import (
     heightfield_surface_normal,
 )
 from bello_mujoco.sim import BelloModel, WarpConfig, load_model, load_compiled_model
+from bello_mujoco.envs.feedback import delayed_ctrl
 from bello_mujoco.terrain import TerrainConfig, terrain_surface_height_jax
 
 
@@ -741,11 +742,12 @@ class BelloLocomotionEnv:
         requested_ctrl: jax.Array | np.ndarray,
         substep: jax.Array | int,
     ) -> jax.Array:
-        delay_steps = round(
-            self.config.command_delay_seconds / float(self.model.mj_model.opt.timestep)
-        )
-        return jnp.where(
-            jnp.asarray(substep) < delay_steps, previous_ctrl, requested_ctrl
+        return delayed_ctrl(
+            previous_ctrl,
+            requested_ctrl,
+            substep,
+            delay_seconds=self.config.command_delay_seconds,
+            physics_dt=float(self.model.mj_model.opt.timestep),
         )
 
     def step(

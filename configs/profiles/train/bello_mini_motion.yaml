@@ -1,0 +1,48 @@
+# Shared BeyondMimic tracking recipe; Mini dynamics stay canonical, not G1-scaled.
+motion:
+  directory: motions/local
+  sequence: ""  # Supplied by motion_path, or read from the resume bundle.
+asset_config:
+  asset: bello_mini
+  target_total_mass_kg: null
+  enforce_policy_effort_limits: true
+  actuator_mode: policy
+  imu_config:
+    enabled: false
+    body_name: imu_link
+env_config:
+  formulation: beyondmimic_joint_limits
+  anchor_body_name: torso_link
+  command_delay_seconds: 0.01
+  simulation_physics:
+    timestep: 0.005
+  model_randomization:
+    enabled: true
+    seed: ${config.seed}
+    joint_origin_range: [-0.001, 0.001]
+    joint_angle_offset_range: [-0.02, 0.02]
+    joint_inertia_scale_range: [0.95, 1.05]
+    torso_mass_scale_range: [0.95, 1.05]
+    torso_com_offset_range: [-0.01, 0.01]
+    friction_range: [0.6, 1.2]
+    actuator_strength_range: [0.9, 1.1]
+  observation_low_pass_filter:
+    enabled: true
+    cutoff_hz: 10.0
+    noise_before_filter: true
+    residual_noise_scale: 0.1
+  observation_latency:
+    enabled: true
+    delay_steps: [0, 2]
+  push:
+    enabled: true
+    interval_seconds: [1.0, 3.0]
+checkpoint_config:
+  name: ${motion.sequence}_bello_mini_motion_seed${config.seed}
+wandb_config:
+  group: bello-mini-motion
+  run_name: ${motion.sequence}_bello_mini_motion_seed${config.seed}
+  tags: [bello-mini, beyondmimic, bounded-motion, sim-to-real]
+video_config:
+  steps: 3000
+  filename_prefix: ${motion.sequence}_bello_mini_motion

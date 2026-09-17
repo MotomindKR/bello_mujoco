@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Literal
 
@@ -90,9 +90,9 @@ class ActuatorConfig:
                     f"actuator config for joint {name!r} has nonfinite gains "
                     f"{config.gains}"
                 )
-            if (
-                config.soft_limit is not None
-                and config.soft_limit[0] >= config.soft_limit[1]
+            if config.soft_limit is not None and (
+                len(config.soft_limit) != 2
+                or config.soft_limit[0] >= config.soft_limit[1]
             ):
                 raise ValueError(
                     f"actuator config for joint {name!r} has invalid soft_limit "
@@ -105,6 +105,10 @@ class ActuatorConfig:
                     f"actuator config for joint {name!r} has nonfinite soft_limit "
                     f"{config.soft_limit}"
                 )
+            if config.soft_limit is not None and not (
+                config.soft_limit[0] <= config.default_pos <= config.soft_limit[1]
+            ):
+                raise ValueError(f"default_pos must fall within soft_limit: {name}")
             if config.effort_limit is not None and (
                 not math.isfinite(config.effort_limit) or config.effort_limit <= 0
             ):
@@ -113,6 +117,21 @@ class ActuatorConfig:
                     f"{config.effort_limit}; expected a positive finite value"
                 )
         object.__setattr__(self, "joints", FrozenDict(self.joints))
+
+    def with_soft_limits(
+        self, limits: dict[str, tuple[float, float]]
+    ) -> ActuatorConfig:
+        unknown = set(limits) - set(self.joints)
+        if unknown:
+            raise ValueError(f"unknown joints in soft limits: {sorted(unknown)}")
+        return ActuatorConfig(
+            joints={
+                name: replace(config, soft_limit=limits[name])
+                if name in limits
+                else config
+                for name, config in self.joints.items()
+            }
+        )
 
     @property
     def by_name(self) -> dict[str, JointActuatorConfig]:

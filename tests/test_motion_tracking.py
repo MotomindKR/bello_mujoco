@@ -617,21 +617,6 @@ def test_tracking_nonfinite_state_is_terminal_and_reward_is_sanitized(
     assert all(float(value) == 0.0 for value in reward_info.values())
 
 
-def test_tracking_joint_limit_cost_is_bounded(
-    motion_asset: CompiledRobot, reference_motion: Path
-) -> None:
-    env = BelloMotionTrackingEnv.from_compiled(
-        motion_asset, tracking_config(reference_motion)
-    )
-    state, _ = env.reset(reference_time=jnp.asarray(0.1))
-    indices = jnp.asarray(env.model.policy_qpos_indices)
-    state = state.replace(
-        data=state.data.replace(qpos=state.data.qpos.at[indices].set(1.0e6))
-    )
-
-    assert float(env._joint_limit_cost(state)) == 1.0
-
-
 def test_tracking_torque_costs_are_normalized_by_peak_torque(
     motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:

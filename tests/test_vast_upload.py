@@ -17,9 +17,9 @@ from bello_mujoco.training.vast_remote import (
 )
 
 
-def config(path):
+def config(path, experiment="motion"):
     return VastTrainConfig(
-        experiment="motion", motion_path=path, branch="main", max_price=0.6
+        experiment=experiment, motion_path=path, branch="main", max_price=0.6
     )
 
 
@@ -149,11 +149,12 @@ def test_runner_retries_upload_before_start_with_verified_checksum(tmp_path):
     assert events == ["upload", "upload", "start", "monitor"]
 
 
-def test_uploaded_motion_reaches_detached_job_outside_checkout(job):
+@pytest.mark.parametrize("experiment", ["motion", "bello_mini_motion"])
+def test_uploaded_motion_reaches_detached_job_outside_checkout(job, experiment):
     content = b"uploaded reference"
     assert upload(job, content).returncode == 0
     command = remote_start_command(
-        str(job), selection(), config(Path("/local/clip.npz")), "run"
+        str(job), selection(), config(Path("/local/clip.npz"), experiment), "run"
     )
     payload = json.dumps(
         dict(

@@ -22,6 +22,7 @@ Use the default `nix develop` shell for CPU evaluation and development.
 uv run --group training bello-train experiment=bello_mini_locomotion seed=1
 uv run --group training bello-train experiment=bello_mini_standing
 uv run --group training bello-train experiment=motion motion_path=motions/asap_fixed_head/CLIP.npz
+uv run --group training bello-train experiment=bello_mini_motion motion_path=/path/to/mini/CLIP.npz
 uv run --group training bello-train experiment=bello_mini_locomotion resume_path=checkpoints/RUN
 uv run bello-eval task=locomotion checkpoint_path=checkpoints/RUN gamepad_enabled=false steps=1500
 uv run bello-eval task=motion checkpoint_path=checkpoints/RUN output_path=outputs/motion.mp4

@@ -2,6 +2,19 @@
 
 Values belong in YAML, not duplicated documentation tables.
 
+Use `asset_config.joint_soft_limits` for task-specific target restrictions. The
+mapping contains logical joint names and `[lower, upper]` radians. Unspecified
+Mini joints use canonical URDF ranges. Resolved actuator limits are saved with
+the checkpoint for evaluation and deployment; changing a training profile does
+not change an already trained policy.
+
+Target restrictions and reward margins are separate. `asset_config.joint_soft_limits`
+caps commanded targets; it does not change the URDF's physical stops. Locomotion's
+`reward_config.limits_pose.joint_soft_limit_factor` and motion's
+`env_config.reward.joint_limit_soft_factor` shrink the configured range only for
+the joint-limit penalty. A factor of `0.9` penalizes the outer 5% at each end,
+without making that margin a physical stop or a target clamp.
+
 | Location | What to edit |
 | --- | --- |
 | `configs/commands/*.yaml` | Public CLI fields |

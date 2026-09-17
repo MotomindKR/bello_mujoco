@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 from types import SimpleNamespace
 
 import jax.numpy as jnp
@@ -11,6 +12,7 @@ from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.policy import ActorCriticConfig
+from bello_mujoco.sim import ModelRandomizationConfig
 from bello_mujoco.training.checkpoint import MotionCheckpointMetadata
 from bello_mujoco.training.ppo_types import ObservationNormState
 from bello_mujoco.training.ppo_config import PPOConfig
@@ -94,6 +96,13 @@ def test_bundled_motion_is_loaded_and_rendered(monkeypatch, tmp_path: Path) -> N
         original,
         ppo=ppo,
     )
+    metadata = replace(
+        metadata,
+        motion_env=replace(
+            metadata.motion_env,
+            model_randomization=ModelRandomizationConfig(enabled=True),
+        ),
+    )
     policy = object()
     env = motion_runtime_env()
     calls = {}
@@ -155,6 +164,8 @@ def test_bundled_motion_is_loaded_and_rendered(monkeypatch, tmp_path: Path) -> N
     loaded_prepared, loaded_config, actuator_config, use_viewer_model = calls["load"]
     assert loaded_prepared is prepared
     assert loaded_config.motion_path == bundled
+    assert not loaded_config.model_randomization.enabled
+    assert metadata.motion_env.model_randomization.enabled
     assert actuator_config is metadata.asset.actuator_config
     assert use_viewer_model is True
     loaded_env, loaded_policy, loaded_output, render_kwargs = calls["render"]
@@ -311,6 +322,7 @@ def install_native_rollout_fakes(monkeypatch):
         qpos=qpos, body_pos=qpos[None, :3], body_quat=qpos[None, 3:7]
     )
     env = SimpleNamespace(
+        config=SimpleNamespace(model_randomization=SimpleNamespace(seed=0)),
         model=SimpleNamespace(
             mj_model=object(),
             robot=SimpleNamespace(root_body_name="pelvis_link"),
@@ -329,7 +341,7 @@ def install_native_rollout_fakes(monkeypatch):
     monkeypatch.setattr(
         eval_motion,
         "reset_native_motion_rollout",
-        lambda loaded_env, data: (state, jnp.asarray([3.0, 5.0])),
+        lambda loaded_env, data, *, rng: (state, jnp.asarray([3.0, 5.0])),
     )
     monkeypatch.setattr(
         eval_motion,
@@ -356,7 +368,7 @@ def test_native_rollout_uses_normalized_deterministic_actor_and_reports_stats(
     monkeypatch.setattr(eval_motion, "apply_actor", apply_actor)
     step_count = 0
 
-    def native_step(loaded_env, data, _previous_state, action):
+    def native_step(loaded_env, data, _previous_state, action, *, rng):
         nonlocal step_count
         step_count += 1
         done = step_count == 2

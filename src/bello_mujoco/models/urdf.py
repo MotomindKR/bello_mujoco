@@ -272,11 +272,15 @@ def configured_joint_range(
     root: ET.Element, joint_name: str, config: ActuatorConfig
 ) -> tuple[float, float]:
     joint_config = config.by_name[joint_name]
-    return (
-        joint_config.soft_limit
-        if joint_config.soft_limit is not None
-        else joint_range(root, joint_name, config)
-    )
+    physical = joint_range(root, joint_name, config)
+    if joint_config.soft_limit is None:
+        return physical
+    lower, upper = joint_config.soft_limit
+    if not physical[0] <= lower < upper <= physical[1]:
+        raise ValueError(
+            f"soft limit must stay within physical joint range: {joint_name}"
+        )
+    return lower, upper
 
 
 def coupled_coordinate_range(
@@ -556,11 +560,7 @@ def ensure_position_actuators(
             raise ValueError(f"missing actuator config for joint {joint_name!r}")
         joint_config = joint_configs[joint_name]
         kp, kv = joint_config.gains
-        lo, hi = (
-            joint_config.soft_limit
-            if joint_config.soft_limit is not None
-            else joint_range(root, joint_name, config)
-        )
+        lo, hi = configured_joint_range(root, joint_name, config)
         suffix = "pos" if joint_config.mode == "policy" else "hold"
         attributes = {
             "name": f"{joint_name.replace(' ', '_')}_{suffix}",

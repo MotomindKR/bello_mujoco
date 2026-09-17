@@ -56,3 +56,33 @@ def test_invalid_reference_is_not_silently_repaired():
     for reference in ([2, 2, 0], [float("nan"), 0, 0]):
         with pytest.raises(ValueError, match="violates"):
             limits.validate_reference(reference)
+
+
+def test_runtime_intersects_task_joint_limits_with_physical_limits(tmp_path):
+    from types import SimpleNamespace
+    from bello_mujoco.models.target_limits import model_target_limits
+
+    urdf = tmp_path / "robot.urdf"
+    urdf.write_text(
+        '<robot><joint name="hinge"><limit lower="-2" upper="2"/></joint></robot>'
+    )
+    hardware = tmp_path / "hardware.yaml"
+    hardware.write_text(
+        "motors: [{coordinate: motor, command_policy: {maximum_position_step: 0.1}}]"
+    )
+    model = SimpleNamespace(
+        robot=SimpleNamespace(
+            source_urdf_path=lambda _: urdf,
+            hardware_description_path=lambda _: hardware,
+        ),
+        actuator_joint_names=("hinge",),
+        actuator_coordinate_names=("motor",),
+        mj_model=SimpleNamespace(actuator_ctrlrange=np.array([[-3.0, 3.0]])),
+        actuator_coordinate_transform=np.eye(1),
+        default_ctrl=np.zeros(1),
+        joint_target_low=np.array([-0.4]),
+        joint_target_high=np.array([0.8]),
+    )
+    np.testing.assert_array_equal(model_target_limits(model).joint, [[-0.4, 0.8]])
+    model.joint_target_low[:], model.joint_target_high[:] = -4, 4
+    np.testing.assert_array_equal(model_target_limits(model).joint, [[-2, 2]])

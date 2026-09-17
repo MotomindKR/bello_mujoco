@@ -18,7 +18,11 @@ from urllib.parse import urlparse
 
 import keyring
 
-from bello_mujoco.configuration import ExperimentName, profile_config_relative_path
+from bello_mujoco.configuration import (
+    ExperimentName,
+    is_motion_experiment,
+    profile_config_relative_path,
+)
 from bello_mujoco.training.vast_provider import (
     VastApi,
     VastOffer,
@@ -109,7 +113,7 @@ def credential(env_name: str, service: str, username: str, *, required: bool) ->
 def validate_config(config: VastTrainConfig) -> None:
     if config.experiment not in get_args(ExperimentName):
         raise ValueError("--experiment is invalid")
-    if config.experiment == "motion":
+    if is_motion_experiment(config.experiment):
         if config.motion_path is None:
             raise ValueError("--motion-path is required for the motion experiment")
         path = config.motion_path.expanduser()
@@ -259,7 +263,7 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
 
 
 def _task_name(config: VastTrainConfig) -> str:
-    if config.experiment == "motion":
+    if is_motion_experiment(config.experiment):
         return "motion-tracking"
     return "locomotion"
 

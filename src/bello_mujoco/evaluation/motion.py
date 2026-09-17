@@ -106,7 +106,9 @@ def render_motion_policy(
         raise ValueError("steps must be positive")
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
-    state, observation = reset_native_motion_rollout(env, mj_data)
+    rng = jax.random.PRNGKey(env.config.model_randomization.seed)
+    rng, reset_rng = jax.random.split(rng)
+    state, observation = reset_native_motion_rollout(env, mj_data, rng=reset_rng)
     observation_stack = init_observation_stack(observation, obs_stack_size)
     camera_config = CameraConfig(
         mode="follow", distance=3.0, azimuth=135.0, elevation=-16.0
@@ -172,8 +174,9 @@ def render_motion_policy(
                 ppo_config,
             )
             action = apply_actor(policy, policy_observation)
+            rng, step_rng = jax.random.split(rng)
             state, observation, reward, done, info = native_motion_step(
-                env, mj_data, state, action
+                env, mj_data, state, action, rng=step_rng
             )
             episode_return += float(jax.device_get(reward))
             rendered_steps += 1
@@ -207,7 +210,10 @@ def render_motion_policy(
 
 
 def reset_native_motion_rollout(
-    env: BelloMotionTrackingEnv, mj_data: mujoco.MjData
+    env: BelloMotionTrackingEnv,
+    mj_data: mujoco.MjData,
+    *,
+    rng: jax.Array | None = None,
 ) -> tuple[MotionTrackingState, jax.Array]:
     reference_time = jax.numpy.asarray(0.0, dtype=jax.numpy.float32)
     source = env.aligned_reference(
@@ -236,7 +242,17 @@ def reset_native_motion_rollout(
         step_count=0,
         episode_return=0.0,
     )
-    return state, env.observation(state)
+    feedback_rng = latency_rng = obs_rng = None
+    if rng is not None:
+        feedback_rng, latency_rng, obs_rng = jax.random.split(rng, 3)
+    feedback = env._noisy_actor_feedback(state.data, feedback_rng)
+    state = state.replace(
+        actor_feedback_history=jax.numpy.repeat(
+            feedback[None, :], env.maximum_observation_delay_steps + 1, axis=0
+        ),
+        actor_feedback_delay_steps=env._sample_observation_delay(latency_rng),
+    )
+    return state, env.observation(state, obs_rng)
 
 
 def native_motion_step(
@@ -244,12 +260,17 @@ def native_motion_step(
     mj_data: mujoco.MjData,
     state: MotionTrackingState,
     action: jax.Array,
+    *,
+    rng: jax.Array | None = None,
 ) -> tuple[MotionTrackingState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
     action = jax.numpy.clip(
         jax.numpy.asarray(action), -env.action_clip, env.action_clip
     )
-    mj_data.ctrl[:] = np.asarray(env.action_target(state, action), dtype=np.float64)
-    for _ in range(env.decimation):
+    requested_ctrl = np.asarray(env.action_target(state, action), dtype=np.float64)
+    for index in range(env.decimation):
+        mj_data.ctrl[:] = np.asarray(
+            env.delayed_ctrl(state.data.ctrl, requested_ctrl, index)
+        )
         mujoco.mj_step(env.model.mj_model, mj_data)
     next_reference_time = state.reference_time + env.control_timestep
     stepped = native_motion_state(
@@ -263,6 +284,15 @@ def native_motion_step(
         step_count=int(state.step_count) + 1,
         episode_return=float(state.episode_return),
     )
+    feedback_rng = obs_rng = None
+    if rng is not None:
+        feedback_rng, obs_rng = jax.random.split(rng)
+    stepped = stepped.replace(
+        actor_feedback_history=env._advance_actor_feedback_history(
+            state.actor_feedback_history, stepped.data, feedback_rng
+        ),
+        actor_feedback_delay_steps=state.actor_feedback_delay_steps,
+    )
     reward, reward_info = env._reward(
         state, stepped, jax.numpy.asarray(0, dtype=jax.numpy.int32)
     )
@@ -272,7 +302,7 @@ def native_motion_step(
     )
     episode_return = state.episode_return + reward
     stepped = stepped.replace(episode_return=episode_return)
-    observation = env.observation(stepped)
+    observation = env.observation(stepped, obs_rng)
     return (
         stepped,
         observation,

@@ -16,6 +16,11 @@ from bello_mujoco.contracts import (
     DEFAULT_SPAWN_CLEARANCE,
 )
 from bello_mujoco.envs.gait import GaitConfig
+from bello_mujoco.envs.feedback import (
+    ObservationLowPassFilterConfig,
+    validate_feedback_filter,
+    validate_command_delay,
+)
 from bello_mujoco.sim import ModelRandomizationConfig, SimulationPhysicsConfig
 from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
 
@@ -94,16 +99,6 @@ class ObservationNoiseConfig:
 class ObservationLatencyConfig:
     enabled: bool = False
     delay_steps: tuple[int, int] = (0, 0)
-
-
-@dataclass(frozen=True)
-class ObservationLowPassFilterConfig:
-    """First-order filtering for hardware-derived actor feedback."""
-
-    enabled: bool = False
-    cutoff_hz: float = 10.0
-    noise_before_filter: bool = False
-    residual_noise_scale: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -203,15 +198,7 @@ def validate_locomotion_config(
     control_timestep = config.decimation * physics_dt
     if config.decimation <= 0:
         raise ValueError(f"decimation must be positive, got {config.decimation}")
-    delay = config.command_delay_seconds
-    if not math.isfinite(delay) or not 0 <= delay < control_timestep:
-        raise ValueError(
-            "command_delay_seconds must be finite and in [0, control_timestep)"
-        )
-    if not math.isclose(delay / physics_dt, round(delay / physics_dt), abs_tol=1e-6):
-        raise ValueError(
-            "command_delay_seconds must be a whole number of physics substeps"
-        )
+    validate_command_delay(config.command_delay_seconds, physics_dt, config.decimation)
     maximum_speed = math.hypot(
         max(map(abs, command.lin_vel_x)),
         max(map(abs, command.lin_vel_y)),
@@ -266,7 +253,7 @@ def validate_locomotion_config(
             "valid for critic_observation"
         )
     _validate_observation("observation", config.observation)
-    _validate_feedback_filter(config.observation_low_pass_filter)
+    validate_feedback_filter(config.observation_low_pass_filter)
     _validate_torso_curriculum(
         config.torso_com_curriculum, config.model_randomization.enabled
     )
@@ -346,28 +333,6 @@ def _validate_observation_latency(config: ObservationLatencyConfig) -> None:
     if delay_steps[0] > delay_steps[1]:
         raise ValueError(
             "observation_latency.delay_steps lower bound exceeds upper bound"
-        )
-
-
-def _validate_feedback_filter(config: ObservationLowPassFilterConfig) -> None:
-    cutoff_hz = config.cutoff_hz
-    if not math.isfinite(cutoff_hz) or cutoff_hz <= 0.0:
-        raise ValueError(
-            "observation_low_pass_filter.cutoff_hz must be positive and "
-            f"finite, got {cutoff_hz}"
-        )
-    if (
-        not math.isfinite(config.residual_noise_scale)
-        or config.residual_noise_scale < 0.0
-        or config.residual_noise_scale > 1.0
-    ):
-        raise ValueError(
-            "observation_low_pass_filter.residual_noise_scale must be finite "
-            f"and in [0, 1], got {config.residual_noise_scale}"
-        )
-    if config.noise_before_filter and not config.enabled:
-        raise ValueError(
-            "observation_low_pass_filter.noise_before_filter requires enabled=true"
         )
 
 

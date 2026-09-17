@@ -32,6 +32,13 @@ coordinates directly. Tendons map motor forces into joint forces; observed
 kinematics and joint-limit rewards remain in joint coordinates. Gains are explicit
 motor gains, with no hidden coupled-motor multiplier.
 
+Physical joint ranges come from the URDF. Experiment-specific restrictions belong
+in `asset_config.joint_soft_limits` in the training profile, keyed by logical joint
+name. They must contain the nominal pose and stay within the physical range. They
+limit policy targets, not simulated physical joint travel. Mini's shared defaults
+use the URDF ranges; locomotion and standing inherit their narrower knee targets
+from the locomotion profile. Motion training does not inherit that restriction.
+
 Unused normal-Bello waist/head articulations are removed from the description,
 with geometry/inertia consolidated into surviving links. Useful fixed head,
 camera, and IMU frames remain. No active joint is disabled during compilation.

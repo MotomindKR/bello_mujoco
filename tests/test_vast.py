@@ -687,6 +687,25 @@ def test_remote_command_preflights_software_rendering() -> None:
     )
 
 
+def test_motion_preflight_exports_and_restores_before_training() -> None:
+    import ast
+
+    script = vast_remote.REMOTE_TRAIN_SCRIPT
+    block = (
+        script.split('if [[ -n "$motion_path" ]]; then', 1)[1]
+        .split("<<'PY'\n", 1)[1]
+        .split("\nPY", 1)[0]
+    )
+    ast.parse(block)
+    assert "load_motion_policy_runtime(checkpoint, use_viewer_model=True)" in block
+    assert "load_checkpoint_update(paths[0]) < 1" in block
+    assert "render_motion_policy(" in block
+    assert "export_checkpoint(ExportConfig(" in block
+    assert script.index("motion_preflight_checkpoint_restored") < script.rindex(
+        "uv run --group training bello-train"
+    )
+
+
 @pytest.mark.parametrize("payload_mass", [-1.0, float("nan"), float("inf")])
 def test_motion_vast_config_rejects_invalid_payload(
     payload_mass: float, tmp_path

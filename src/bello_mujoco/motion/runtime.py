@@ -39,7 +39,14 @@ def load_motion_policy_runtime(
     if not isinstance(metadata, MotionCheckpointMetadata):
         raise ValueError(f"checkpoint task is {metadata.task!r}, not 'motion_tracking'")
     resolved_motion_path = Path(checkpoint_path).resolve() / MOTION_FILE
-    env_config = replace(metadata.motion_env, motion_path=resolved_motion_path)
+    # Deployment kinematics/gains must be canonical, never a randomized world.
+    env_config = replace(
+        metadata.motion_env,
+        motion_path=resolved_motion_path,
+        model_randomization=replace(
+            metadata.motion_env.model_randomization, enabled=False
+        ),
+    )
     asset = metadata.asset
     if end_effector_payload_mass_kg is not None:
         asset = replace(

@@ -293,14 +293,55 @@ preflight_overrides=(
   wandb_enabled=false
 )
 preflight_overrides+=(video_enabled=false)
-if [[ "$experiment" == bello_* ]]; then
-  preflight_overrides+=("checkpoint_directory=checkpoints/vast-preflight-$run_name" checkpoint_name=smoke)
-fi
+preflight_overrides+=("checkpoint_directory=checkpoints/vast-preflight-$run_name" checkpoint_name=smoke)
 
 uv run --group training bello-train \
   "${preflight_overrides[@]}"
 
-if [[ "$experiment" == bello_* ]]; then
+if [[ -n "$motion_path" ]]; then
+  JAX_PLATFORMS=cpu uv run --group training python - "checkpoints/vast-preflight-$run_name" <<'PY'
+import sys
+from pathlib import Path
+
+from bello_mujoco.evaluation.software import configure_software_rendering
+configure_software_rendering()
+
+import equinox as eqx
+import jax
+import numpy as np
+
+from bello_mujoco.deployment import ExportConfig, export_checkpoint
+from bello_mujoco.evaluation.motion import render_motion_policy
+from bello_mujoco.motion.runtime import load_motion_policy_runtime
+from bello_mujoco.training.checkpoint import load_checkpoint_update
+
+directory = Path(sys.argv[1])
+paths = list(directory.glob("smoke_*"))
+if len(paths) != 1 or load_checkpoint_update(paths[0]) < 1:
+    raise RuntimeError("motion preflight did not save exactly one updated checkpoint")
+checkpoint = paths[0]
+runtime = load_motion_policy_runtime(checkpoint, use_viewer_model=True)
+leaves = jax.tree_util.tree_leaves(eqx.filter(runtime.policy, eqx.is_array))
+if not all(np.all(np.isfinite(np.asarray(leaf))) for leaf in leaves):
+    raise RuntimeError("restored motion policy contains nonfinite parameters")
+video = directory / "restored-policy.mp4"
+render_motion_policy(
+    runtime.env, runtime.policy, video, steps=25, width=256, height=192, fps=50,
+    obs_stack_size=runtime.metadata.ppo.policy.obs_stack_size,
+    ppo_config=runtime.metadata.ppo,
+    observation_norm_state=runtime.normalization.observation,
+)
+if not video.is_file() or video.stat().st_size == 0:
+    raise RuntimeError("restored motion policy produced no video")
+bundle = export_checkpoint(ExportConfig(
+    checkpoint_path=checkpoint, output_path=directory / "policy.zip",
+))
+print({"motion_preflight_checkpoint_restored": str(checkpoint),
+       "policy_video": str(video), "deployment_bundle": str(bundle)})
+PY
+fi
+
+if [[ -z "$motion_path" && "$experiment" == bello_* ]]; then
   uv run --group training python - "checkpoints/vast-preflight-$run_name" <<'PY'
 import sys
 from pathlib import Path
@@ -604,7 +645,7 @@ os.kill(int((supervisor_root / "supervisor_pid").read_text()), 0)
 job_dir.mkdir(parents=True, exist_ok=True)
 launch_lock = (supervisor_root / "launch.lock").open("a")
 fcntl.flock(launch_lock, fcntl.LOCK_EX)
-if sys.argv[6] == "motion":
+if sys.argv[7]:
     digest = hashlib.sha256()
     with (job_dir / "motion.npz").open("rb") as motion:
         while chunk := motion.read(1024 * 1024):

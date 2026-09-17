@@ -86,6 +86,9 @@ def model_target_limits(model):
             for name in model.actuator_joint_names
         ]
     )
+    # Task limits also constrain logical joints in differential transmissions.
+    joint[:, 0] = np.maximum(joint[:, 0], model.joint_target_low)
+    joint[:, 1] = np.minimum(joint[:, 1], model.joint_target_high)
     document = OmegaConf.to_container(
         OmegaConf.load(model.robot.hardware_description_path(root)), resolve=True
     )

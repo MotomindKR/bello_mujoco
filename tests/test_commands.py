@@ -269,12 +269,31 @@ def test_contact_budget_command_override_is_explicit_and_positive() -> None:
         _warp_overrides(warp, replace(command, contact_budget_per_env=0))
 
 
-def test_training_motion_selection_uses_requested_path(tmp_path: Path) -> None:
+@pytest.mark.parametrize("name", ["motion", "bello_mini_motion"])
+def test_training_motion_selection_uses_requested_path(tmp_path: Path, name) -> None:
     path = tmp_path / "turn.npz"
-    profile = motion_training_profile(path)
+    profile = motion_training_profile(path, name=name)
 
     assert profile.motion.directory == tmp_path
     assert profile.motion.sequence == "turn"
+
+
+def test_motion_overrides_are_applied_before_resolving_names(monkeypatch, tmp_path):
+    from bello_mujoco import configuration
+
+    monkeypatch.setattr(
+        configuration,
+        "_merged_profile",
+        lambda _: OmegaConf.create(
+            {
+                "asset_config": {"asset": "bello"},
+                "motion": {"directory": "unused", "sequence": "unused"},
+                "checkpoint_config": {"name": "${motion.sequence}_checkpoint"},
+            }
+        ),
+    )
+    profile = motion_training_profile(tmp_path / "selected.npz")
+    assert profile.checkpoint_config.name == "selected_checkpoint"
 
 
 def test_public_command_configs_are_strict() -> None:

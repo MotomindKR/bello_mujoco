@@ -11,6 +11,13 @@ import chex
 import jax
 import jax.numpy as jnp
 from bello_mujoco.envs.observations import sample_feedback_delay
+from bello_mujoco.envs.feedback import (
+    ObservationLowPassFilterConfig,
+    delayed_ctrl,
+    feedback_filter_alpha,
+    validate_command_delay,
+    validate_feedback_filter,
+)
 import mujoco
 from mujoco import mjx
 import numpy as np
@@ -37,9 +44,17 @@ from bello_mujoco.motion.clip import (
     MotionSample,
     load_motion_clip,
     sample_motion,
+    quat_slerp,
 )
 from bello_mujoco.robot_tasks import motion_task_definition
-from bello_mujoco.sim import BelloModel, WarpConfig, load_model, load_compiled_model
+from bello_mujoco.sim import (
+    BelloModel,
+    WarpConfig,
+    load_model,
+    load_compiled_model,
+    ModelRandomizationConfig,
+    SimulationPhysicsConfig,
+)
 from bello_mujoco.terrain import FLAT_TERRAIN, TerrainConfig
 
 
@@ -121,6 +136,7 @@ class MotionRewardConfig:
     body_angular_velocity_weight: float = 0.0
     action_rate_weight: float = -0.01
     joint_limit_weight: float = -0.02
+    joint_limit_soft_factor: float = 0.9
     torque_l1_weight: float = 0.0
     torque_peak_weight: float = 0.0
     undesired_contact_weight: float = 0.0
@@ -153,6 +169,12 @@ class MotionTrackingEnvConfig:
     ] = "beyondmimic_joint_limits"
     anchor_body_name: str = "pelvis_link"
     terrain: TerrainConfig = FLAT_TERRAIN
+    simulation_physics: SimulationPhysicsConfig = SimulationPhysicsConfig()
+    model_randomization: ModelRandomizationConfig = ModelRandomizationConfig()
+    command_delay_seconds: float = 0.0
+    observation_low_pass_filter: ObservationLowPassFilterConfig = (
+        ObservationLowPassFilterConfig()
+    )
     reset: MotionResetConfig = MotionResetConfig()
     observation_noise: MotionObservationNoiseConfig = MotionObservationNoiseConfig()
     observation_latency: MotionObservationLatencyConfig = (
@@ -237,6 +259,19 @@ class BelloMotionTrackingEnv:
             raise ValueError("joint_default_offset_noise must be nonnegative")
         self._validate_observation_noise()
         self._validate_observation_latency()
+        validate_feedback_filter(self.config.observation_low_pass_filter)
+        if (
+            not math.isfinite(self.config.reward.joint_limit_soft_factor)
+            or not 0 < self.config.reward.joint_limit_soft_factor <= 1
+        ):
+            raise ValueError(
+                "reward.joint_limit_soft_factor must be finite and in (0, 1]"
+            )
+        validate_command_delay(
+            self.config.command_delay_seconds,
+            float(self.model.mj_model.opt.timestep),
+            self.decimation,
+        )
         self._validate_adaptive_sampling()
         self._validate_push()
         task = motion_task_definition(self.model.robot.asset)
@@ -273,6 +308,8 @@ class BelloMotionTrackingEnv:
             warp=warp,
             batch_size=batch_size,
             terrain=env_config.terrain,
+            simulation_physics=env_config.simulation_physics,
+            model_randomization=env_config.model_randomization,
             use_viewer_model=use_viewer_model,
             load_mjx=load_mjx,
             simulation_timestep=simulation_timestep,
@@ -304,6 +341,8 @@ class BelloMotionTrackingEnv:
             warp=warp,
             batch_size=batch_size,
             terrain=env_config.terrain,
+            simulation_physics=env_config.simulation_physics,
+            model_randomization=env_config.model_randomization,
             actuator_config=actuator_config,
             use_viewer_model=use_viewer_model,
             load_mjx=load_mjx,
@@ -448,6 +487,7 @@ class BelloMotionTrackingEnv:
         rng: jax.Array | None = None,
         reference_time: jax.Array | None = None,
         sampling_failure_ema: jax.Array | None = None,
+        world_id: jax.Array | int = 0,
     ) -> tuple[MotionTrackingState, jax.Array]:
         self._require_mjx()
         time_key = pose_key = joint_key = root_key = offset_key = push_key = None
@@ -518,10 +558,12 @@ class BelloMotionTrackingEnv:
             )
         if root_key is not None:
             qpos, qvel = self._perturb_root(qpos, qvel, root_key)
-        joint_default_offset = jnp.zeros(self.action_size, dtype=jnp.float32)
+        joint_default_offset = jnp.asarray(self.model.joint_angle_offset)[
+            world_id, jnp.asarray(self.model.policy_ctrl_indices)
+        ]
         if offset_key is not None:
             magnitude = self.config.reset.joint_default_offset_noise
-            joint_default_offset = jax.random.uniform(
+            joint_default_offset = joint_default_offset + jax.random.uniform(
                 offset_key,
                 (self.action_size,),
                 minval=-magnitude,
@@ -535,7 +577,7 @@ class BelloMotionTrackingEnv:
             ctrl=self._initial_ctrl(joint_default_offset),
         )
         data = mjx.forward(self.model.mjx_model, data)
-        actor_feedback = self._actor_feedback(data)
+        actor_feedback = self._noisy_actor_feedback(data, latency_key)
         actor_feedback_history = jnp.repeat(
             actor_feedback[None, :],
             self.maximum_observation_delay_steps + 1,
@@ -573,13 +615,17 @@ class BelloMotionTrackingEnv:
             sampling_failure_ema = jnp.zeros(self.sampling_bin_count, dtype=jnp.float32)
         if rng is None:
             state, _ = jax.vmap(
-                lambda _: self.reset(sampling_failure_ema=sampling_failure_ema)
+                lambda world_id: self.reset(
+                    sampling_failure_ema=sampling_failure_ema, world_id=world_id
+                )
             )(jnp.arange(batch_size))
         else:
             keys = jax.random.split(reset_rng, batch_size)
             state, _ = jax.vmap(
-                lambda key: self.reset(key, sampling_failure_ema=sampling_failure_ema)
-            )(keys)
+                lambda key, world_id: self.reset(
+                    key, sampling_failure_ema=sampling_failure_ema, world_id=world_id
+                )
+            )(keys, jnp.arange(batch_size))
         data = state.data.replace(_impl=state.data._impl.replace(nworld=batch_size))
         state = state.replace(data=data)
         return state, self.observation_batch(state, obs_rng)
@@ -595,7 +641,12 @@ class BelloMotionTrackingEnv:
         data = jax.lax.fori_loop(
             0,
             self.decimation,
-            lambda _, value: mjx.step(self.model.mjx_model, value),
+            lambda index, value: mjx.step(
+                self.model.mjx_model,
+                value.replace(
+                    ctrl=self.delayed_ctrl(state.data.ctrl, data.ctrl, index)
+                ),
+            ),
             data,
         )
         stepped = state.replace(
@@ -640,9 +691,9 @@ class BelloMotionTrackingEnv:
     ]:
         self._require_mjx()
         batch_size = int(action.shape[0])
-        reset_rng = push_rng = obs_rng = rng
+        reset_rng = push_rng = obs_rng = feedback_rng = rng
         if rng is not None:
-            reset_rng, push_rng, obs_rng = jax.random.split(rng, 3)
+            reset_rng, push_rng, obs_rng, feedback_rng = jax.random.split(rng, 4)
         action = jnp.clip(jnp.asarray(action), -self.action_clip, self.action_clip)
         ctrl = jax.vmap(self.action_target)(state, action)
         data = state.data.replace(
@@ -654,14 +705,21 @@ class BelloMotionTrackingEnv:
         data = jax.lax.fori_loop(
             0,
             self.decimation,
-            lambda _, value: mjx.step(self.model.mjx_model, value),
+            lambda index, value: mjx.step(
+                self.model.mjx_model,
+                value.replace(ctrl=self.delayed_ctrl(state.data.ctrl, ctrl, index)),
+            ),
             data,
         )
         stepped = state.replace(
             data=data,
             last_action=action,
             actor_feedback_history=jax.vmap(self._advance_actor_feedback_history)(
-                state.actor_feedback_history, data
+                state.actor_feedback_history,
+                data,
+                jax.random.split(feedback_rng, batch_size)
+                if feedback_rng is not None
+                else None,
             ),
             reference_time=state.reference_time + self.control_timestep,
             step_count=state.step_count + 1,
@@ -1110,6 +1168,15 @@ class BelloMotionTrackingEnv:
             self.model.target_limits,
         )
 
+    def delayed_ctrl(self, previous_ctrl, requested_ctrl, substep):
+        return delayed_ctrl(
+            previous_ctrl,
+            requested_ctrl,
+            substep,
+            delay_seconds=self.config.command_delay_seconds,
+            physics_dt=float(self.model.mj_model.opt.timestep),
+        )
+
     def _relative_body_targets(
         self, state: MotionTrackingState, reference: MotionSample
     ) -> tuple[jax.Array, jax.Array]:
@@ -1152,6 +1219,9 @@ class BelloMotionTrackingEnv:
             keys,
             strict=True,
         ):
+            filtering = self.config.observation_low_pass_filter
+            if filtering.noise_before_filter and index in (4, 5, 6, 7):
+                magnitude *= 0.0 if index == 6 else filtering.residual_noise_scale
             mutable[index] = mutable[index] + jax.random.uniform(
                 key,
                 mutable[index].shape,
@@ -1183,6 +1253,8 @@ class BelloMotionTrackingEnv:
         return qpos, qvel, anchor_position, anchor_quat
 
     def _delayed_actor_feedback(self, state: MotionTrackingState) -> jax.Array:
+        if self.config.observation_low_pass_filter.enabled:
+            return state.actor_feedback_history[state.actor_feedback_delay_steps]
         return jnp.where(
             state.actor_feedback_delay_steps == 0,
             self._actor_feedback(state.data),
@@ -1190,9 +1262,60 @@ class BelloMotionTrackingEnv:
         )
 
     def _advance_actor_feedback_history(
-        self, history: jax.Array, data: mjx.Data
+        self, history: jax.Array, data: mjx.Data, rng: jax.Array | None = None
     ) -> jax.Array:
-        return jnp.concatenate((self._actor_feedback(data)[None, :], history[:-1]))
+        measured = self._noisy_actor_feedback(data, rng)
+        filtering = self.config.observation_low_pass_filter
+        if filtering.enabled:
+            old_qpos, old_qvel, _, _ = self._unpack_actor_feedback(history[0])
+            qpos, qvel, anchor_pos, anchor_quat = self._unpack_actor_feedback(measured)
+            alpha = feedback_filter_alpha(self.control_timestep, filtering.cutoff_hz)
+            root_quat = quat_slerp(old_qpos[3:7], qpos[3:7], alpha)
+            rotation = quat_multiply(root_quat, quat_conjugate(qpos[3:7]))
+            # The estimator root pose and raw joints define the observed anchor FK.
+            anchor_pos = qpos[:3] + quat_rotate(rotation, anchor_pos - qpos[:3])
+            anchor_quat = quat_multiply(rotation, anchor_quat)
+            measured = jnp.concatenate(
+                (
+                    qpos.at[3:7].set(root_quat),
+                    old_qvel + alpha * (qvel - old_qvel),
+                    anchor_pos,
+                    anchor_quat,
+                )
+            )
+        return jnp.concatenate((measured[None, :], history[:-1]))
+
+    def _noisy_actor_feedback(self, data: mjx.Data, rng: jax.Array | None) -> jax.Array:
+        measured = self._actor_feedback(data)
+        noise = self.config.observation_noise
+        if (
+            rng is None
+            or not noise.enabled
+            or not self.config.observation_low_pass_filter.noise_before_filter
+        ):
+            return measured
+        qpos, qvel, anchor_pos, anchor_quat = self._unpack_actor_feedback(measured)
+        linear_key, angular_key, position_key, velocity_key = jax.random.split(rng, 4)
+        linear_noise = symmetric_vector_noise(
+            linear_key, (noise.base_linear_velocity,) * 3
+        )
+        qvel = qvel.at[:3].add(quat_rotate(qpos[3:7], linear_noise))
+        qvel = qvel.at[3:6].add(
+            symmetric_vector_noise(angular_key, (noise.base_angular_velocity,) * 3)
+        )
+        positions = jnp.asarray(self.model.policy_qpos_indices)
+        velocities = jnp.asarray(self.model.policy_qvel_indices)
+        qpos = qpos.at[positions].add(
+            symmetric_vector_noise(
+                position_key, (noise.joint_position,) * self.action_size
+            )
+        )
+        qvel = qvel.at[velocities].add(
+            symmetric_vector_noise(
+                velocity_key, (noise.joint_velocity,) * self.action_size
+            )
+        )
+        return jnp.concatenate((qpos, qvel, anchor_pos, anchor_quat))
 
     def _sample_observation_delay(self, rng: jax.Array | None) -> jax.Array:
         return sample_feedback_delay(self.config.observation_latency, rng)
@@ -1376,13 +1499,12 @@ class BelloMotionTrackingEnv:
         policy = jnp.asarray(self.model.policy_ctrl_indices)
         lower = jnp.asarray(self.model.joint_target_low)[policy]
         upper = jnp.asarray(self.model.joint_target_high)[policy]
-        span = jnp.maximum(upper - lower, 1.0e-6)
-        margin = 0.02 * span
-        cost = jnp.mean(
-            jax.nn.relu(lower + margin - positions) ** 2
-            + jax.nn.relu(positions - upper + margin) ** 2
+        midpoint = (lower + upper) * 0.5
+        half_range = (upper - lower) * 0.5 * self.config.reward.joint_limit_soft_factor
+        return jnp.sum(
+            jax.nn.relu(midpoint - half_range - positions)
+            + jax.nn.relu(positions - midpoint - half_range)
         )
-        return jnp.clip(cost, 0.0, 1.0)
 
     def _torque_costs(self, state: MotionTrackingState) -> tuple[jax.Array, jax.Array]:
         policy = jnp.asarray(self.model.policy_ctrl_indices)

@@ -5,8 +5,11 @@ import jax.numpy as jnp
 
 from bello_mujoco.envs.locomotion_config import (
     ObservationConfig,
-    ObservationLowPassFilterConfig,
     ObservationNoiseConfig,
+)
+from bello_mujoco.envs.feedback import (
+    ObservationLowPassFilterConfig,
+    feedback_filter_alpha,
 )
 
 
@@ -46,7 +49,7 @@ def filter_feedback(
 ):
     if not config.enabled:
         return measured
-    alpha = 1.0 - jnp.exp(-2.0 * jnp.pi * config.cutoff_hz * timestep)
+    alpha = feedback_filter_alpha(timestep, config.cutoff_hz)
     filtered = list(unpack_feedback(previous + alpha * (measured - previous)))
     raw = unpack_feedback(measured)
     norm = jnp.linalg.norm(filtered[2])

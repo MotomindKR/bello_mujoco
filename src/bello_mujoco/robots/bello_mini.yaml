@@ -80,13 +80,13 @@ actuators:
   - joint_name: left_knee_joint
     mode: policy
     default_pos: 0.45
-    soft_limit: [0.0, 1.2]
+    soft_limit: null
     gains: [220.0, 6.0]
     effort_limit: 120.0
   - joint_name: right_knee_joint
     mode: policy
     default_pos: 0.45
-    soft_limit: [0.0, 1.2]
+    soft_limit: null
     gains: [220.0, 6.0]
     effort_limit: 120.0
   - joint_name: left_ankle_pitch_joint

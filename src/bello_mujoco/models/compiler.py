@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import atexit
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import xml.etree.ElementTree as ET
 
-from bello_mujoco.actuators import ActuatorConfig, ActuatorMode
+from bello_mujoco.actuators import ActuatorConfig, ActuatorMode, FrozenDict
 from bello_mujoco.models import robot_descriptions_root
 from bello_mujoco.models.urdf import ImuSensorConfig, compile_urdf_to_mjcf
 from bello_mujoco.robot import AssetName, robot_definition, validate_robot_source_urdf
@@ -29,16 +29,27 @@ class ModelConfig:
     imu_config: ImuSensorConfig = ImuSensorConfig()
     actuator_mode: ActuatorMode | None = None
     actuator_config: ActuatorConfig | None = None
+    joint_soft_limits: dict[str, tuple[float, float]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         definition = robot_definition(self.asset)
-        derived = ActuatorConfig.for_asset(self.asset, mode=self.actuator_mode)
-        if self.actuator_config is None:
-            object.__setattr__(self, "actuator_config", derived)
-        elif self.actuator_mode is not None and self.actuator_config != derived:
+        limits = FrozenDict(
+            {name: tuple(bounds) for name, bounds in self.joint_soft_limits.items()}
+        )
+        object.__setattr__(self, "joint_soft_limits", limits)
+        derived = ActuatorConfig.for_asset(
+            self.asset, mode=self.actuator_mode
+        ).with_soft_limits(limits)
+        configured = (
+            derived
+            if self.actuator_config is None
+            else self.actuator_config.with_soft_limits(limits)
+        )
+        if self.actuator_mode is not None and configured != derived:
             raise ValueError(
                 "actuator_config must match actuator_mode when both are set"
             )
+        object.__setattr__(self, "actuator_config", configured)
         expected = {actuator.joint_name for actuator in definition.actuators}
         actual = set(self.actuator_config.joints)
         if expected != actual:

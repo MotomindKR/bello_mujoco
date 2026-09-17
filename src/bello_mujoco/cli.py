@@ -17,6 +17,7 @@ from bello_mujoco.hardware.smplx_grpc import SmplxGrpcConfig
 
 from bello_mujoco.configuration import (
     ExperimentName,
+    is_motion_experiment,
     command_config,
     config_path,
     locomotion_training_profile,
@@ -121,12 +122,20 @@ def _train_hydra(config: DictConfig) -> None:
         raise ValueError(
             "resume uses the checkpoint's bundled motion; do not set motion_path"
         )
-    if command.experiment == "motion":
+    if is_motion_experiment(command.experiment):
+        if (
+            command.experiment == "bello_mini_motion"
+            and command.motion_path is None
+            and command.resume_path is None
+        ):
+            raise ValueError("Bello Mini motion requires motion_path or resume_path")
         from bello_mujoco.training.motion import (
             run_training as run_motion_training,
         )
 
-        run_config = motion_training_profile(command.motion_path)
+        run_config = motion_training_profile(
+            command.motion_path, name=command.experiment
+        )
         run_config = replace(
             run_config,
             config=_ppo_overrides(run_config.config, command),
@@ -283,7 +292,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
     command = command_config(VastTrainCommandConfig, config)
     if not math.isfinite(command.duration_hours) or command.duration_hours <= 0:
         raise ValueError("duration_hours must be finite and positive")
-    if command.experiment == "motion":
+    if is_motion_experiment(command.experiment):
         if command.motion_path is None:
             raise ValueError(
                 "motion_path must select a local .npz clip for Vast motion training"

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass, replace
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -29,6 +29,7 @@ ExperimentName = Literal[
     "bello_mini_locomotion",
     "bello_mini_standing",
     "motion",
+    "bello_mini_motion",
 ]
 CONFIG_ROOT = project_data_path("configs")
 _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
@@ -37,7 +38,12 @@ _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
     "bello_mini_locomotion": Path("profiles/train/bello_mini_locomotion.yaml"),
     "bello_mini_standing": Path("profiles/train/bello_mini_standing.yaml"),
     "motion": Path("profiles/train/motion.yaml"),
+    "bello_mini_motion": Path("profiles/train/bello_mini_motion.yaml"),
 }
+
+
+def is_motion_experiment(name: ExperimentName) -> bool:
+    return name in ("motion", "bello_mini_motion")
 
 
 def dataclass_from_dict(
@@ -243,31 +249,25 @@ def locomotion_training_profile(name: ExperimentName) -> TrainingRunConfig:
 
 def motion_training_profile(
     motion_path: Path | None = None,
+    *,
+    name: ExperimentName = "motion",
 ) -> MotionTrainingRunConfig:
-    from bello_mujoco.training.motion import (
-        MotionSelectionConfig,
-        MotionTrainingRunConfig,
-    )
+    from bello_mujoco.training.motion import MotionTrainingRunConfig
 
-    config = structured_config(
-        MotionTrainingRunConfig,
-        _merged_profile(
-            (
-                _config("train_motion/default.yaml"),
-                _config("profiles/train/motion.yaml"),
-            )
-        ),
-    )
-    if motion_path is None:
-        return config
-    resolved = motion_path.expanduser().resolve()
-    return replace(
-        config,
-        motion=MotionSelectionConfig(
-            directory=resolved.parent,
-            sequence=resolved.stem,
-        ),
-    )
+    if not is_motion_experiment(name):
+        raise ValueError(f"{name!r} is not a motion experiment")
+    paths = [
+        _config("train_motion/default.yaml"),
+        _config("profiles/train/motion.yaml"),
+    ]
+    if name != "motion":
+        paths.append(CONFIG_ROOT.parent / profile_config_relative_path(name))
+    merged = _merged_profile(paths)
+    if motion_path is not None:
+        resolved = motion_path.expanduser().resolve()
+        merged.motion.directory = str(resolved.parent)
+        merged.motion.sequence = resolved.stem
+    return structured_config(MotionTrainingRunConfig, merged)
 
 
 def profile_config_relative_path(name: ExperimentName) -> Path:
@@ -286,5 +286,4 @@ def _merged_profile(paths: tuple[Path, ...] | list[Path]) -> DictConfig:
             raise TypeError(f"training profile {path} must be a mapping")
         configs.append(config)
     merged = OmegaConf.merge(*configs)
-    OmegaConf.resolve(merged)
     return merged

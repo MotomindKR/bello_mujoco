@@ -23,6 +23,8 @@ The instance's onstart hook installs a supervisor before dependency setup.
 Training starts only when it is armed. The detached job installs the CUDA
 training dependency group, checks GPU training and software rendering, runs a short PPO preflight, then
 starts the selected profile with W&B enabled.
+Motion preflight also restores the saved policy, renders a short CPU evaluation,
+and exports its deployment bundle before the full run can start.
 
 - Completion, setup/training failure, or a disappearing job process triggers
   automatic destruction.
@@ -76,6 +78,9 @@ still bounds the rental.
 uv run bello-vast-train experiment=motion branch=your-training-branch \
   motion_path=/path/to/local/clip.npz max_price=0.60 duration_hours=40
 ```
+
+For Bello Mini, select `experiment=bello_mini_motion` and supply a Mini-retargeted
+clip. This uses the same verified upload and host-side teardown workflow.
 
 Relative motion paths resolve from the local invocation directory. `dry_run=true`
 checks the local file and source selection without uploading or renting.

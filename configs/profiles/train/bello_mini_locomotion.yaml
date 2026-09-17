@@ -2,6 +2,9 @@
 asset_config:
   asset: bello_mini
   enforce_policy_effort_limits: true
+  joint_soft_limits:
+    left_knee_joint: [0.0, 1.2]
+    right_knee_joint: [0.0, 1.2]
   imu_config:
     enabled: false
     body_name: imu_link
