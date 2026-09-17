@@ -257,3 +257,27 @@ def test_motion_model_loaders_forward_physics_and_training_randomization(
         )
     assert seen[0]["simulation_physics"] == config.simulation_physics
     assert seen[0]["model_randomization"] == config.model_randomization
+
+
+@pytest.mark.parametrize("enforce_effort_limits", [False, True])
+def test_motion_asset_validation_checks_contract_not_default_config(
+    enforce_effort_limits,
+):
+    from bello_mujoco.actuators import ActuatorConfig, JointActuatorConfig
+    from bello_mujoco.training.motion import _validate_motion_asset
+
+    config = SimpleNamespace(
+        target_total_mass_kg=None,
+        enforce_policy_effort_limits=enforce_effort_limits,
+        actuator_config=ActuatorConfig(
+            joints={"hinge": JointActuatorConfig(mode="policy", soft_limit=(-0.5, 0.5))}
+        ),
+    )
+    _validate_motion_asset(config)
+    config.target_total_mass_kg = 3.0
+    with pytest.raises(ValueError, match="canonical robot mass"):
+        _validate_motion_asset(config)
+    config.target_total_mass_kg = None
+    config.actuator_config = ActuatorConfig(joints={"hinge": JointActuatorConfig()})
+    with pytest.raises(ValueError, match="all actuators in policy mode"):
+        _validate_motion_asset(config)

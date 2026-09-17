@@ -26,7 +26,7 @@ from bello_mujoco.evaluation.motion import (
     MotionEvaluationRequest,
     evaluate_motion_video,
 )
-from bello_mujoco.motion.clip import MotionClip, motion_tracking_asset_config
+from bello_mujoco.motion.clip import MotionClip
 from bello_mujoco.policy import policy_observation_size
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.training.runtime import (
@@ -505,12 +505,7 @@ def validate_motion_checkpoint_config(config: CheckpointConfig) -> None:
 
 
 def _validate_motion_asset(config: ModelConfig) -> None:
-    expected = motion_tracking_asset_config(
-        asset=config.asset,
-        end_effector_payload_mass_kg=config.end_effector_payload_mass_kg,
-    )
-    if config != expected:
-        raise ValueError(
-            "motion tracking asset_config must match the selected robot's "
-            "canonical all-policy motion asset"
-        )
+    if config.target_total_mass_kg is not None:
+        raise ValueError("motion tracking requires canonical robot mass")
+    if any(joint.mode != "policy" for joint in config.actuator_config.joints.values()):
+        raise ValueError("motion tracking requires all actuators in policy mode")
