@@ -204,7 +204,7 @@ def test_native_motion_rollout_does_not_load_mjx(
     motion_asset: CompiledRobot, reference_motion: Path
 ) -> None:
     from bello_mujoco.evaluation.motion import (
-        native_motion_step,
+        make_native_motion_step,
         reset_native_motion_rollout,
     )
 
@@ -213,8 +213,8 @@ def test_native_motion_rollout_does_not_load_mjx(
     data = mujoco.MjData(env.model.mj_model)
 
     state, observation = reset_native_motion_rollout(env, data)
-    stepped, next_observation, reward, done, info = native_motion_step(
-        env, data, state, jnp.zeros(env.action_size)
+    stepped, next_observation, reward, done, info = make_native_motion_step(env)(
+        data, state, jnp.zeros(env.action_size)
     )
 
     assert env.model.mjx_model is None

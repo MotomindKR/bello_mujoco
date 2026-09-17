@@ -128,6 +128,7 @@ def render_motion_policy(
     root_position_errors = []
     root_orientation_errors = []
     joint_position_errors = []
+    step_native = make_native_motion_step(env)
     try:
         for _ in range(steps):
             reference = env.aligned_reference(
@@ -175,8 +176,8 @@ def render_motion_policy(
             )
             action = apply_actor(policy, policy_observation)
             rng, step_rng = jax.random.split(rng)
-            state, observation, reward, done, info = native_motion_step(
-                env, mj_data, state, action, rng=step_rng
+            state, observation, reward, done, info = step_native(
+                mj_data, state, action, rng=step_rng
             )
             episode_return += float(jax.device_get(reward))
             rendered_steps += 1
@@ -255,35 +256,41 @@ def reset_native_motion_rollout(
     return state, env.observation(state, obs_rng)
 
 
-def native_motion_step(
-    env: BelloMotionTrackingEnv,
-    mj_data: mujoco.MjData,
-    state: MotionTrackingState,
-    action: jax.Array,
-    *,
-    rng: jax.Array | None = None,
-) -> tuple[MotionTrackingState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]]:
-    action = jax.numpy.clip(
-        jax.numpy.asarray(action), -env.action_clip, env.action_clip
+def make_native_motion_step(env: BelloMotionTrackingEnv):
+    """Compile task math once per rollout; native MuJoCo still owns physics."""
+    target = jax.jit(lambda state, action: env.action_target(state, action))
+    delayed = jax.jit(lambda old, new, index: env.delayed_ctrl(old, new, index))
+    outcome = jax.jit(
+        lambda state, stepped, rng: _native_motion_outcome(env, state, stepped, rng)
     )
-    requested_ctrl = np.asarray(env.action_target(state, action), dtype=np.float64)
-    for index in range(env.decimation):
-        mj_data.ctrl[:] = np.asarray(
-            env.delayed_ctrl(state.data.ctrl, requested_ctrl, index)
+
+    def step(mj_data, state, action, *, rng=None):
+        action = jax.numpy.clip(
+            jax.numpy.asarray(action), -env.action_clip, env.action_clip
         )
-        mujoco.mj_step(env.model.mj_model, mj_data)
-    next_reference_time = state.reference_time + env.control_timestep
-    stepped = native_motion_state(
-        env,
-        mj_data,
-        last_action=np.asarray(action, dtype=np.float32),
-        reference_time=next_reference_time,
-        alignment_xy=state.alignment_xy,
-        alignment_yaw=state.alignment_yaw,
-        joint_default_offset=state.joint_default_offset,
-        step_count=int(state.step_count) + 1,
-        episode_return=float(state.episode_return),
-    )
+        requested_ctrl = target(state, action)
+        for index in range(env.decimation):
+            mj_data.ctrl[:] = np.asarray(
+                delayed(state.data.ctrl, requested_ctrl, index)
+            )
+            mujoco.mj_step(env.model.mj_model, mj_data)
+        stepped = native_motion_state(
+            env,
+            mj_data,
+            last_action=np.asarray(action, dtype=np.float32),
+            reference_time=state.reference_time + env.control_timestep,
+            alignment_xy=state.alignment_xy,
+            alignment_yaw=state.alignment_yaw,
+            joint_default_offset=state.joint_default_offset,
+            step_count=int(state.step_count) + 1,
+            episode_return=float(state.episode_return),
+        )
+        return outcome(state, stepped, rng)
+
+    return step
+
+
+def _native_motion_outcome(env, state, stepped, rng):
     feedback_rng = obs_rng = None
     if rng is not None:
         feedback_rng, obs_rng = jax.random.split(rng)
@@ -329,17 +336,19 @@ def native_motion_state(
 ) -> MotionTrackingState:
     ncon = int(mj_data.ncon)
     nefc = int(mj_data.nefc)
-    contact_geom = np.asarray(mj_data.contact.geom[:ncon], dtype=np.int32).copy()
-    contact_address = np.asarray(
-        mj_data.contact.efc_address[:ncon], dtype=np.int32
-    ).copy()
-    efc_force = np.zeros(max(nefc, 1), dtype=np.float32)
+    # Bucket dynamic contact shapes so compiled task math is reused as contacts change.
+    capacity = 1 << max(0, ncon - 1).bit_length()
+    contact_geom = np.zeros((capacity, 2), dtype=np.int32)
+    contact_geom[:ncon] = mj_data.contact.geom[:ncon]
+    contact_address = np.full(capacity, -1, dtype=np.int32)
+    contact_address[:ncon] = mj_data.contact.efc_address[:ncon]
+    efc_force = np.zeros(1 << max(0, nefc - 1).bit_length(), dtype=np.float32)
     if nefc:
         efc_force[:nefc] = np.asarray(mj_data.efc_force[:nefc], dtype=np.float32)
     impl = NativeContactData(
         contact__geom=jax.numpy.asarray(contact_geom),
         nacon=jax.numpy.asarray([ncon], dtype=jax.numpy.int32),
-        contact__worldid=jax.numpy.zeros(ncon, dtype=jax.numpy.int32),
+        contact__worldid=jax.numpy.zeros(capacity, dtype=jax.numpy.int32),
         contact__efc_address=jax.numpy.asarray(contact_address[:, None]),
         efc__force=jax.numpy.asarray(efc_force),
     )
@@ -465,6 +474,7 @@ def evaluate_motion_video(request: MotionEvaluationRequest) -> MotionRolloutStat
         render_checkpoint_with_stats,
         request.checkpoint,
         request.output_path,
+        timeout_seconds=300.0 + request.steps,
         steps=request.steps,
         width=request.width,
         height=request.height,

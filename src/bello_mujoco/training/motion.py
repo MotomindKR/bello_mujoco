@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+import traceback
 
 import jax
 
@@ -197,6 +198,10 @@ def run_training(run_config: MotionTrainingRunConfig) -> None:
         if final_checkpoint is not None:
             print({"checkpoint_path": str(final_checkpoint)})
         succeeded = True
+    except Exception:
+        # Capture the terminal cause before W&B closes its console log.
+        traceback.print_exc()
+        raise
     finally:
         close_run(run, exit_code=0 if succeeded else 1)
 

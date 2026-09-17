@@ -24,7 +24,7 @@ from bello_mujoco.envs.motion_tracking import (
     scalar_gaussian_reward,
 )
 from bello_mujoco.evaluation.motion import (
-    native_motion_step,
+    make_native_motion_step,
     reset_native_motion_rollout,
 )
 from bello_mujoco.motion.clip import MotionClip
@@ -174,7 +174,7 @@ def test_native_motion_keeps_feedback_history_and_obeys_substep_delay(env, monke
         real_step(model, current)
 
     monkeypatch.setattr(mujoco, "mj_step", step)
-    stepped, _, _, _, _ = native_motion_step(env, data, state, jnp.ones(1))
+    stepped, _, _, _, _ = make_native_motion_step(env)(data, state, jnp.ones(1))
     np.testing.assert_allclose(np.asarray(commands).ravel(), [0, 0, 1, 1])
     np.testing.assert_array_equal(
         stepped.actor_feedback_history[1], state.actor_feedback_history[0]
@@ -183,6 +183,60 @@ def test_native_motion_keeps_feedback_history_and_obeys_substep_delay(env, monke
     np.testing.assert_array_equal(
         env._delayed_actor_feedback(stepped), state.actor_feedback_history[0]
     )
+    with jax.disable_jit():
+        eager_data = mujoco.MjData(env.model.mj_model)
+        initial, _ = reset_native_motion_rollout(
+            env, eager_data, rng=jax.random.PRNGKey(1)
+        )
+        eager, *_ = make_native_motion_step(env)(eager_data, initial, jnp.ones(1))
+    for compiled_value, eager_value in zip(
+        jax.tree.leaves(stepped), jax.tree.leaves(eager), strict=True
+    ):
+        np.testing.assert_allclose(compiled_value, eager_value, atol=1e-6)
+
+
+def test_native_contact_view_pads_without_changing_active_contacts(env):
+    from bello_mujoco.evaluation.motion import native_motion_state
+
+    real = mujoco.MjData(env.model.mj_model)
+    mujoco.mj_forward(env.model.mj_model, real)
+    data = SimpleNamespace(
+        **{
+            name: getattr(real, name)
+            for name in (
+                "qpos",
+                "qvel",
+                "ctrl",
+                "xpos",
+                "xquat",
+                "cvel",
+                "subtree_com",
+                "actuator_force",
+            )
+        },
+        ncon=3,
+        nefc=5,
+        contact=SimpleNamespace(
+            geom=np.array([[0, 1]] * 3), efc_address=np.array([0, 2, 4])
+        ),
+        efc_force=np.arange(5, dtype=np.float32),
+    )
+    state = native_motion_state(
+        env,
+        data,
+        last_action=np.zeros(1),
+        reference_time=jnp.array(0.0),
+        alignment_xy=jnp.zeros(2),
+        alignment_yaw=jnp.array(0.0),
+        joint_default_offset=jnp.zeros(1),
+        step_count=0,
+        episode_return=0.0,
+    )
+    contacts = jax.jit(lambda value: value)(state.data)._impl
+    np.testing.assert_array_equal(contacts.contact__geom[:3], data.contact.geom)
+    np.testing.assert_array_equal(contacts.contact__efc_address[:, 0], [0, 2, 4, -1])
+    np.testing.assert_array_equal(contacts.efc__force, [0, 1, 2, 3, 4, 0, 0, 0])
+    assert int(contacts.nacon[0]) == 3
 
 
 @pytest.mark.parametrize("delay", [-0.01, 0.003, 0.02, float("nan")])

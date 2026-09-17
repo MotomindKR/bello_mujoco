@@ -9,7 +9,8 @@ from bello_mujoco.training import motion as training
 from bello_mujoco.training.ppo_config import PPOConfig
 
 
-def test_motion_evaluation_dispatches_checkpoint_to_software_worker(monkeypatch):
+@pytest.mark.parametrize("steps", [1, 3000])
+def test_motion_evaluation_dispatches_checkpoint_to_software_worker(monkeypatch, steps):
     calls = []
     monkeypatch.setattr(
         evaluation,
@@ -19,7 +20,7 @@ def test_motion_evaluation_dispatches_checkpoint_to_software_worker(monkeypatch)
     request = evaluation.MotionEvaluationRequest(
         checkpoint=Path("checkpoint"),
         output_path=Path("video.mp4"),
-        steps=1,
+        steps=steps,
         width=32,
         height=24,
         fps=20,
@@ -31,7 +32,13 @@ def test_motion_evaluation_dispatches_checkpoint_to_software_worker(monkeypatch)
         request.checkpoint,
         request.output_path,
     )
-    assert kwargs == {"steps": 1, "width": 32, "height": 24, "fps": 20}
+    assert kwargs == {
+        "steps": steps,
+        "width": 32,
+        "height": 24,
+        "fps": 20,
+        "timeout_seconds": 300.0 + steps,
+    }
 
 
 def test_motion_video_failure_stops_training(monkeypatch, tmp_path):

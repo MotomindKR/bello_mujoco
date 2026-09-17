@@ -93,5 +93,13 @@ reset, while retaining command delay and seeded actor noise/filter/latency. It
 does not apply training pushes. Training uses randomized MJX worlds. GPU rollout
 validation and trained-policy emulator commissioning remain required before deployment.
 
+Native evaluation compiles its task math once per rollout while MuJoCo physics
+and llvmpipe rasterization remain CPU-only. Dynamic contact buffers use size
+buckets to reuse compiled kernels. Video workers have a bounded wall-clock budget
+of 300 seconds for setup plus one second per requested simulation step; a long
+reference is not subject to the short preflight's fixed five-minute deadline.
+Evaluation errors still fail training, and their traceback is logged before W&B
+closes so the cause survives host teardown.
+
 Live upper-body retargeting is separate and retains shape/frame and freshness
 checks without per-source revision fingerprints. See [hardware](hardware.md).

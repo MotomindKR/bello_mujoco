@@ -368,7 +368,7 @@ def test_native_rollout_uses_normalized_deterministic_actor_and_reports_stats(
     monkeypatch.setattr(eval_motion, "apply_actor", apply_actor)
     step_count = 0
 
-    def native_step(loaded_env, data, _previous_state, action, *, rng):
+    def native_step(data, _previous_state, action, *, rng):
         nonlocal step_count
         step_count += 1
         done = step_count == 2
@@ -384,7 +384,7 @@ def test_native_rollout_uses_normalized_deterministic_actor_and_reports_stats(
             },
         )
 
-    monkeypatch.setattr(eval_motion, "native_motion_step", native_step)
+    monkeypatch.setattr(eval_motion, "make_native_motion_step", lambda _: native_step)
     config = PPOConfig(
         normalize_observations=True,
         policy=ActorCriticConfig(obs_stack_size=2),
@@ -431,8 +431,10 @@ def test_native_rollout_closes_video_resources_when_step_fails(
     )
     monkeypatch.setattr(
         eval_motion,
-        "native_motion_step",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("step failed")),
+        "make_native_motion_step",
+        lambda _: (
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("step failed"))
+        ),
     )
 
     with pytest.raises(RuntimeError, match="step failed"):

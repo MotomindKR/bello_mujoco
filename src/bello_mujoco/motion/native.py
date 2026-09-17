@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import jax
 
 
+@jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class NativeContactData:
     contact__geom: jax.Array
@@ -16,6 +17,7 @@ class NativeContactData:
     efc__force: jax.Array
 
 
+@jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class NativeMotionData:
     qpos: jax.Array
