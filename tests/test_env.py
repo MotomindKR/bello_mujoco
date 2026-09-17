@@ -68,6 +68,40 @@ def observation_component_slice(
     raise AssertionError(f"observation component not found: {component_name}")
 
 
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("seed", [None, 7])
+def test_reset_seeds_prefilter_noise_history(bello_asset, batched, seed):
+    config = BelloEnvConfig(
+        observation=ObservationConfig(noise=ObservationNoiseConfig(enabled=True)),
+        observation_low_pass_filter=ObservationLowPassFilterConfig(
+            enabled=True, noise_before_filter=True
+        ),
+    )
+    env = BelloLocomotionEnv.from_compiled(
+        bello_asset, env_config=config, batch_size=2 if batched else 1
+    )
+    key = None if seed is None else jax.random.PRNGKey(seed)
+    reset = (
+        (lambda: env.reset_batch(2, rng=key)) if batched else lambda: env.reset(rng=key)
+    )
+    state, observation = reset()
+    history = np.asarray(state.actor_feedback_history)
+    assert np.isfinite(observation).all()
+    assert np.isfinite(history).all()
+    np.testing.assert_array_equal(
+        history, np.repeat(history[..., :1, :], history.shape[-2], axis=-2)
+    )
+    repeated, _ = reset()
+    np.testing.assert_array_equal(history, repeated.actor_feedback_history)
+    raw = (
+        jax.vmap(env._actor_feedback)(state) if batched else env._actor_feedback(state)
+    )
+    if seed is None:
+        np.testing.assert_allclose(history[..., 0, :], raw)
+    else:
+        assert not np.array_equal(history[..., 0, :], raw)
+
+
 def test_reset_observations_match_declared_layouts(bello_asset: CompiledRobot) -> None:
     env = BelloLocomotionEnv.from_compiled(bello_asset)
     state, observation = env.reset()
