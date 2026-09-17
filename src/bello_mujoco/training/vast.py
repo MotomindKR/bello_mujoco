@@ -84,7 +84,6 @@ class GitSelection:
     commit: str
     config_path: PurePosixPath
     repo_url: str
-    motion_path: PurePosixPath | None = None
 
 
 def credential(env_name: str, service: str, username: str, *, required: bool) -> str:
@@ -113,7 +112,11 @@ def validate_config(config: VastTrainConfig) -> None:
     if config.experiment == "motion":
         if config.motion_path is None:
             raise ValueError("--motion-path is required for the motion experiment")
-        _repository_motion_path(config.motion_path)
+        path = config.motion_path.expanduser()
+        if path.suffix != ".npz" or not path.is_file():
+            raise ValueError("motion_path must name an existing local .npz clip")
+        with path.open("rb"):
+            pass
         if config.end_effector_payload_mass_kg is not None and (
             not math.isfinite(config.end_effector_payload_mass_kg)
             or config.end_effector_payload_mass_kg < 0.0
@@ -246,39 +249,13 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
         or submodule_entry[3] != submodule_path
     ):
         raise ValueError(f"{submodule_path!r} is not a submodule on origin/{branch}")
-    motion_path = None
-    if config.motion_path is not None:
-        motion_path = _repository_motion_path(config.motion_path)
-        try:
-            run_git(repo_root, "cat-file", "-e", f"{commit}:{motion_path}")
-        except subprocess.CalledProcessError as exc:
-            raise ValueError(
-                "motion-tracking Vast runs require a repository-tracked clip; "
-                f"{motion_path!s} is absent from origin/{branch}. Ignored local "
-                "datasets are never uploaded implicitly."
-            ) from exc
     repo_url = normalized_repo_url(run_git(repo_root, "remote", "get-url", "origin"))
     return GitSelection(
         branch=branch,
         commit=commit,
         config_path=config_path,
         repo_url=repo_url,
-        motion_path=motion_path,
     )
-
-
-def _repository_motion_path(value: Path) -> PurePosixPath:
-    path = PurePosixPath(str(value))
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError("motion clip must be a repository-relative path")
-    if path.suffix != ".npz" or path.name == ".npz":
-        raise ValueError("motion_path must name an .npz clip")
-    if path.parts[:2] == ("motions", "local"):
-        raise ValueError(
-            "motions/local is ignored and is not uploaded to Vast; choose a "
-            "repository-tracked motion clip"
-        )
-    return path
 
 
 def _task_name(config: VastTrainConfig) -> str:
@@ -554,8 +531,10 @@ def launch_pipeline(
         f"Selected origin/{selection.branch} at {selection.commit[:12]} with "
         f"{selection.config_path} for {_task_name(config)} (run {run_name})."
     )
-    if selection.motion_path is not None:
-        print(f"Selected repository-tracked motion {selection.motion_path}.")
+    if config.motion_path is not None:
+        print(
+            f"Selected local motion upload {config.motion_path.expanduser().resolve()}."
+        )
 
     if config.dry_run:
         print(f"Offer query: {offer_query(config)}")

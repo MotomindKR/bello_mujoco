@@ -62,9 +62,27 @@ attachment to the old one. Inspect the console after an interrupted launch.
 ## Source and credentials
 
 Push the intended branch before launching. The remote checkout must match the
-root commit selected locally. Motion jobs require a `motion_path` tracked in
-that commit. Local datasets and historical checkpoint bundles are not uploaded
-or migrated by the launcher.
+root commit selected locally. Motion jobs accept a local `.npz` path, including
+absolute paths and ignored files. The clip need not be committed. Before starting
+the detached job, the launcher streams that one file over SSH into the run's
+directory outside the source checkout and verifies its SHA-256. Interrupted
+transfers retry within the SSH startup timeout; partial or mismatched uploads
+cannot start training. An already-started job's clip cannot be replaced. Keep
+the local file unchanged until upload completes. Local disconnection before
+upload/start finishes does not complete a launch; the host's absolute deadline
+still bounds the rental.
+
+```bash
+uv run bello-vast-train experiment=motion branch=your-training-branch \
+  motion_path=/path/to/local/clip.npz max_price=0.60 duration_hours=40
+```
+
+Relative motion paths resolve from the local invocation directory. `dry_run=true`
+checks the local file and source selection without uploading or renting.
+The transfer checksum is not a checkpoint compatibility contract. Training
+checkpoints and deployment bundles already contain their exact motion copy.
+Other local datasets and historical checkpoint bundles are not uploaded or
+migrated by the launcher.
 
 Non-dry execution reads:
 

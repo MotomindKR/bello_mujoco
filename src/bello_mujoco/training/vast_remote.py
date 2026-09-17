@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import shlex
 import subprocess
@@ -10,6 +11,7 @@ import sys
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from bello_mujoco.training.vast_provider import VastApi
@@ -87,6 +89,16 @@ class SshExecutor:
             stderr=subprocess.DEVNULL,
             timeout=timeout_seconds,
         )
+
+    def upload(self, target, path: Path, job_dir: str, digest: str, *, timeout_seconds):
+        with path.open("rb") as source:
+            return subprocess.run(
+                ssh_command(target, remote_upload_command(job_dir, digest)),
+                stdin=source,
+                text=True,
+                capture_output=True,
+                timeout=timeout_seconds,
+            )
 
     def run(
         self,
@@ -353,6 +365,13 @@ def run_remote_training(
 ) -> None:
     if executor is None:
         executor = SshExecutor()
+    motion_path = (
+        config.motion_path.expanduser().resolve() if config.motion_path else None
+    )
+    digest = None
+    if motion_path is not None:
+        with motion_path.open("rb") as source:
+            digest = hashlib.file_digest(source, "sha256").hexdigest()
     payload = json.dumps(
         {
             "environment": {
@@ -361,6 +380,7 @@ def run_remote_training(
             },
             "script": REMOTE_TRAIN_SCRIPT,
             "timeout_seconds": config.job_timeout_seconds,
+            "motion_sha256": digest,
         }
     )
     job_dir = f"/workspace/.bello-vast/{run_name}"
@@ -374,6 +394,7 @@ def run_remote_training(
     ssh_start_deadline = started_at + config.ssh_timeout_seconds
     job_deadline = started_at + config.job_timeout_seconds
     disconnect_reported = False
+    uploaded = motion_path is None
 
     while True:
         now = time.monotonic()
@@ -385,6 +406,23 @@ def run_remote_training(
         if now >= ssh_start_deadline:
             raise TimeoutError("SSH did not recover while starting remote training")
         try:
+            if not uploaded:
+                result = executor.upload(
+                    target,
+                    motion_path,
+                    job_dir,
+                    digest,
+                    timeout_seconds=min(ssh_start_deadline, job_deadline) - now,
+                )
+                if result.returncode == 0:
+                    uploaded = True
+                    print("Motion uploaded and SHA-256 verified.")
+                    continue
+                if result.returncode != 255:
+                    _raise_remote_failure(result)
+                print("Motion upload disconnected; retrying before training starts.")
+                sleep(5)
+                continue
             result = executor.run(
                 target,
                 start_command,
@@ -511,13 +549,50 @@ def _raise_remote_failure(result: subprocess.CompletedProcess[str]) -> None:
     )
 
 
+def remote_upload_command(job_dir: str, digest: str) -> str:
+    receiver = r"""import fcntl, hashlib, os, pathlib, sys, tempfile
+job_dir = pathlib.Path(sys.argv[1])
+expected = sys.argv[2]
+root = job_dir.parent
+if not (root / "armed").is_file():
+    raise RuntimeError("Vast host teardown supervisor is not armed")
+os.kill(int((root / "supervisor_pid").read_text()), 0)
+job_dir.mkdir(parents=True, exist_ok=True)
+with (root / "launch.lock").open("a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    destination = job_dir / "motion.npz"
+    with tempfile.TemporaryDirectory(prefix=".upload-", dir=job_dir) as staging:
+        path = pathlib.Path(staging) / "motion.npz"
+        digest = hashlib.sha256()
+        with path.open("wb") as output:
+            while chunk := sys.stdin.buffer.read(1024 * 1024):
+                output.write(chunk)
+                digest.update(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        if digest.hexdigest() != expected:
+            raise RuntimeError("motion upload SHA-256 mismatch; training was not started")
+        if (job_dir / "pid").exists() or (job_dir / "status").exists():
+            existing_digest = hashlib.sha256()
+            with destination.open("rb") as existing:
+                while chunk := existing.read(1024 * 1024):
+                    existing_digest.update(chunk)
+            if existing_digest.hexdigest() != expected:
+                raise RuntimeError("cannot replace motion for a started job")
+        else:
+            path.replace(destination)
+print("Motion upload verified")
+"""
+    return shlex.join(["python3", "-c", receiver, job_dir, digest])
+
+
 def remote_start_command(
     job_dir: str,
     selection: GitSelection,
     config: VastTrainConfig,
     run_name: str,
 ) -> str:
-    bootstrap = r"""import fcntl, json, os, pathlib, subprocess, sys
+    bootstrap = r"""import fcntl, hashlib, json, os, pathlib, subprocess, sys
 payload = json.load(sys.stdin)
 env = payload["environment"]
 script = payload["script"]
@@ -529,6 +604,13 @@ os.kill(int((supervisor_root / "supervisor_pid").read_text()), 0)
 job_dir.mkdir(parents=True, exist_ok=True)
 launch_lock = (supervisor_root / "launch.lock").open("a")
 fcntl.flock(launch_lock, fcntl.LOCK_EX)
+if sys.argv[6] == "motion":
+    digest = hashlib.sha256()
+    with (job_dir / "motion.npz").open("rb") as motion:
+        while chunk := motion.read(1024 * 1024):
+            digest.update(chunk)
+    if digest.hexdigest() != payload["motion_sha256"]:
+        raise RuntimeError("uploaded motion changed; refusing to start training")
 script_path = job_dir / "train.sh"
 log_path = job_dir / "output.log"
 pid_path = job_dir / "pid"
@@ -589,7 +671,7 @@ print(f"Started detached remote job {process.pid} in {job_dir}.")
             selection.repo_url,
             str(config.remote_dir),
             config.experiment,
-            str(selection.motion_path or ""),
+            str(Path(job_dir) / "motion.npz") if config.motion_path is not None else "",
             (
                 ""
                 if config.end_effector_payload_mass_kg is None

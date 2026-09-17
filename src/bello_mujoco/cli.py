@@ -286,8 +286,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
     if command.experiment == "motion":
         if command.motion_path is None:
             raise ValueError(
-                "motion_path must select a repository-tracked clip for Vast motion "
-                "training"
+                "motion_path must select a local .npz clip for Vast motion training"
             )
     else:
         if (

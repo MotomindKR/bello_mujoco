@@ -134,9 +134,7 @@ def motion_config(**kwargs) -> VastTrainConfig:
     kwargs.setdefault("experiment", "motion")
     kwargs.setdefault(
         "motion_path",
-        Path(
-            "motions/asap_fixed_head/video_single_foot_balance_level1_filter_amass.npz"
-        ),
+        Path("motion.npz"),
     )
     return VastTrainConfig(
         max_price=1.25,
@@ -152,9 +150,6 @@ def motion_selection() -> GitSelection:
         commit="b" * 40,
         config_path=PurePosixPath("configs/profiles/train/motion.yaml"),
         repo_url="https://github.com/MotomindKR/bello_mujoco.git",
-        motion_path=PurePosixPath(
-            "motions/asap_fixed_head/video_single_foot_balance_level1_filter_amass.npz"
-        ),
     )
 
 
@@ -178,9 +173,7 @@ def test_vast_defaults_to_bello_and_accepts_mini_locomotion_profiles() -> None:
     validate_config(valid_config(experiment="bello_mini_standing"))
 
 
-def test_motion_git_selection_verifies_clip_at_selected_commit(
-    monkeypatch, tmp_path
-) -> None:
+def test_motion_git_selection_only_pins_source_not_clip(monkeypatch, tmp_path) -> None:
     commit = "c" * 40
     checked_objects = []
 
@@ -203,8 +196,8 @@ def test_motion_git_selection_verifies_clip_at_selected_commit(
 
     resolved = vast.resolve_git_selection(tmp_path, motion_config())
 
-    assert resolved.motion_path == motion_selection().motion_path
-    assert f"{commit}:{resolved.motion_path}" in checked_objects
+    assert resolved.commit == commit
+    assert not any(value.endswith(".npz") for value in checked_objects)
     assert f"{commit}:.gitmodules" in checked_objects
 
 
@@ -695,9 +688,15 @@ def test_remote_command_preflights_software_rendering() -> None:
 
 
 @pytest.mark.parametrize("payload_mass", [-1.0, float("nan"), float("inf")])
-def test_motion_vast_config_rejects_invalid_payload(payload_mass: float) -> None:
+def test_motion_vast_config_rejects_invalid_payload(
+    payload_mass: float, tmp_path
+) -> None:
+    clip = tmp_path / "motion.npz"
+    clip.write_bytes(b"clip")
     with pytest.raises(ValueError, match="end-effector-payload-mass-kg"):
-        validate_config(motion_config(end_effector_payload_mass_kg=payload_mass))
+        validate_config(
+            motion_config(motion_path=clip, end_effector_payload_mass_kg=payload_mass)
+        )
 
 
 def test_remote_runner_reconnects_and_resumes_log_offset(monkeypatch, capfd) -> None:
@@ -819,10 +818,12 @@ def test_motion_dry_run_never_reads_credentials_or_rents(
     def api_factory(api_key):
         raise AssertionError("dry-run must not create a Vast client")
 
+    clip = tmp_path / "untracked motion.npz"
+    clip.write_bytes(b"test clip")
     assert (
         launch_pipeline(
             tmp_path,
-            motion_config(dry_run=True),
+            motion_config(dry_run=True, motion_path=clip),
             api_factory=api_factory,
         )
         == 0
@@ -830,6 +831,6 @@ def test_motion_dry_run_never_reads_credentials_or_rents(
 
     output = capsys.readouterr().out
     assert "for motion-tracking" in output
-    assert str(motion_selection().motion_path) in output
+    assert str(clip) in output
     assert "no instance was rented" in output
     assert not (tmp_path / ".vast").exists()

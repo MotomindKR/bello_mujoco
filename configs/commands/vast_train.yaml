@@ -1,5 +1,5 @@
 experiment: bello_locomotion
-motion_path: null
+motion_path: null  # Local .npz uploaded over SSH; need not be tracked in Git.
 total_timesteps: null
 learning_rate: null
 end_effector_payload_mass_kg: null

@@ -22,6 +22,10 @@ by configured motor effort and stiffness. Both retain native ankle tendons and
 joint-space kinematic/limit rewards. The older reference-residual formulation
 no longer exists.
 
+For [Vast training](vast_ai.md), `experiment=motion motion_path=/local/clip.npz`
+uploads the selected clip over SSH with transfer verification. Motion data does
+not need to be tracked in the source commit.
+
 Training and deployment apply actions without an action low-pass filter.
 Action/target bounds remain enforced; hardwared still filters sensor feedback.
 
