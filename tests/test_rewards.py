@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
+import mujoco
 import pytest
 import numpy as np
 
@@ -55,16 +56,71 @@ def test_crossing_uses_signed_separation_in_every_mode():
     config = reward_config(foot_crossing=-8.0)
     for moving in (False, True):
         inputs = reward_inputs(
-            minimum_foot_separation=jnp.asarray(0.12),
+            foot_lateral_clearance=jnp.asarray(0.1),
             foot_separation=jnp.asarray(0.22),
             gait_active=jnp.asarray(moving),
         )
         normal = compute_locomotion_reward(config, inputs)[0]
         crossed = compute_locomotion_reward(
-            config, inputs.replace(foot_separation=jnp.asarray(-0.22))
+            config, inputs.replace(foot_lateral_clearance=jnp.asarray(-0.34))
         )[0]
         assert float(normal) == 0.0
-        assert float(crossed) < -1.0
+    assert float(crossed) < -1.0
+
+
+def test_current_sole_geometry_reaches_crossing_reward_under_jit_and_vmap():
+    config = reward_config(foot_crossing=-8.0)
+    positions = jnp.asarray([[0, 0.07, 0], [0, -0.07, 0]])
+    env = SimpleNamespace(
+        config=SimpleNamespace(gait=SimpleNamespace(stance_fraction=0.6)),
+        reward_config=config,
+        model=SimpleNamespace(
+            foot_body_ids=np.asarray([0, 1]),
+            foot_geom_ids=np.asarray([0, 1]),
+            geom_body_ids=np.asarray([0, 1]),
+            robot=SimpleNamespace(locomotion_forward_axis=(1.0, 0.0, 0.0)),
+            mj_model=SimpleNamespace(
+                geom_size=np.asarray([[0.12, 0.04, 0.015]] * 2),
+                geom_type=np.full(2, int(mujoco.mjtGeom.mjGEOM_BOX)),
+            ),
+        ),
+        _sole_reward_geometry=SimpleNamespace(
+            centers=np.zeros((2, 3)), corners=np.zeros((2, 4, 3)), nominal_width=0.14
+        ),
+        _reward_frame_link=lambda _: "root",
+        _link_quat=lambda *_: jnp.asarray([1.0, 0, 0, 0]),
+        _locomotion_right_axis=lambda: jnp.asarray([0.0, -1.0, 0.0]),
+        _terrain_height=lambda *_: 0.0,
+    )
+
+    def evaluate(angle):
+        c, s = jnp.cos(angle), jnp.sin(angle)
+        rotation = jnp.asarray([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+        quats = jnp.asarray(
+            [
+                [jnp.cos(angle / 2), 0, 0, jnp.sin(angle / 2)],
+                [jnp.cos(angle / 2), 0, 0, -jnp.sin(angle / 2)],
+            ]
+        )
+        state = SimpleNamespace(
+            gait_phase=jnp.asarray(0.0),
+            data=SimpleNamespace(
+                xpos=positions,
+                xquat=quats,
+                geom_xpos=positions,
+                geom_xmat=jnp.stack([rotation, rotation.T]),
+            ),
+        )
+        placement = BelloLocomotionEnv._foot_placement_inputs(env, state)
+        reward, _ = compute_locomotion_reward(config, reward_inputs(**placement))
+        return placement["foot_separation"], placement["foot_lateral_clearance"], reward
+
+    separation, gap, reward = jax.jit(jax.vmap(evaluate))(
+        jnp.asarray([0.0, jnp.pi / 6])
+    )
+    np.testing.assert_allclose(separation, [0.14, 0.14], atol=1e-6)
+    assert gap[0] > 0 and gap[1] < 0
+    assert reward[0] == 0 and reward[1] < 0
 
 
 def test_continuous_alignment_has_no_touchdown_cliff_and_cannot_be_disabled():
@@ -80,7 +136,7 @@ def test_continuous_alignment_has_no_touchdown_cliff_and_cannot_be_disabled():
         foot_foreaft=jnp.asarray(0.18),
         foot_separation=jnp.asarray(0.22),
         nominal_stance_width=jnp.asarray(0.22),
-        minimum_foot_separation=jnp.asarray(0.12),
+        foot_lateral_clearance=jnp.asarray(0.1),
         swing_progress=jnp.zeros(2),
         foot_clearance_samples=jnp.zeros((2, 4)),
     )
@@ -1137,7 +1193,7 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         foot_foreaft=jnp.asarray(0.08),
         foot_separation=jnp.asarray(-0.2),
         nominal_stance_width=jnp.asarray(0.2),
-        minimum_foot_separation=jnp.asarray(0.12),
+        foot_lateral_clearance=jnp.asarray(-0.32),
         command=jnp.asarray([0.5, 0.5, 0.5]),
         lin_vel_z=jnp.asarray(1.0),
         ang_vel_xy=jnp.asarray([1.0, 1.0]),

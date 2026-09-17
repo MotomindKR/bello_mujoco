@@ -44,6 +44,7 @@ from bello_mujoco.envs.rewards import (
 )
 from bello_mujoco.envs.foot_geometry import (
     sole_geometry,
+    sole_lateral_clearance,
     sole_support_positions,
     heightfield_surface_normal,
 )
@@ -1673,19 +1674,30 @@ class BelloLocomotionEnv:
         corners = positions[:, None, :] + jax.vmap(
             lambda q, points: jax.vmap(lambda p: quat_rotate(q, p))(points)
         )(quats, jnp.asarray(geometry.corners))
-        delta = quat_rotate_inverse(
-            yaw_quat(
-                self._link_quat(state, self._reward_frame_link("track_lin_vel_xy"))
-            ),
-            centers[0] - centers[1],
+        heading = yaw_quat(
+            self._link_quat(state, self._reward_frame_link("track_lin_vel_xy"))
+        )
+        delta = quat_rotate_inverse(heading, centers[0] - centers[1])
+        separation = -jnp.dot(delta, self._locomotion_right_axis())
+        left_axis = quat_rotate(heading, -self._locomotion_right_axis())
+        ids = jnp.asarray(self.model.foot_geom_ids)
+        clearance = sole_lateral_clearance(
+            state.data.geom_xpos[ids],
+            state.data.geom_xmat[ids].reshape((-1, 3, 3)),
+            jnp.asarray(self.model.mj_model.geom_size)[ids],
+            jnp.asarray(self.model.mj_model.geom_type)[ids],
+            jnp.asarray(self.model.geom_body_ids)[ids],
+            bodies,
+            left_axis,
+            array_module=jnp,
         )
         result.update(
             foot_foreaft=jnp.dot(
                 delta, jnp.asarray(self.model.robot.locomotion_forward_axis)
             ),
-            foot_separation=-jnp.dot(delta, self._locomotion_right_axis()),
+            foot_separation=separation,
             nominal_stance_width=jnp.asarray(geometry.nominal_width),
-            minimum_foot_separation=jnp.asarray(geometry.minimum_separation),
+            foot_lateral_clearance=clearance,
             foot_clearance_samples=corners[:, :, 2]
             - self._terrain_height(corners[:, :, :2], world_id),
         )

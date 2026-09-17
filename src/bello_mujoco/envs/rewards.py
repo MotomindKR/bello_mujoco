@@ -431,7 +431,7 @@ class RewardInputs:
     foot_foreaft: jax.Array = 0.0
     foot_separation: jax.Array = 0.0
     nominal_stance_width: jax.Array = 0.0
-    minimum_foot_separation: jax.Array = 0.0
+    foot_lateral_clearance: jax.Array = 0.0
     foot_clearance_samples: jax.Array | None = None
     swing_progress: jax.Array | None = None
     motor_continuous_torque: jax.Array | None = None
@@ -707,7 +707,7 @@ def compute_locomotion_reward(
     stand_foot_foreaft *= alignment_gate
     stand_foot_width *= alignment_gate
     foot_crossing = positive_huber(
-        (inputs.minimum_foot_separation - inputs.foot_separation)
+        (config.gait.sole_clearance_margin - inputs.foot_lateral_clearance)
         / config.gait.crossing_scale
     )
     foot_stumble = jnp.asarray(0.0)

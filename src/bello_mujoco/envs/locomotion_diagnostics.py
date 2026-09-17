@@ -69,13 +69,15 @@ def gait_diagnostics(
     if "foot_separation" in placement:
         placement_metrics = {
             "gait/sole_signed_separation": placement["foot_separation"],
+            "gait/sole_lateral_clearance": placement["foot_lateral_clearance"],
             "gait/sole_foreaft_error": jnp.abs(placement["foot_foreaft"]),
             "gait/sole_width_error": jnp.abs(
                 placement["foot_separation"] - placement["nominal_stance_width"]
             ),
             "gait/feet_crossed": (placement["foot_separation"] < 0).astype(jnp.float32),
             "gait/sole_clearance_violation": (
-                placement["foot_separation"] < placement["minimum_foot_separation"]
+                placement["foot_lateral_clearance"]
+                < env.reward_config.gait.sole_clearance_margin
             ).astype(jnp.float32),
         }
     return {

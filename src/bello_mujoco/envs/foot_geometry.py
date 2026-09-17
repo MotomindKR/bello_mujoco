@@ -6,6 +6,52 @@ import mujoco
 import numpy as np
 
 
+def sole_lateral_clearance(
+    geom_position,
+    geom_rotation,
+    geom_size,
+    geom_type,
+    geom_body_ids,
+    foot_body_ids,
+    left_axis,
+    *,
+    array_module,
+):
+    """Signed gap between current sole projections on the locomotion-left axis.
+
+    Positive means the entire left sole is left of the right sole. Negative
+    means lateral overlap or crossed feet, even when separated fore/aft or in
+    height. This is a conservative anti-crossing measure, not a 3D distance.
+    The axis must be a unit world-space locomotion-left vector.
+    """
+    xp = array_module
+    local_axis = xp.einsum("gji,j->gi", geom_rotation, left_axis)
+    radial = xp.linalg.norm(local_axis[:, :2], axis=1)
+    axial = xp.abs(local_axis[:, 2])
+    extent = geom_size[:, 0]
+    for shape, candidate in (
+        (mujoco.mjtGeom.mjGEOM_BOX, xp.sum(xp.abs(local_axis) * geom_size, axis=1)),
+        (
+            mujoco.mjtGeom.mjGEOM_CYLINDER,
+            geom_size[:, 0] * radial + geom_size[:, 1] * axial,
+        ),
+        (mujoco.mjtGeom.mjGEOM_CAPSULE, geom_size[:, 0] + geom_size[:, 1] * axial),
+        (
+            mujoco.mjtGeom.mjGEOM_ELLIPSOID,
+            xp.linalg.norm(local_axis * geom_size, axis=1),
+        ),
+    ):
+        extent = xp.where(geom_type == int(shape), candidate, extent)
+    projection = geom_position @ left_axis
+    left_inner = xp.min(
+        xp.where(geom_body_ids == foot_body_ids[0], projection - extent, xp.inf)
+    )
+    right_inner = xp.max(
+        xp.where(geom_body_ids == foot_body_ids[1], projection + extent, -xp.inf)
+    )
+    return left_inner - right_inner
+
+
 def heightfield_surface_normal(world_xy, terrain_height, *, array_module):
     """Finite-difference normals shared by NumPy evaluation and JAX rollouts."""
     xp = array_module
@@ -95,7 +141,6 @@ class SoleGeometry:
     centers: np.ndarray
     corners: np.ndarray
     nominal_width: float
-    minimum_separation: float
 
 
 def sole_geometry(model, margin: float) -> SoleGeometry:
@@ -166,5 +211,4 @@ def sole_geometry(model, margin: float) -> SoleGeometry:
         np.asarray(centers, dtype=np.float32),
         np.asarray(corners, dtype=np.float32),
         nominal_width,
-        minimum_separation,
     )

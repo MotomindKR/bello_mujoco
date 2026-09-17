@@ -46,6 +46,17 @@ costs, including during single support; speed and lean do not relax posture,
 alignment, or thermal penalties. Explicit per-joint posture weights live in the
 Mini training profile. Full-size Bello retains its active standing-specific terms.
 
+`foot_crossing` penalizes signed lateral clearance between the current sole
+collision primitives, accounting for yaw, roll, pitch, and thickness. It remains
+active during both swing and stance. `gait.sole_clearance_margin` sets the
+desired edge buffer; `gait.crossing_scale` sets the Huber penalty scale. This is
+a conservative lateral projection, not the closest 3D distance: separating feet
+fore/aft or vertically does not exempt crossed or overlapping lateral paths.
+`gait/sole_lateral_clearance` reports this signed edge gap; the existing center
+separation metric remains available. Standing width still targets the nominal
+stance rather than a wider walking stance. These reward changes require
+training; they do not alter an already exported policy.
+
 Mini's standing motor-torque cost covers every physical actuator, including held
 arms and each differential-ankle motor, above half its model's rated output
 torque. Ratings live in `robots/motor_torque_ratings.yaml`; motor identities and
