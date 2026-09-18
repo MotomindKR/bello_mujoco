@@ -67,7 +67,7 @@ reward_config:
     swing_clearance_target: 0.075
     phase_shaped_clearance: true
     crossing_scale: 0.02
-    sole_clearance_margin: 0.02
+    sole_clearance_margin: 0.05
     stumble_grace_fraction: 0.15
     stumble_load_body_weights: 0.05
     stumble_speed_scale: 0.15

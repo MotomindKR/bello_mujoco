@@ -49,7 +49,9 @@ Mini training profile. Full-size Bello retains its active standing-specific term
 `foot_crossing` penalizes signed lateral clearance between the current sole
 collision primitives, accounting for yaw, roll, pitch, and thickness. It remains
 active during both swing and stance. `gait.sole_clearance_margin` sets the
-desired edge buffer; `gait.crossing_scale` sets the Huber penalty scale. This is
+soft penalty onset; `gait.crossing_scale` sets the Huber penalty scale. The
+penalty is zero at the onset and grows gradually below it, so select an onset
+above the desired minimum clearance. It does not enforce a hard minimum. This is
 a conservative lateral projection, not the closest 3D distance: separating feet
 fore/aft or vertically does not exempt crossed or overlapping lateral paths.
 `gait/sole_lateral_clearance` reports this signed edge gap; the existing center
