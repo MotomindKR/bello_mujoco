@@ -59,6 +59,11 @@ separation metric remains available. Standing width still targets the nominal
 stance rather than a wider walking stance. These reward changes require
 training; they do not alter an already exported policy.
 
+`gait.swing_clearance_target` is independent of lateral clearance. With
+`phase_shaped_clearance` enabled, it sets the peak of a sine-squared clearance
+target over swing progress. The cost penalizes sole samples below this target,
+not feet above it; lowering the target does not impose a maximum step height.
+
 Mini's standing motor-torque cost covers every physical actuator, including held
 arms and each differential-ankle motor, above half its model's rated output
 torque. Ratings live in `robots/motor_torque_ratings.yaml`; motor identities and
