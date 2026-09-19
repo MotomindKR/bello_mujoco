@@ -41,6 +41,32 @@ pub struct LimitedTarget {
 }
 
 impl TargetLimits {
+    /// Convex transition envelope; both inputs must already include hardware bounds.
+    pub fn transition_envelope(&self, other: &Self) -> Result<Self> {
+        ensure!(
+            self.rows.len() == other.rows.len()
+                && self.groups == other.groups
+                && self
+                    .rows
+                    .iter()
+                    .zip(&other.rows)
+                    .all(|(a, b)| a.indices == b.indices && a.coefficients == b.coefficients),
+            "transition limit coordinate mappings differ"
+        );
+        let mut result = self.clone();
+        for (row, other) in result.rows.iter_mut().zip(&other.rows) {
+            row.bounds = [
+                row.bounds[0].min(other.bounds[0]),
+                row.bounds[1].max(other.bounds[1]),
+            ];
+        }
+        for (step, other) in result.steps.iter_mut().zip(&other.steps) {
+            *step = step.min(*other);
+        }
+        result.validate(&result.default)?;
+        Ok(result)
+    }
+
     /// Feedback is quantized; outgoing commands still use the exact envelope.
     pub fn startup_target(&self, measured: &[f64]) -> Result<Vec<f64>> {
         ensure!(
@@ -296,6 +322,79 @@ mod tests {
         assert!(limits.project(&[0., 0., 0.2]).unwrap()[2] < 0.1);
         limits.restrict_motor(2, -3., 3.).unwrap();
         assert!(limits.project(&[0., 0., 0.2]).unwrap()[2] < 0.1);
+    }
+
+    #[test]
+    fn transition_reaches_wider_task_and_returns_without_violating_hardware_or_steps() {
+        let standing = TargetLimits::new(
+            &serde_json::json!({
+                "motor_limits": [[0., 0.8]], "joint_limits": [[0., 2.5]],
+                "joint_from_motor": [[1.]], "position_step_limits": [0.1]
+            }),
+            &[0.4],
+        )
+        .unwrap();
+        let mut motion = TargetLimits::new(
+            &serde_json::json!({
+                "motor_limits": [[0., 2.5]], "joint_limits": [[0., 2.5]],
+                "joint_from_motor": [[1.]], "position_step_limits": [0.2]
+            }),
+            &[0.4],
+        )
+        .unwrap();
+        motion.restrict_motor(0, 0., 1.8).unwrap();
+        let transition = standing.transition_envelope(&motion).unwrap();
+        let mut previous = vec![0.4];
+        for _ in 0..30 {
+            let next = transition
+                .constrain(&[2.4], &previous)
+                .unwrap()
+                .motor_target;
+            assert!(next[0] <= 1.8 && (next[0] - previous[0]).abs() <= 0.1);
+            previous = next;
+        }
+        assert!(previous[0] > 1.7);
+        assert!(standing.validate(&previous).is_err());
+        motion.validate(&previous).unwrap();
+        // A completed timed blend does not imply we may switch to standing yet.
+        previous = transition
+            .constrain(&[0.4], &previous)
+            .unwrap()
+            .motor_target;
+        assert!(standing.validate(&previous).is_err());
+        for _ in 0..30 {
+            let next = transition
+                .constrain(&[0.4], &previous)
+                .unwrap()
+                .motor_target;
+            assert!((next[0] - previous[0]).abs() <= 0.1);
+            previous = next;
+        }
+        standing.validate(&previous).unwrap();
+        assert!(standing.constrain(&[2.4], &previous).unwrap().motor_target[0] <= 0.8);
+    }
+
+    #[test]
+    fn transition_preserves_coupled_rows_and_rejects_other_mappings() {
+        let standing = limits();
+        let mut motion = standing.clone();
+        motion.rows[3].bounds = [-0.8, 1.2];
+        motion.restrict_motor(0, -0.7, 0.7).unwrap();
+        let mut standing = standing;
+        standing.restrict_motor(0, -0.7, 0.7).unwrap();
+        let transition = standing.transition_envelope(&motion).unwrap();
+        let mut previous = vec![0.; 3];
+        for _ in 0..30 {
+            previous = transition
+                .constrain(&[2., 2., 0.], &previous)
+                .unwrap()
+                .motor_target;
+        }
+        assert!(previous[0] <= 0.7 && previous[0] > 0.6);
+        assert_eq!(previous[0], previous[1]);
+        motion.validate(&previous).unwrap();
+        motion.rows[3].coefficients = DVec2::new(0.5, -0.5);
+        assert!(standing.transition_envelope(&motion).is_err());
     }
 
     #[test]

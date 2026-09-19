@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use super::{Feedback, Motion, pose};
 use crate::locomotion::{Feedback as HardwareFeedback, Locomotion};
+use crate::target_limits::TargetLimits;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,7 +41,7 @@ impl Interrupt {
 }
 
 struct Transition {
-    initial: Vec<f32>,
+    initial: Vec<f64>,
     step: usize,
     steps: usize,
 }
@@ -64,6 +65,8 @@ pub struct Live {
     config: Config,
     root_from_imu: DQuat,
     phase: Phase,
+    standing_limits: TargetLimits,
+    transition_limits: TargetLimits,
     pub interrupt: Interrupt,
 }
 
@@ -114,18 +117,46 @@ impl Live {
         // Warm up the graph before acquiring a lease, not on the first motion tick.
         motion.policy.infer(&vec![0.; observation_size])?;
         let poses = pose::Source::connect(config.pose.clone()).await?;
+        let standing_limits = standing.policy.target_limits.clone();
+        let transition_limits =
+            standing_limits.transition_envelope(&motion.policy.target_limits)?;
         Ok(Self {
             motion,
             poses,
             config,
             root_from_imu,
             phase: Phase::Standing,
+            standing_limits,
+            transition_limits,
             interrupt: Interrupt::default(),
         })
     }
 
     pub fn motion_period(&self) -> f64 {
         self.motion.policy.metadata.control_timestep
+    }
+
+    pub fn motion_limits(&self) -> &TargetLimits {
+        &self.motion.policy.target_limits
+    }
+
+    pub fn configure_target_limits(
+        &mut self,
+        standing: TargetLimits,
+        motion: TargetLimits,
+    ) -> Result<()> {
+        self.transition_limits = standing.transition_envelope(&motion)?;
+        self.standing_limits = standing;
+        self.motion.policy.target_limits = motion;
+        Ok(())
+    }
+
+    pub fn target_limits(&self) -> &TargetLimits {
+        match self.phase {
+            Phase::Standing => &self.standing_limits,
+            Phase::Motion(_) => self.motion_limits(),
+            Phase::ToMotion(_) | Phase::ToStanding(_) => &self.transition_limits,
+        }
     }
 
     pub fn tilt_limit(&self, standing: f64) -> f64 {
@@ -154,7 +185,7 @@ impl Live {
         Ok(pose)
     }
 
-    fn transition(&self, initial: &[f32], period: f64) -> Transition {
+    fn transition(&self, initial: &[f64], period: f64) -> Transition {
         Transition {
             initial: initial.to_vec(),
             step: 0,
@@ -167,10 +198,27 @@ impl Live {
         standing: &mut Locomotion,
         feedback: &HardwareFeedback,
         request_motion: bool,
-        previous_target: &[f32],
+        previous_target: &[f64],
     ) -> Result<Output> {
         let pose = self.pose(feedback)?;
         let standing_period = standing.policy.metadata.control_timestep;
+        // A scheduled blend can finish before step limiting reaches the destination.
+        // Switch envelopes only after the last acknowledged command is feasible there.
+        match &self.phase {
+            Phase::ToMotion(t)
+                if t.step >= t.steps && self.motion_limits().validate(previous_target).is_ok() =>
+            {
+                self.phase = Phase::Motion(Instant::now());
+                eprintln!("Motion tracking policy is active.");
+            }
+            Phase::ToStanding(t)
+                if t.step >= t.steps && self.standing_limits.validate(previous_target).is_ok() =>
+            {
+                self.phase = Phase::Standing;
+                eprintln!("Standing policy resumed. Type MOTION to start the clip again.");
+            }
+            _ => {}
+        }
         if request_motion {
             ensure!(
                 matches!(self.phase, Phase::Standing),
@@ -246,27 +294,29 @@ impl Live {
                 )
             }
         };
-        let mut target = target;
+        let destination = match self.phase {
+            Phase::Standing | Phase::ToStanding(_) => &self.standing_limits,
+            Phase::Motion(_) | Phase::ToMotion(_) => self.motion_limits(),
+        };
+        let mut target: Vec<f64> = target.iter().map(|v| *v as f64).collect();
+        let mut destination_target_limited = false;
+        if matches!(self.phase, Phase::ToMotion(_) | Phase::ToStanding(_)) {
+            let projected = destination.project(&target)?;
+            destination_target_limited = projected != target;
+            target = projected;
+        }
         if let Phase::ToMotion(t) | Phase::ToStanding(t) = &mut self.phase {
-            t.step += 1;
-            let fraction = t.step as f32 / t.steps as f32;
+            t.step = (t.step + 1).min(t.steps);
+            let fraction = t.step as f64 / t.steps as f64;
             for (value, initial) in target.iter_mut().zip(&t.initial) {
                 *value = initial + fraction * (*value - initial);
             }
-            if t.step == t.steps {
-                if matches!(self.phase, Phase::ToMotion(_)) {
-                    // The first reference advance occurs on the next control tick.
-                    self.phase = Phase::Motion(Instant::now() + Duration::from_secs_f64(period));
-                    eprintln!("Motion tracking policy is active.");
-                } else {
-                    self.phase = Phase::Standing;
-                    eprintln!("Standing policy resumed. Type MOTION to start the clip again.");
-                }
-            }
         }
+        let target: Vec<f32> = target.into_iter().map(|v| v as f32).collect();
         Ok(Output {
             log: json!({"phase": phase_name, "reference_time": reference_time,
-            "policy": policy_log, "motor_target": target}),
+            "policy": policy_log, "motor_target": target,
+            "destination_target_limited": destination_target_limited}),
             target,
             period: Duration::from_secs_f64(period),
         })

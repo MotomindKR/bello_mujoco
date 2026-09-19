@@ -69,6 +69,23 @@ pub struct Hardware {
 }
 
 impl Hardware {
+    pub fn restrict_target_limits(
+        &self,
+        limits: &crate::target_limits::TargetLimits,
+    ) -> Result<crate::target_limits::TargetLimits> {
+        let mut limits = limits.clone();
+        for (i, name) in self.motors.iter().enumerate() {
+            let motor = self
+                .robot
+                .motors()
+                .find(|motor| motor.name() == name)
+                .context("configured motor missing from hardware inventory")?;
+            let bounds = motor.limits();
+            limits.restrict_motor(i, bounds.position_min(), bounds.position_max())?;
+        }
+        Ok(limits)
+    }
+
     pub async fn connect(config: Config, runtime: &Locomotion) -> Result<Self> {
         config.validate()?;
         let duration = Duration::from_secs_f64(config.connection_timeout_seconds);

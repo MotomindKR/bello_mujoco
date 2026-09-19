@@ -39,6 +39,11 @@ XML = """<mujoco><worldbody><body name="root"><freejoint/>
 class MotionHardware(SyntheticHardware):
     pose_failure = None
 
+    def ListHardware(self, request, context):
+        response = super().ListHardware(request, context)
+        response.motors[0].limits.position_max = 0.65
+        return response
+
     def GetStateFrame(self, request, context):
         response = super().GetStateFrame(request, context)
         response.imus[0].orientation.CopyFrom(
@@ -114,13 +119,16 @@ def motion_bundle(source):
         source,
         physics=XML.encode(),
         motion=clip,
-        target=[0.26, -0.34, 0.44],
+        target=[0.75, -0.34, 0.44],
         metadata_updates=dict(
             task="motion_tracking",
             policy_indices=[0, 1, 2],
             observation_size=sum(n for _, n in layout),
             observation_frame=layout,
             control_timestep=0.01,
+            motor_limits=[[0.0, 0.9], [-3, 3], [-3, 3]],
+            joint_limits=[[0.0, 0.8], [-3, 3], [-3, 3]],
+            position_step_limits=[0.02, 0.02, 0.02],
             environment=to_builtin(MotionTrackingEnvConfig(anchor_body_name="root")),
             end_effector_names=["tip"],
         ),
@@ -156,7 +164,7 @@ def control_settings(endpoint, standing, log=None):
     )
     settings["control"].update(
         ramp_seconds=0.06,
-        max_duration_seconds=0.8,
+        max_duration_seconds=1.5,
         policy_log_path=str(log) if log is not None else None,
     )
     settings["control"]["remote"]["endpoint"] = endpoint
@@ -187,7 +195,16 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
     fake = MotionHardware(hardware_proto)
     server, pool, endpoint = start_services(fake)
     standing = tmp_path / "standing.zip"
-    standing.write_bytes(bundle(source))
+    standing.write_bytes(
+        bundle(
+            source,
+            metadata_updates=dict(
+                motor_limits=[[0.0, 0.3], [-3, 3], [-3, 3]],
+                joint_limits=[[0.0, 0.35], [-3, 3], [-3, 3]],
+                position_step_limits=[0.025, 0.025, 0.025],
+            ),
+        )
+    )
     motion = tmp_path / "motion.zip"
     motion.write_bytes(motion_bundle(source))
     log = tmp_path / "policy.jsonl"
@@ -265,12 +282,25 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
             assert any(row.get("event") == "command_rejected" for row in events)
         phases = [row["phase"] for row in rows]
         assert "transition_to_motion" in phases
-        targets = np.asarray([row["motor_target"] for row in rows])
-        assert np.abs(np.diff(targets, axis=0)).max() <= 0.015001
+        applied = [row for row in events if "motion" in row]
+        targets = np.asarray([row["command"]["motor_target"] for row in applied])
+        assert np.abs(np.diff(targets, axis=0)).max() <= 0.025001
+        assert targets[:, 0].max() <= 0.65
+        for row in applied:
+            if row["motion"]["phase"] == "standing":
+                assert row["command"]["motor_target"][0] <= 0.3
         if failure in (None, "interrupt"):
             assert "transition_to_standing" in phases
             assert phases[-1] == "standing"
             np.testing.assert_allclose(targets[-1], [0.2, -0.3, 0.4], atol=1e-6)
+        if failure is None:
+            assert targets[:, 0].max() > 0.6
+            returning = [
+                row
+                for row in applied
+                if row["motion"]["phase"] == "transition_to_standing"
+            ]
+            assert len(returning) * 0.02 > settings["motion"]["transition_seconds"]
     finally:
         if process.poll() is None:
             process.kill()

@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
 
         let mut config: Config = serde_yaml::from_reader(std::fs::File::open(path)?)?;
         let control = config.control.take();
-        let (mut runtime, live) = if policy.metadata.task == "motion_tracking" {
+        let (mut runtime, mut live) = if policy.metadata.task == "motion_tracking" {
             let settings = config.motion.take().ok_or_else(|| {
                 anyhow::anyhow!("motion hardware control requires motion settings")
             })?;
@@ -65,7 +65,11 @@ async fn main() -> Result<()> {
             (Locomotion::new(policy)?, None)
         };
         let hardware = Hardware::connect(config, &runtime).await?;
-        if let Some(live) = &live {
+        if let Some(live) = &mut live {
+            live.configure_target_limits(
+                hardware.target_limits.clone(),
+                hardware.restrict_target_limits(live.motion_limits())?,
+            )?;
             anyhow::ensure!(
                 hardware
                     .groups

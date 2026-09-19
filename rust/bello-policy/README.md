@@ -120,6 +120,13 @@ required for explicit disable. Standing and motion retain their own control
 periods and histories. The remote is monitored for aborts, but its velocity
 axes are ignored in this workflow. Upper-body following must be disabled.
 
+Standing and motion each use their own motor/joint target limits, intersected
+with the live hardware motor bounds. Blends use a transition envelope covering
+both policies and the stricter per-coordinate position-step limits. A blend
+does not switch to its destination limits until the last acknowledged target
+is valid there, even if the configured blend duration has elapsed. Hardwared
+continues independently enforcing its motor and coupled-joint limits.
+
 Synthetic gRPC tests cover both transitions, different policy periods, mounted
 IMU rotation, pose failures, rejection/abort, interruptions, and read-only
 preflight. They do not establish trained-policy stability on the full emulator.

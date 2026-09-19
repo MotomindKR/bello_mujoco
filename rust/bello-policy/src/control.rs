@@ -190,9 +190,10 @@ async fn send(
     target: &[f64],
     config: &Config,
     targets: &mut CommandTargets,
+    limits: &crate::target_limits::TargetLimits,
     log: &mut Option<File>,
 ) -> Result<crate::target_limits::LimitedTarget> {
-    let command = targets.limits.constrain(target, &targets.previous)?;
+    let command = limits.constrain(target, &targets.previous)?;
     let frames = controls
         .iter()
         .map(|c| frame(c.group(), policy, &command.motor_target, config.gain_scale))
@@ -233,7 +234,6 @@ async fn send(
 }
 
 struct CommandTargets {
-    limits: crate::target_limits::TargetLimits,
     previous: Vec<f64>,
     limited_count: u64,
 }
@@ -327,7 +327,6 @@ pub async fn run(
             log.flush()?;
         }
         let mut targets = CommandTargets {
-            limits,
             previous: startup_target.clone(),
             limited_count: 0,
         };
@@ -386,6 +385,7 @@ pub async fn run(
                 &ramp,
                 &config,
                 &mut targets,
+                &limits,
                 &mut log,
             )
             .await?;
@@ -407,6 +407,7 @@ pub async fn run(
                 &target,
                 &config,
                 &mut targets,
+                &limits,
                 &mut log,
             )
             .await?;
@@ -419,7 +420,6 @@ pub async fn run(
         policy.reset();
         deadline = tokio::time::Instant::now();
         let started = Instant::now();
-        let mut previous_target = policy.policy.metadata.default_position.clone();
         let mut active_period = period;
         if motion.is_some() {
             operator.prompt(
@@ -446,7 +446,7 @@ pub async fn run(
                     "expected exact MOTION"
                 );
                 let step =
-                    motion.step(&mut policy, &sample, request.is_some(), &previous_target)?;
+                    motion.step(&mut policy, &sample, request.is_some(), &targets.previous)?;
                 if step.period != active_period {
                     deadline = tokio::time::Instant::now();
                     active_period = step.period;
@@ -458,10 +458,10 @@ pub async fn run(
                     &target,
                     &config,
                     &mut targets,
+                    motion.target_limits(),
                     &mut log,
                 )
                 .await?;
-                previous_target = command.motor_target.iter().map(|v| *v as f32).collect();
                 if let Some(log) = &mut log {
                     serde_json::to_writer(
                         &mut *log,
@@ -492,6 +492,7 @@ pub async fn run(
                 &target,
                 &config,
                 &mut targets,
+                &limits,
                 &mut log,
             )
             .await?;
