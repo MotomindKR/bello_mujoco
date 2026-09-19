@@ -37,6 +37,9 @@ async fn main() -> Result<()> {
         policy.metadata.coordinates.len()
     );
     if args.check {
+        if policy.metadata.task == "motion_tracking" {
+            bello_policy::motion::Motion::new(policy)?;
+        }
         return Ok(());
     }
     if let Some(path) = args.hardware_config {

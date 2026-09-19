@@ -64,6 +64,8 @@ pub struct Motion {
     settings: Settings,
     clip: Clip,
     data: MjData<Box<MjModel>>,
+    qpos_indices: Vec<usize>,
+    qvel_indices: Vec<usize>,
     anchor: usize,
     bodies: Vec<usize>,
     end_effectors: Vec<usize>,
@@ -152,7 +154,9 @@ impl Motion {
                 && model.jnt_type()[0] == MjtJoint::mjJNT_FREE,
             "motion model must have one floating base and scalar joints"
         );
-        for (i, name) in settings.joint_names.iter().enumerate() {
+        let mut qpos_indices = Vec::with_capacity(n);
+        let mut qvel_indices = Vec::with_capacity(n);
+        for name in &settings.joint_names {
             let id = model
                 .name_to_id(MjtObj::mjOBJ_JOINT, name)
                 .with_context(|| format!("missing motion joint {name}"))?;
@@ -160,10 +164,11 @@ impl Motion {
                 matches!(
                     model.jnt_type()[id],
                     MjtJoint::mjJNT_HINGE | MjtJoint::mjJNT_SLIDE
-                ) && model.jnt_qposadr()[id] as usize == 7 + i
-                    && model.jnt_dofadr()[id] as usize == 6 + i,
-                "clip/model joint layout mismatch: {name}"
+                ),
+                "motion joint must be scalar: {name}"
             );
+            qpos_indices.push(model.jnt_qposadr()[id] as usize);
+            qvel_indices.push(model.jnt_dofadr()[id] as usize);
         }
         let bodies = clip
             .body_names
@@ -196,6 +201,8 @@ impl Motion {
             settings,
             clip,
             data,
+            qpos_indices,
+            qvel_indices,
             anchor,
             bodies,
             end_effectors,
@@ -309,7 +316,9 @@ impl Motion {
         );
         self.data.qpos_mut()[..3].copy_from_slice(&feedback.position);
         self.data.qpos_mut()[3..7].copy_from_slice(&to_wxyz(quat));
-        self.data.qpos_mut()[7..].copy_from_slice(&position);
+        for (&index, &value) in self.qpos_indices.iter().zip(&position) {
+            self.data.qpos_mut()[index] = value;
+        }
         self.data.kinematics();
         let anchor_pos = DVec3::from_array(self.data.xpos()[self.bodies[self.anchor]]);
         let anchor_quat = from_wxyz(self.data.xquat()[self.bodies[self.anchor]]);
@@ -350,8 +359,16 @@ impl Motion {
         let indices = &self.policy.metadata.policy_indices;
         let default = &self.settings.default_joint_position;
         let mut frame = Vec::<f64>::new();
-        frame.extend(indices.iter().map(|&i| reference.qpos[7 + i] - default[i]));
-        frame.extend(indices.iter().map(|&i| reference.qvel[6 + i]));
+        frame.extend(
+            indices
+                .iter()
+                .map(|&i| reference.qpos[self.qpos_indices[i]] - default[i]),
+        );
+        frame.extend(
+            indices
+                .iter()
+                .map(|&i| reference.qvel[self.qvel_indices[i]]),
+        );
         frame.extend(
             (anchor_quat.conjugate() * (reference.body_pos[self.anchor] - anchor_pos)).to_array(),
         );

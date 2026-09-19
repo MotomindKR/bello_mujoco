@@ -46,10 +46,13 @@ class ObservationEnvironment(SimpleNamespace):
     _corrupt_observation_terms = BelloMotionTrackingEnv._corrupt_observation_terms
 
 
-@pytest.fixture
-def motion_fixture(rust_policy):
+@pytest.fixture(params=[("a", "b"), ("b", "a")], ids=["model-order", "policy-order"])
+def motion_fixture(rust_policy, request):
     run, _, source = rust_policy
     model = mujoco.MjModel.from_xml_string(XML)
+    joint_names = request.param
+    qpos_indices = np.array([model.joint(name).qposadr[0] for name in joint_names])
+    qvel_indices = np.array([model.joint(name).dofadr[0] for name in joint_names])
     data = mujoco.MjData(model)
     ids = [model.body(name).id for name in ("root", "anchor", "tip")]
     qpos, qvel, positions, quaternions = [], [], [], []
@@ -70,7 +73,7 @@ def motion_fixture(rust_policy):
         quaternions.append(data.xquat[ids].copy() * (-1 if i % 2 else 1))
     clip = MotionClip(
         fps=10.0,
-        joint_names=("a", "b"),
+        joint_names=joint_names,
         body_names=("root", "anchor", "tip"),
         qpos=jnp.array(qpos),
         qvel=jnp.array(qvel),
@@ -80,7 +83,7 @@ def motion_fixture(rust_policy):
         body_ang_vel=jnp.zeros((4, 3, 3)),
         foot_contacts=jnp.zeros((4, 2)),
     )
-    default = np.array([0.1, -0.2])
+    default = np.array([0.1, -0.2])[qpos_indices - 7]
     inverse = np.array([[0.5, 0.5], [-0.5, 0.5]])
     transform = np.linalg.inv(inverse)
     config = MotionTrackingEnvConfig(anchor_body_name="anchor")
@@ -92,8 +95,8 @@ def motion_fixture(rust_policy):
         anchor_body_index=1,
         model=SimpleNamespace(
             mj_model=model,
-            policy_qpos_indices=np.array([7, 8]),
-            policy_qvel_indices=np.array([6, 7]),
+            policy_qpos_indices=qpos_indices,
+            policy_qvel_indices=qvel_indices,
             policy_ctrl_indices=np.arange(2),
             default_joint_target=default,
         ),
@@ -121,7 +124,7 @@ def motion_fixture(rust_policy):
         kp=[2.0, 2.0],
         kd=[0.1, 0.1],
         control_timestep=0.02,
-        joint_names=["a", "b"],
+        joint_names=list(joint_names),
         joint_from_motor=inverse.tolist(),
         motor_limits=limits.tolist(),
         joint_limits=limits.tolist(),
@@ -132,7 +135,7 @@ def motion_fixture(rust_policy):
         action_clip=1.0,
     )
 
-    def bundle(*, metadata_updates=None, motion=None, effort_scale=None):
+    def bundle(*, metadata_updates=None, motion=None, effort_scale=None, physics=XML):
         graph = actor_onnx(
             actor,
             norm,
@@ -145,7 +148,7 @@ def motion_fixture(rust_policy):
             effort_scale=effort_scale,
         )
         return deployment_bundle(
-            graph.SerializeToString(), physics=XML.encode(), motion=motion or clip
+            graph.SerializeToString(), physics=physics.encode(), motion=motion or clip
         )
 
     sample = dict(
@@ -161,6 +164,18 @@ def motion_fixture(rust_policy):
         initialize=True,
     )
     return SimpleNamespace(**locals())
+
+
+def test_motion_bundle_check_initializes_named_joint_kinematics(motion_fixture):
+    f = motion_fixture
+    result = f.run(content=f.bundle(), check=True)
+    assert result.returncode == 0, result.stderr
+    result = f.run(
+        content=f.bundle(physics=XML.replace('name="a"', 'name="missing"')),
+        check=True,
+    )
+    assert result.returncode != 0
+    assert "missing motion joint a" in result.stderr
 
 
 @pytest.mark.parametrize("effort_scale", [None, np.array([0.7, 1.2])])
@@ -197,16 +212,16 @@ def test_motion_telemetry_matches_jax_with_alignment_history_and_coupling(
             )[:2]
             action = np.zeros(2)
             history = None
-        f.data.qpos[:] = [
+        f.data.qpos[:7] = [
             *position,
             *pose.as_quat()[[3, 0, 1, 2]],
-            *(f.inverse @ sample["motor_position"]),
         ]
-        f.data.qvel[:] = [
+        f.data.qpos[f.qpos_indices] = f.inverse @ sample["motor_position"]
+        f.data.qvel[:6] = [
             *sample["linear_velocity_world"],
             *sample["angular_velocity_local"],
-            *(f.inverse @ sample["motor_velocity"]),
         ]
+        f.data.qvel[f.qvel_indices] = f.inverse @ sample["motor_velocity"]
         mujoco.mj_kinematics(f.model, f.data)
         state = SimpleNamespace(
             reference_time=jnp.array(time),
@@ -289,7 +304,10 @@ def test_motion_feedback_fails_closed(motion_fixture, update, message):
 def test_motion_rejects_mismatched_clip_and_invalid_quaternion(motion_fixture):
     f = motion_fixture
     for clip, message in [
-        (replace(f.clip, joint_names=("b", "a")), "joint orders differ"),
+        (
+            replace(f.clip, joint_names=tuple(reversed(f.joint_names))),
+            "joint orders differ",
+        ),
         (
             replace(f.clip, body_quat=f.clip.body_quat.at[0, 1].set(0.0)),
             "invalid motion quaternion",

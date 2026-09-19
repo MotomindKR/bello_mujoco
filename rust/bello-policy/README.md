@@ -20,6 +20,9 @@ motion tracking, `motion.npz`. The loader exposes XML bytes for the native
 MuJoCo adapter. Raw-observation inference does not initialize a physics model;
 motion telemetry uses headless MuJoCo 3.12.0 for forward kinematics only.
 Build from the repository root with `cargo build --locked -p bello-policy`.
+For motion bundles, `--check` also loads the clip and initializes the physics
+model without connecting to hardware. Motion observations resolve joints by
+name: policy/actuator order need not match MuJoCo's internal qpos/qvel order.
 On Linux, `nix develop .#rust-runtime` supplies the native libraries.
 Outside that shell, set `MUJOCO_DYNAMIC_LINK_DIR` to the directory containing
 the MuJoCo 3.12.0 shared library for the build, and make that library available
