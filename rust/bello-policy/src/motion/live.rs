@@ -93,10 +93,6 @@ impl Live {
             "standing/motion IMU frame mismatch"
         );
         ensure!(
-            config.pose.tracked_frame == motion.root_frame()?,
-            "pose must track the motion model's floating-base frame"
-        );
-        ensure!(
             config.start_time_seconds.is_finite()
                 && config.start_time_seconds >= 0.
                 && config.start_time_seconds < motion.duration(),
@@ -113,6 +109,7 @@ impl Live {
             );
         }
         let observation_size = a.observation_size;
+        motion.require_root_pose_frame(&config.pose.tracked_frame)?;
         let root_from_imu = motion.root_from_fixed_frame(standing.imu_frame())?;
         // Warm up the graph before acquiring a lease, not on the first motion tick.
         motion.policy.infer(&vec![0.; observation_size])?;

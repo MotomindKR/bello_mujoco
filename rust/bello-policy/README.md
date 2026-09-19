@@ -113,6 +113,9 @@ provide world-frame linear velocity and root-local angular velocity, not just
 position/orientation. Preflight checks both bundles' motor mapping and gains,
 pose freshness, and pose/IMU agreement using the model's fixed IMU mounting
 rotation. Both bundles must match the checked-out source commit.
+A differently named pose frame is accepted only if the bundled model proves
+it is rigidly fixed to and coincident with the floating base, including rotation.
+Offset, rotated, or articulated frames are rejected rather than reinterpreted.
 
 `HOLD` ramps to the standing policy's nominal pose; `RUN` starts standing with
 zero velocity command. Type `MOTION` to blend into the clip. Completion or the

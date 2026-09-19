@@ -26,6 +26,7 @@ pytestmark = pytest.mark.integration
 
 XML = """<mujoco><worldbody><body name="root"><freejoint/>
 <geom type="sphere" size=".1" mass="1"/>
+<body name="offset" pos=".01 0 0"><body name="coincident" pos="-.01 0 0"/></body>
 <body name="imu" quat=".9800665778412416 0 0 .19866933079506122"/>
 <body name="a"><joint name="first" axis="1 0 0"/>
 <geom type="sphere" size=".04" mass=".1"/>
@@ -169,6 +170,39 @@ def control_settings(endpoint, standing, log=None):
     )
     settings["control"]["remote"]["endpoint"] = endpoint
     return settings
+
+
+@pytest.mark.parametrize(
+    "frame,error",
+    [
+        ("root", None),
+        ("coincident", None),
+        ("offset", "coincide"),
+        ("imu", "coincide"),
+        ("tip", "fixed"),
+        ("missing", "missing"),
+    ],
+)
+def test_motion_pose_frame_requires_fixed_coincident_root(
+    rust_policy, tmp_path, hardware_proto, frame, error
+):
+    run, _, source = rust_policy
+    fake = MotionHardware(hardware_proto)
+    server, pool, endpoint = start_services(fake)
+    standing = tmp_path / "standing.zip"
+    standing.write_bytes(bundle(source))
+    settings = control_settings(endpoint, standing)
+    settings["motion"]["pose"]["tracked_frame"] = frame
+    try:
+        result = run(content=motion_bundle(source), hardware_config=settings)
+        assert (result.returncode == 0) == (error is None), result.stderr
+        if error is not None:
+            assert error in result.stderr
+        assert not fake.calls
+    finally:
+        fake.closed.set()
+        server.stop(0).wait()
+        pool.shutdown(wait=True)
 
 
 @pytest.mark.parametrize(

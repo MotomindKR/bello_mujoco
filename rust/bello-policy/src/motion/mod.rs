@@ -216,27 +216,43 @@ impl Motion {
         self.clip.duration()
     }
 
-    pub fn root_frame(&self) -> Result<&str> {
-        let model = self.data.model();
-        model
-            .id_to_name(MjtObj::mjOBJ_BODY, model.jnt_bodyid()[0] as usize)
-            .context("motion root body must be named")
-    }
-
-    pub fn root_from_fixed_frame(&mut self, name: &str) -> Result<DQuat> {
+    fn fixed_root_frame(&self, name: &str) -> Result<usize> {
         let model = self.data.model();
         let root = model.jnt_bodyid()[0] as usize;
         let frame = model
             .name_to_id(MjtObj::mjOBJ_BODY, name)
-            .context("IMU frame is missing from motion model")?;
+            .with_context(|| format!("motion frame is missing from model: {name}"))?;
         let mut body = frame;
         while body != root {
             ensure!(
                 body != 0 && model.body_jntnum()[body] == 0,
-                "motion IMU frame must be fixed to the root body"
+                "motion frame must be fixed to the root body: {name}"
             );
             body = model.body_parentid()[body] as usize;
         }
+        Ok(frame)
+    }
+
+    pub fn require_root_pose_frame(&mut self, name: &str) -> Result<()> {
+        let frame = self.fixed_root_frame(name)?;
+        let root = self.data.model().jnt_bodyid()[0] as usize;
+        self.data.kinematics();
+        ensure!(
+            DVec3::from_array(self.data.xpos()[root])
+                .distance(DVec3::from_array(self.data.xpos()[frame]))
+                <= 1e-9
+                && from_wxyz(self.data.xquat()[root])
+                    .angle_between(from_wxyz(self.data.xquat()[frame]))
+                    .abs()
+                    <= 1e-9,
+            "pose frame must coincide with the motion floating base: {name}"
+        );
+        Ok(())
+    }
+
+    pub fn root_from_fixed_frame(&mut self, name: &str) -> Result<DQuat> {
+        let frame = self.fixed_root_frame(name)?;
+        let root = self.data.model().jnt_bodyid()[0] as usize;
         self.data.kinematics();
         Ok(from_wxyz(self.data.xquat()[root]).conjugate() * from_wxyz(self.data.xquat()[frame]))
     }
