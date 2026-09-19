@@ -55,6 +55,13 @@ feedback, and ramps from that corrected target. Larger feedback violations fail
 before acquiring control. The original feedback is never modified; the
 `startup_target` log event records it alongside the initial command. Read-only
 preflight performs the same check and reports the proposed startup target.
+For emulator limit overshoot, the hardware YAML can explicitly add
+`startup_feedback_margin_radians: 0.002` per motor coordinate. Its default is
+zero, leaving the quantization-only check unchanged. This allowance propagates
+through coupled-joint mappings; it does not change motor/joint command bounds,
+the maximum first step, or hardwared's independent feedback checks. It is not
+an action clamp or a way to bypass a hardwared fault. Do not copy this emulator
+override into a physical-robot configuration without commissioning it.
 
 Bundles carry exact URDF joint bounds, the motor-to-joint transform, motor bounds
 and `position_step_limits` from the pinned hardware description. Live hardware

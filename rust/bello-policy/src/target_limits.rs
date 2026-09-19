@@ -67,20 +67,25 @@ impl TargetLimits {
         Ok(result)
     }
 
-    /// Feedback is quantized; outgoing commands still use the exact envelope.
-    pub fn startup_target(&self, measured: &[f64]) -> Result<Vec<f64>> {
+    /// Feedback allowance never widens outgoing commands or their first step.
+    pub fn startup_target(&self, measured: &[f64], extra_margin: f64) -> Result<Vec<f64>> {
+        ensure!(
+            extra_margin.is_finite() && extra_margin >= 0.,
+            "invalid startup feedback margin"
+        );
         ensure!(
             measured.len() == self.default.len() && measured.iter().all(|v| v.is_finite()),
             "nonfinite or malformed startup feedback"
         );
-        // Match hardwared's default two-encoding-interval allowance, not a pose offset.
-        let motor_tolerance = 2. * robstride_protocol::CONTROL_POSITION_SPAN / u16::MAX as f64;
+        // Retain the encoding allowance; the configured margin is additional.
+        let motor_tolerance =
+            2. * robstride_protocol::CONTROL_POSITION_SPAN / u16::MAX as f64 + extra_margin;
         for (i, row) in self.rows.iter().enumerate() {
             let tolerance = row.coefficients.abs().element_sum() * motor_tolerance;
             let value = row.value(measured);
             ensure!(
                 value >= row.bounds[0] - tolerance && value <= row.bounds[1] + tolerance,
-                "startup feedback constraint {i}: {value} outside {:?} (quantization tolerance {tolerance})",
+                "startup feedback constraint {i}: {value} outside {:?} (feedback allowance {tolerance})",
                 row.bounds
             );
         }
@@ -409,15 +414,22 @@ mod tests {
         .unwrap();
         for measured in [-0.00019180590524214836, 1.200191805905242] {
             assert!(limits.validate(&[measured]).is_err());
-            let target = limits.startup_target(&[measured]).unwrap();
+            let target = limits.startup_target(&[measured], 0.).unwrap();
             limits.validate(&target).unwrap();
             assert!((target[0] - measured).abs() < 0.001);
         }
-        assert_eq!(limits.startup_target(&[0.3]).unwrap(), [0.3]);
+        assert_eq!(limits.startup_target(&[0.3], 0.).unwrap(), [0.3]);
         for measured in [-0.002, 1.202, f64::NAN, f64::INFINITY] {
-            assert!(limits.startup_target(&[measured]).is_err());
+            assert!(limits.startup_target(&[measured], 0.).is_err());
         }
-        assert!(limits.startup_target(&[]).is_err());
+        assert!(limits.startup_target(&[], 0.).is_err());
+        let target = limits.startup_target(&[1.202], 0.002).unwrap();
+        limits.validate(&target).unwrap();
+        assert!(target[0] <= 1.2);
+        assert!(limits.startup_target(&[1.204], 0.002).is_err());
+        for margin in [-0.001, f64::NAN, f64::INFINITY] {
+            assert!(limits.startup_target(&[0.3], margin).is_err());
+        }
     }
 
     #[test]
@@ -435,13 +447,17 @@ mod tests {
         let measured = [0.3006, 0.3006];
         assert!(limits.validate(&measured).is_err());
         limits
-            .validate(&limits.startup_target(&measured).unwrap())
+            .validate(&limits.startup_target(&measured, 0.).unwrap())
             .unwrap();
-        assert!(limits.startup_target(&[0.302, 0.302]).is_err());
+        assert!(limits.startup_target(&[0.302, 0.302], 0.).is_err());
+        limits
+            .validate(&limits.startup_target(&[0.302, 0.302], 0.002).unwrap())
+            .unwrap();
         let tight_steps = TargetLimits {
             steps: vec![0.0001; 2],
             ..limits
         };
-        assert!(tight_steps.startup_target(&measured).is_err());
+        assert!(tight_steps.startup_target(&measured, 0.).is_err());
+        assert!(tight_steps.startup_target(&[0.302, 0.302], 0.002).is_err());
     }
 }

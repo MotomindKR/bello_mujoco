@@ -92,9 +92,10 @@ async fn main() -> Result<()> {
             .await;
         }
         let sample = hardware.feedback(GroupState::Idle).await?;
-        let startup_target = hardware
-            .target_limits
-            .startup_target(&sample.motor_position)?;
+        let startup_target = hardware.target_limits.startup_target(
+            &sample.motor_position,
+            hardware.config.startup_feedback_margin_radians,
+        )?;
         if let Some(live) = &live {
             live.check_feedback(&sample)?;
         }

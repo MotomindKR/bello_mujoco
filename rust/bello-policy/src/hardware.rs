@@ -26,6 +26,8 @@ pub struct Config {
     pub max_imu_age_ms: f64,
     pub max_group_age_ms: f64,
     pub max_state_sample_span_ms: f64,
+    #[serde(default)]
+    pub startup_feedback_margin_radians: f64,
     pub max_tilt_radians: f64,
     pub max_angular_velocity: f64,
     pub max_linear_acceleration: f64,
@@ -40,6 +42,11 @@ impl Config {
             "invalid hardware groups"
         );
         ensure!(!self.imu_name.is_empty(), "missing IMU name");
+        ensure!(
+            self.startup_feedback_margin_radians.is_finite()
+                && self.startup_feedback_margin_radians >= 0.,
+            "invalid startup feedback margin"
+        );
         for value in [
             self.connection_timeout_seconds,
             self.telemetry_timeout_seconds,
@@ -384,6 +391,7 @@ mod tests {
             max_imu_age_ms: 50.,
             max_group_age_ms: 50.,
             max_state_sample_span_ms: 20.,
+            startup_feedback_margin_radians: 0.,
             max_tilt_radians: 0.7,
             max_angular_velocity: 20.,
             max_linear_acceleration: 100.,

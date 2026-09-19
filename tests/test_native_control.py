@@ -402,6 +402,7 @@ def bundle(
         "remote_absent",
         "limited",
         "startup_quantization",
+        "startup_margin",
     ],
 )
 def test_native_operator_lifecycle_and_failure_cleanup(
@@ -411,6 +412,8 @@ def test_native_operator_lifecycle_and_failure_cleanup(
     fake = SyntheticHardware(hardware_proto)
     if failure == "startup_quantization":
         fake.positions[0] = -0.00019180590524214836
+    if failure == "startup_margin":
+        fake.positions[0] = -0.002
     server, pool, endpoint = start_services(fake)
     policy = tmp_path / "policy.zip"
     limits = (
@@ -422,7 +425,7 @@ def test_native_operator_lifecycle_and_failure_cleanup(
         if failure == "limited"
         else None
     )
-    if failure == "startup_quantization":
+    if failure in ("startup_quantization", "startup_margin"):
         limits = dict(motor_limits=[[0, 1.2], [-3, 3], [-3, 3]])
     policy.write_bytes(
         bundle(
@@ -437,6 +440,8 @@ def test_native_operator_lifecycle_and_failure_cleanup(
         ).read_text()
     )
     settings.update(endpoint=endpoint, groups=["limb"])
+    if failure == "startup_margin":
+        settings["startup_feedback_margin_radians"] = 0.002
     settings["control"].update(ramp_seconds=0.08, max_duration_seconds=0.15)
     log_path = tmp_path / "policy.jsonl"
     settings["control"]["policy_log_path"] = str(log_path)
@@ -525,11 +530,12 @@ def test_native_operator_lifecycle_and_failure_cleanup(
                 "remote_absent",
                 "limited",
                 "startup_quantization",
+                "startup_margin",
             )
         ), transcript.decode(errors="replace")
         assert fake.calls[-2:] == ["disable", "release"]
         log = [json.loads(line) for line in log_path.read_text().splitlines()]
-        if failure == "startup_quantization":
+        if failure in ("startup_quantization", "startup_margin"):
             targets = np.asarray(fake.targets)
             assert np.all(targets[:, 0] >= 0)
             assert 0 <= targets[0, 0] < 0.001

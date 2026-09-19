@@ -291,7 +291,8 @@ pub async fn run(
         .transpose()?;
     let preflight = hardware.feedback(proto::GroupState::Idle).await?;
     let limits = hardware.target_limits.clone();
-    limits.startup_target(&preflight.motor_position)?;
+    let startup_margin = hardware.config.startup_feedback_margin_radians;
+    limits.startup_target(&preflight.motor_position, startup_margin)?;
     if let Some(motion) = &motion {
         motion.check_feedback(&preflight)?;
     }
@@ -309,10 +310,10 @@ pub async fn run(
             motion.check_feedback(&initial)?;
         }
         nominal(&policy, &initial, &config)?;
-        let startup_target = limits.startup_target(&initial.motor_position)?;
+        let startup_target = limits.startup_target(&initial.motor_position, startup_margin)?;
         if startup_target != initial.motor_position {
             eprintln!(
-                "Adjusted initial HOLD target inside command limits; measured feedback was within quantization tolerance."
+                "Adjusted initial HOLD target inside command limits; measured feedback was within the configured feedback allowance."
             );
         }
         if let Some(log) = &mut log {
