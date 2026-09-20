@@ -95,7 +95,7 @@ motion:
   standing_policy: /absolute/path/to/standing.zip
   start_time_seconds: 0.0
   transition_seconds: 0.2
-  max_tilt_radians: 1.22
+  max_tilt_radians: 1.3962634015954636
   max_raw_action_abs: 5.0
   pose:
     endpoint: http://127.0.0.1:50053
@@ -107,6 +107,12 @@ motion:
     max_angular_velocity: 20.0
     max_imu_orientation_error: 0.25
 ```
+
+The motion tilt cutoff above is 80 degrees and applies during the clip and
+its entry/exit blends. Standing uses the separate top-level `max_tilt_radians`.
+This leaves margin for deep reference leans; it does not disable the tilt check
+or the motion tracking-error, hardware-limit, and telemetry safety checks.
+Existing local motion YAML files must be updated explicitly; no rebuild is needed.
 
 Use the actual pose producer endpoint and floating-base frame. The stream must
 provide world-frame linear velocity and root-local angular velocity, not just

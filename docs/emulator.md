@@ -90,6 +90,7 @@ uv run python -m bello_mujoco.hardware.pose_metrics --duration-seconds 30
 
 See [Lima networking](macos_vcan.md#network-topology) for service ports and routes.
 
-The opt-in load-aware contact estimator and its deployment gate are documented
-in the [HIL candidate report](contact_estimator_candidate.md). Default estimator
-profiles remain kinematic until that gate passes.
+The load-aware contact estimator is the sole shipped implementation. Its required
+dynamics model lives in bello-stack, independent of this training repository or
+policy bundles. See the [estimator HIL report](contact_estimator_candidate.md)
+for validation results and remaining deployment limitations.

@@ -1,8 +1,10 @@
-# Load-aware contact estimator candidate
+# Load-aware contact estimator: default and validation
 
-Status: **not approved for physical deployment**. The candidate is opt-in; the
-shipped robot profiles still use kinematic contact evidence. No physical robot,
-systemd service, policy weights, training settings, or safety limits were changed.
+Status: **sole software default; not approved for physical deployment**.
+Both Bello and Mini profiles require the load observer. The kinematic-only runtime
+path and its opposite-foot speed settings have been removed. Startup bootstrap
+kinematics, confidence smoothing, anchor lifecycle and reconnect behavior remain.
+No physical robot, systemd service, policy weights or training settings were changed.
 
 ## Implementation and validation
 
@@ -11,14 +13,17 @@ alignment, and world-frame sole-angle weighting of horizontal anchor information
 Vertical support remains available on tilted toes/heels. It reuses the native
 robot model and tendon mapping rather than implementing a second dynamics model.
 See the [estimator guide](../deps/bello-stack/components/bello-state-estimatord/README.md)
-for explicit opt-in configuration and limitations.
+for required configuration and limitations. The observer, native physics builder,
+model configuration and canonical robot inputs all live in bello-stack; the
+estimator does not read this training repository or any policy artifact.
 
 The estimator owns one bounded MuJoCo worker. Missing whole-body feedback
 withholds poses; it never substitutes commanded torque or silently falls back to
 kinematic mode. Transport reconnection preserves odometry and resets observer
-history. Shared probability smoothing and anchor lifecycle code serves both modes.
+history. Missing or null `load_observer` config and obsolete
+`contact_world_speed_*` fields are explicit configuration errors.
 
-Validation in Linux/aarch64 Lima:
+Initial candidate validation in Linux/aarch64 Lima (before removing the old mode):
 
 - 64 focused unit tests passed, including synthetic dynamics/transmissions,
   torque alignment, momentum residuals, rank-deficient wrench inversion,
@@ -29,7 +34,7 @@ Validation in Linux/aarch64 Lima:
 - Both estimators were exercised with squat, balance, lunge, R&B, and a
   50-second standing/forward/lateral/turning sequence.
 
-## HIL protocol
+## Historical candidate HIL protocol
 
 The final matrix used the existing deployment runner at `df2e4c1`, baseline stack
 `f256532`, and candidate estimator `740f414`. Binaries were rebuilt from those
@@ -64,7 +69,7 @@ duration, alongside full-run completion/failure outcomes. Locomotion consumes
 hardware IMU/encoders rather than estimator pose: its estimator comparison is
 passive, not evidence that this change improved the walking controller.
 
-## Deployment gate
+## Historical comparison and deployment gate
 
 The 2026-09-21 comparison retained 33 attempts, including startup/transport
 failures. Final-matrix shared-duration RMSE is shown below as baseline ->
@@ -98,12 +103,62 @@ The local `bello_mujoco-vcan/outputs/load-aware-hil/` artifact directory retains
 `summary.json`, `paired.json`, per-attempt `metrics.npz`, and `comparison.png`.
 These generated artifacts and temporary harnesses are not committed.
 
-Balance still trips the tilt limit. Some lunge/R&B runs show substantial
+At the original 69.9-degree cutoff, balance trips the tilt limit. Some lunge/R&B runs show substantial
 horizontal odometry drift despite excellent height estimates. Other attempts
 hit vCAN transmission or hardware-telemetry deadlines. Neither lower height RMSE
 nor completing one clip clears those failures.
 
-Before physical opt-in: resolve the balance/horizontal-drift regression, obtain
+Before physical deployment: resolve the balance/horizontal-drift regression, obtain
 repeatable full-matrix HIL results, and validate model/torque/encoder calibration
 and timing on supported hardware. The physical squat vibration/drop investigation
 is a separate next step; these experiments do not establish its root cause.
+
+The later 80-degree motion-only cutoff lets both old and new estimators complete
+balance. Two new-estimator runs ended 2.28 m and 0.93 m from their starts, versus
+1.72 m and 2.58 m with the old estimator. Truth-pose control ended 2.3 cm away.
+Thus completion alone does not validate horizontal estimation. Standing retains
+its separate tilt limit. The native runner's motion YAML example documents the
+relaxed cutoff; existing deployment configs must be changed explicitly.
+
+## Sole-default validation and fresh benchmark
+
+Stack `8b404d3` makes the observer mandatory, removes the old contact update path
+and unused opposite-foot speed settings, and supplies self-contained Bello and
+Mini configurations. The cleanup removes 161 lines net from production Rust
+estimator logic; expanded synthetic tests cover the now-mandatory native observer
+through absent hardware, stream closure, restart and telemetry stalls.
+
+Validation: 62 focused tests (36 estimator, 26 native MuJoCo) passed in release
+mode, strict Clippy passed, and both shipped robot profiles passed native
+`--check`. Model/hardware/URDF paths were verified to remain inside bello-stack.
+The binary was built in an isolated Cargo target to avoid artifacts from other
+checkouts. SHA-256:
+`5a954ab0dd03de3fedf9a305bff4227e6246000c3212ea3396f2be4482cb3622`.
+
+The fresh Mini matrix used the shipped Mini estimator config and the final
+binary, with the same policy bundles, common runtime binaries as the cutoff
+follow-up, seed 2, core affinity and noise/latency settings described above.
+Motion tilt was 80 degrees; standing remained at 0.7 rad. No other safety limits
+were relaxed. Seven attempts were retained. Full-clip results are below, using
+the completed retry when an initial attempt stopped on transport.
+
+| Task | Duration (s) | Height estimate RMSE (cm) | Position estimate RMSE (cm) | Joint tracking RMSE (rad) | Anchor-height tracking RMSE (cm) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Squat | 15.10 | 0.11 | 3.34 | 0.087 | 1.38 |
+| Balance, retry | 17.77 | 0.58 | 70.41 | 0.115 | 1.78 |
+| Lunge | 32.47 | 0.26 | 32.79 | 0.109 | 1.49 |
+| R&B, retry | 40.99 | 0.24 | 54.68 | 0.161 | 3.17 |
+| Locomotion, passive | 50.03 | 0.38 | 10.78 | - | - |
+
+All completed motions resumed standing. Initial balance failed before the clip
+on a vCAN queue-full fault; initial R&B stopped at 27.17 seconds on the same
+transport fault. Both bounded retries completed. These are not seven clean
+passes, nor a controlled repeatability study. The balance retry still ended
+1.16 m from its starting XY location: good height estimates and completion do
+not establish good horizontal odometry or physical commissioning.
+
+Artifacts are under the existing `outputs/load-aware-hil/` directory in the
+Lima checkout, named `default-TASK-sole80-seed2` and, for balance/R&B, `-retry`.
+Configs, logs, truth/estimated poses and per-run scores were retained separately
+from previous attempts. All harness-owned services were stopped afterward.
+Production Jetson services were not changed or restarted.
