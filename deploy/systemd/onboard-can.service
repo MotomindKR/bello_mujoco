@@ -1,0 +1,25 @@
+[Unit]
+Description=Jetson CAN pinmux and canonical Bello CAN setup
+After=systemd-modules-load.service sys-subsystem-net-devices-can0.device sys-subsystem-net-devices-can1.device
+Requires=sys-subsystem-net-devices-can0.device sys-subsystem-net-devices-can1.device
+RequiresMountsFor=/home/nvidia/bello_mujoco
+Before=network-pre.target
+Wants=network-pre.target
+JobTimeoutSec=40s
+
+[Service]
+Type=oneshot
+# Refuse pinmux writes if these names are not the Jetson onboard controllers.
+ExecStartPre=/usr/bin/test /sys/class/net/can0/device -ef /sys/bus/platform/devices/c310000.mttcan
+ExecStartPre=/usr/bin/test /sys/class/net/can1/device -ef /sys/bus/platform/devices/c320000.mttcan
+# Preserve the existing AGX Orin pinmux configuration.
+ExecStartPre=/usr/bin/busybox devmem 0x0c303018 w 0xc458
+ExecStartPre=/usr/bin/busybox devmem 0x0c303010 w 0xc400
+ExecStartPre=/usr/bin/busybox devmem 0x0c303008 w 0xc458
+ExecStartPre=/usr/bin/busybox devmem 0x0c303000 w 0xc400
+ExecStart=/usr/bin/bash /home/nvidia/bello_mujoco/deps/bello-stack/scripts/setup-can.sh
+RemainAfterExit=yes
+TimeoutStartSec=30s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,39 @@
+# Installed as ~/.config/bello/jetson-policy.yaml on the Jetson.
+endpoint: http://127.0.0.1:50051
+groups: [lower_body, upper_body]
+imu_name: imu
+connection_timeout_seconds: 3.0
+telemetry_timeout_seconds: 2.0
+max_motor_age_ms: 100.0
+max_imu_age_ms: 100.0
+max_group_age_ms: 100.0
+max_state_sample_span_ms: 40.0
+max_tilt_radians: 0.7
+max_angular_velocity: 20.0
+max_linear_acceleration: 100.0
+motion: null
+control:
+  following:
+    enabled: true
+    endpoint: http://127.0.0.1:50056
+    rpc_timeout_seconds: 0.1
+    poll_period_seconds: 0.02
+    max_reference_age_ms: 1000.0
+    max_reference_joint_speed_rps: 25.0
+    min_live_joint_limit_margin_radians: 0.001
+    max_target_speed_rps: 9.42477796076938
+    connection_transition_duration_seconds: 1.0
+  client_name: bello-policy
+  remote: {endpoint: http://192.168.0.216:50054, staleness_ms: 200}
+  command_validity_seconds: 0.08
+  acknowledgement_timeout_seconds: 0.5
+  rpc_timeout_seconds: 2.0
+  ramp_seconds: 10.0
+  gain_scale: 1.0
+  joystick_command_scale: 1.0
+  max_loop_lag_seconds: 0.1
+  max_duration_seconds: null
+  max_nominal_error_radians: 0.5
+  max_coupled_nominal_error_radians: 1.0
+  # The launcher creates a unique working directory for each armed run.
+  policy_log_path: policy.jsonl

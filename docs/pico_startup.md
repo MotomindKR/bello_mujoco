@@ -1,5 +1,10 @@
 # PICO tracking and hand-control startup
 
+For the installed Jetson/tracking-PC system, use the
+[two-host systemd workflow](systemd.md). Do not run the foreground daemon
+examples below alongside their managed services. The remaining examples explain
+individual commands and alternative deployments.
+
 The tracking PC runs XRoboToolkit and `pico-smplx-bridge`. Bello's reference
 producer and hand controller subscribe independently. The Rust policy runner
 consumes the reference producer and hardwared telemetry.
@@ -183,6 +188,6 @@ following applies to checkpoint-held upper-body coordinates; motion-bundle
 mode requires following to be disabled. Physical policy commissioning remains
 pending as described in the deployment guide.
 
-Only the PICO processes above are installed as Ubuntu services. The Bello
-reference producer, hands, hardwared, visualizer, and policy runner are separate
-foreground processes in this workflow.
+The installed two-host workflow also manages the reference producer, hands,
+hardwared, and estimator with systemd. Only the policy runner and Bello
+visualizer remain manual; see the [daemon guide](systemd.md).
