@@ -104,6 +104,29 @@ explicitly during deployment, not an automatically discovered newest file. Polic
 exact clean source revision. Launchers do not change commit metadata or start
 daemons. See [hardware deployment](hardware.md) for commissioning constraints.
 
+### Motion policy launcher
+
+Install `scripts/run_jetson_motion.sh` as `~/.local/bin/bello-run-motion` alongside
+the matching `bello-run-policy` launcher. The available names are `randb`, `squat`,
+`lunge`, and `balance`:
+
+```bash
+~/.local/bin/bello-run-motion squat        # read-only preflight
+~/.local/bin/bello-run-motion squat --arm  # only after physical commissioning
+```
+
+The launcher selects `outputs/policies/NAME.zip` and
+`outputs/policies/configs/NAME.yaml`. It requires
+`control.max_duration_seconds: null`: there is no automatic run-duration stop.
+Telemetry, acknowledgement, pose freshness, and other safety watchdogs remain
+enabled. Follow `HOLD`, `RUN`, then `MOTION`. Clip completion returns to standing;
+type `MOTION` to replay. Ctrl-C during motion first requests return to standing;
+another Ctrl-C initiates shutdown, followed by the normal support/`IDLE` prompt.
+There is no automatic repetition or arming, and no services are restarted.
+
+Motion profiles use the Jetson estimator on port 50053, not emulator ground
+truth. Passing preflight does not commission a motion for physical operation.
+
 ## Stop, logs, and recovery
 
 First stop the manual policy through its normal damping / support / **IDLE**
