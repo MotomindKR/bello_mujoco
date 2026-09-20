@@ -12,7 +12,7 @@ if [[ ${1:-} == --help ]]; then
 fi
 
 source_dir="$HOME/bello_mujoco"
-policy="$source_dir/outputs/bello-mini-refactor-update-061440-2973427.zip"
+policy="$source_dir/outputs/policies/locomotion.zip"
 config="$HOME/.config/bello/jetson-policy.yaml"
 binary="$HOME/.cache/bello-mujoco/rust-runtime/release/bello-policy"
 for file in "$policy" "$config" "$binary"; do

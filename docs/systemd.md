@@ -99,8 +99,8 @@ connection requires neutral input before movement.
 
 Each armed run gets a unique `~/bello_mujoco/outputs/policy_logs/` directory;
 the unchanged YAML's relative `policy_log_path` resolves there. Logs are never
-overwritten. The launcher selects the explicit deployed 061440 / 2973427 bundle,
-not an automatically discovered newest file. Policy bundles still require their
+overwritten. The launcher selects `outputs/policies/locomotion.zip`, installed
+explicitly during deployment, not an automatically discovered newest file. Policy bundles still require their
 exact clean source revision. Launchers do not change commit metadata or start
 daemons. See [hardware deployment](hardware.md) for commissioning constraints.
 
