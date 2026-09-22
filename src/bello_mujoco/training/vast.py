@@ -293,7 +293,8 @@ def offer_query(config: VastTrainConfig) -> str:
         f"disk_space>={offer.disk_gb}",
         f"cuda_max_good>={offer.min_cuda}",
         f"dph_total<={config.max_price}",
-        f"end_date>={watchdog_deadline(config)}",
+        # The SDK's duration query is in days; returned end_date is Unix time.
+        f"duration>={watchdog_deadline(config, now=0) / 86400:.9f}",
     ]
     return " ".join(parts)
 

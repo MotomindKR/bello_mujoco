@@ -250,7 +250,12 @@ def test_offer_query_contains_hardware_and_price_constraints() -> None:
     assert "disk_space>=80" in query
     assert "cuda_max_good>=13.0" in query
     assert "dph_total<=1.25" in query
-    assert "end_date>=" in query
+    from vastai.api.query import offers_alias, offers_fields, offers_mult, parse_query
+
+    parsed = parse_query(query, {}, offers_fields, offers_alias, offers_mult)
+    assert parsed["duration"]["gte"] == pytest.approx(
+        vast.watchdog_deadline(valid_config(), now=0)
+    )
 
 
 @pytest.mark.parametrize("extra_seconds", [-1, 0, 1])
@@ -264,7 +269,6 @@ def test_offer_lifetime_covers_entire_host_deadline(monkeypatch, extra_seconds):
         + config.job_timeout_seconds
         + vast.WATCHDOG_TEARDOWN_GRACE_SECONDS
     )
-    assert f"end_date>={deadline}" in offer_query(config)
     offer = VastOffer.from_mapping(
         make_offer() | {"end_date": deadline + extra_seconds}
     )
