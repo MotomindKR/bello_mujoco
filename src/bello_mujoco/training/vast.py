@@ -293,6 +293,7 @@ def offer_query(config: VastTrainConfig) -> str:
         f"disk_space>={offer.disk_gb}",
         f"cuda_max_good>={offer.min_cuda}",
         f"dph_total<={config.max_price}",
+        f"end_date>={watchdog_deadline(config)}",
     ]
     return " ".join(parts)
 
@@ -338,17 +339,22 @@ def offer_matches(offer: VastOffer, config: VastTrainConfig) -> bool:
         and offer.cuda_max_good >= desired.min_cuda
         and offer.disk_space_gb >= desired.disk_gb
         and offer.direct_port_count >= 1
+        and math.isfinite(offer.end_date)
+        and offer.end_date >= watchdog_deadline(config)
     )
 
 
 def print_offers(offers: Sequence[VastOffer], *, limit: int = 5) -> None:
     print("Matching Vast offers (best value first):")
-    print("  offer       $/hr   reliability  location             CPU RAM  GPU RAM")
+    print(
+        "  offer       $/hr   reliability  location             CPU RAM  GPU RAM  expires (UTC)"
+    )
     for offer in offers[:limit]:
         print(
             f"  {offer.id:<10d}  {offer.dph_total:>5.3f}  "
             f"{offer.reliability:>10.3f}  {offer.geolocation[:20]:<20} "
-            f"{offer.cpu_ram_mb / 1024:>6.1f}G  {offer.gpu_ram_mb / 1024:>6.1f}G"
+            f"{offer.cpu_ram_mb / 1024:>6.1f}G  {offer.gpu_ram_mb / 1024:>6.1f}G  "
+            f"{datetime.fromtimestamp(offer.end_date, UTC):%Y-%m-%d %H:%M}"
         )
 
 
@@ -432,6 +438,11 @@ def create_available_instance(
     for offer in offers:
         if not config.skip_confirmation:
             confirm_rental(offer)
+        if not offer_matches(offer, config):
+            print(
+                f"Vast offer {offer.id} no longer meets the rental constraints; skipping."
+            )
+            continue
         try:
             return api.create_instance(
                 offer.id,

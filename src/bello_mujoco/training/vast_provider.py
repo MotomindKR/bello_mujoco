@@ -21,6 +21,7 @@ class VastOffer:
     cuda_max_good: float
     disk_space_gb: float
     direct_port_count: int
+    end_date: float
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> VastOffer:
@@ -38,6 +39,7 @@ class VastOffer:
                 cuda_max_good=float(value["cuda_max_good"]),
                 disk_space_gb=float(value["disk_space"]),
                 direct_port_count=int(value["direct_port_count"]),
+                end_date=float(value["end_date"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"invalid Vast offer response: {value!r}") from exc

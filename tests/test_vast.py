@@ -45,6 +45,7 @@ def make_offer(
         "cuda_max_good": 13.0,
         "disk_space": 100.0,
         "direct_port_count": 4,
+        "end_date": 4_000_000_000.0,
     }
 
 
@@ -249,6 +250,48 @@ def test_offer_query_contains_hardware_and_price_constraints() -> None:
     assert "disk_space>=80" in query
     assert "cuda_max_good>=13.0" in query
     assert "dph_total<=1.25" in query
+    assert "end_date>=" in query
+
+
+@pytest.mark.parametrize("extra_seconds", [-1, 0, 1])
+def test_offer_lifetime_covers_entire_host_deadline(monkeypatch, extra_seconds):
+    monkeypatch.setattr(vast.time, "time", lambda: 1000.0)
+    config = valid_config()
+    deadline = (
+        1000
+        + config.ready_timeout_seconds
+        + config.ssh_timeout_seconds
+        + config.job_timeout_seconds
+        + vast.WATCHDOG_TEARDOWN_GRACE_SECONDS
+    )
+    assert f"end_date>={deadline}" in offer_query(config)
+    offer = VastOffer.from_mapping(
+        make_offer() | {"end_date": deadline + extra_seconds}
+    )
+    assert vast.offer_matches(offer, config) == (extra_seconds >= 0)
+
+
+@pytest.mark.parametrize("end_date", [0.0, float("nan"), float("inf")])
+def test_find_offers_rejects_unusable_contract_lifetime(end_date):
+    api = SearchApi([[make_offer() | {"end_date": end_date}]])
+    with pytest.raises(RuntimeError, match="no Vast offers"):
+        find_offers(api, valid_config())
+
+
+def test_rental_rechecks_lifetime_after_operator_confirmation(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(vast.time, "time", lambda: now[0])
+    monkeypatch.setattr(
+        vast, "confirm_rental", lambda offer: now.__setitem__(0, 1002.0)
+    )
+    config = VastTrainConfig(max_price=1.25, branch="main")
+    offer = VastOffer.from_mapping(
+        make_offer() | {"end_date": vast.watchdog_deadline(config) + 1}
+    )
+    api = LifecycleApi()
+    with pytest.raises(vast.OffersUnavailableError):
+        create_available_instance(api, [offer], config, "expired-offer")
+    assert api.created == []
 
 
 def test_find_offers_prefers_nearby_regions_before_global_value() -> None:

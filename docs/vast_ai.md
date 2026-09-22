@@ -99,3 +99,8 @@ Non-dry execution reads:
 Credentials travel to the job through SSH standard input, not command arguments.
 Offers respect `max_price` and country preferences. The price cap is hourly,
 not a total bill including transfer fees.
+
+Offers must also remain available through the full host deadline: job duration,
+readiness, SSH startup, and teardown grace. The launcher filters by the contract
+end date, rechecks it immediately before renting, and prints the expiry in UTC.
+The job timeout cannot extend a provider's rental contract.
