@@ -104,6 +104,13 @@ Malformed/stale feedback, rejected commands, remote abort, and SIGTERM stop
 control instead of attempting a standing recovery. See the
 [native runtime guide](../rust/bello-policy/README.md) for settings and commands.
 
+Motion uses a reference-relative, direction-sensitive gravity-angle guard
+(`motion.max_tilt_error_radians`), rather than an absolute upright cutoff.
+Transitions blend this reference and tolerance to/from upright. The top-level
+`max_tilt_radians` still protects HOLD, standing, and locomotion. Existing
+machine-local motion YAMLs must replace the removed `motion.max_tilt_radians`
+field explicitly; all other safety and checkpoint termination checks remain.
+
 The checkpoint owns normalization, motor targets, gait timing, command slew,
 and observation history. Motor feedback is converted to joint kinematics for
 observations. CAD frames define the IMU transform. Hardwared owns sensor filters;

@@ -12,6 +12,7 @@ use glam::DQuat;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::tilt::Envelope;
 use super::{Feedback, Motion, pose};
 use crate::locomotion::{Feedback as HardwareFeedback, Locomotion};
 use crate::target_limits::TargetLimits;
@@ -23,7 +24,7 @@ pub struct Config {
     pub pose: pose::Config,
     pub start_time_seconds: f64,
     pub transition_seconds: f64,
-    pub max_tilt_radians: f64,
+    pub max_tilt_error_radians: f64,
     pub max_raw_action_abs: f32,
 }
 
@@ -44,6 +45,7 @@ struct Transition {
     initial: Vec<f64>,
     step: usize,
     steps: usize,
+    initial_tilt: Envelope,
 }
 
 enum Phase {
@@ -100,7 +102,6 @@ impl Live {
         );
         for value in [
             config.transition_seconds,
-            config.max_tilt_radians,
             f64::from(config.max_raw_action_abs),
         ] {
             ensure!(
@@ -108,6 +109,12 @@ impl Live {
                 "invalid motion control limit/timing"
             );
         }
+        ensure!(
+            config.max_tilt_error_radians.is_finite()
+                && config.max_tilt_error_radians > 0.
+                && config.max_tilt_error_radians < std::f64::consts::PI,
+            "motion max_tilt_error_radians must be in (0, pi)"
+        );
         let observation_size = a.observation_size;
         motion.require_root_pose_frame(&config.pose.tracked_frame)?;
         let root_from_imu = motion.root_from_fixed_frame(standing.imu_frame())?;
@@ -156,11 +163,38 @@ impl Live {
         }
     }
 
-    pub fn tilt_limit(&self, standing: f64) -> f64 {
+    pub fn absolute_tilt_limit(&self, standing: f64) -> Option<f64> {
         if matches!(self.phase, Phase::Standing) {
-            standing
+            Some(standing)
         } else {
-            self.config.max_tilt_radians
+            None
+        }
+    }
+
+    fn reference_tilt(&self, time: f64) -> Envelope {
+        let sample = self.motion.clip.sample(time);
+        let root = super::rotation::from_wxyz(sample.qpos[3..7].try_into().unwrap());
+        Envelope::new(
+            root * self.root_from_imu,
+            self.config.max_tilt_error_radians,
+        )
+    }
+
+    fn tilt_envelope(&self, now: Instant, standing_limit: f64) -> Envelope {
+        let standing = Envelope::new(DQuat::IDENTITY, standing_limit);
+        match &self.phase {
+            Phase::Standing => standing,
+            Phase::Motion(started) => self.reference_tilt(
+                self.config.start_time_seconds
+                    + now.saturating_duration_since(*started).as_secs_f64(),
+            ),
+            Phase::ToMotion(t) => t.initial_tilt.blend(
+                self.reference_tilt(self.config.start_time_seconds),
+                t.step as f64 / t.steps as f64,
+            ),
+            Phase::ToStanding(t) => t
+                .initial_tilt
+                .blend(standing, t.step as f64 / t.steps as f64),
         }
     }
 
@@ -182,11 +216,12 @@ impl Live {
         Ok(pose)
     }
 
-    fn transition(&self, initial: &[f64], period: f64) -> Transition {
+    fn transition(&self, initial: &[f64], period: f64, initial_tilt: Envelope) -> Transition {
         Transition {
             initial: initial.to_vec(),
             step: 0,
             steps: (self.config.transition_seconds / period).ceil() as usize,
+            initial_tilt,
         }
     }
 
@@ -196,8 +231,14 @@ impl Live {
         feedback: &HardwareFeedback,
         request_motion: bool,
         previous_target: &[f64],
+        standing_tilt_limit: f64,
     ) -> Result<Output> {
         let pose = self.pose(feedback)?;
+        let now = Instant::now();
+        // Validate before phase changes: interrupts must not reset an unsafe pose
+        // into a newly permissive envelope. The endpoint is checked before handover.
+        let tilt = self.tilt_envelope(now, standing_tilt_limit);
+        let tilt_error = tilt.check(DQuat::from_array(feedback.orientation_xyzw))?;
         let standing_period = standing.policy.metadata.control_timestep;
         // A scheduled blend can finish before step limiting reaches the destination.
         // Switch envelopes only after the last acknowledged command is feasible there.
@@ -205,7 +246,7 @@ impl Live {
             Phase::ToMotion(t)
                 if t.step >= t.steps && self.motion_limits().validate(previous_target).is_ok() =>
             {
-                self.phase = Phase::Motion(Instant::now());
+                self.phase = Phase::Motion(now);
                 eprintln!("Motion tracking policy is active.");
             }
             Phase::ToStanding(t)
@@ -221,16 +262,16 @@ impl Live {
                 matches!(self.phase, Phase::Standing),
                 "MOTION is only accepted while standing"
             );
-            self.phase = Phase::ToMotion(self.transition(previous_target, self.motion_period()));
+            self.phase =
+                Phase::ToMotion(self.transition(previous_target, self.motion_period(), tilt));
             self.motion.reset();
             self.interrupt.0.store(1, Ordering::SeqCst);
             eprintln!("Transitioning to motion tracking.");
         }
-        let now = Instant::now();
         let complete = matches!(self.phase, Phase::Motion(started)
             if self.config.start_time_seconds + now.saturating_duration_since(started).as_secs_f64() >= self.motion.duration());
         if complete || self.interrupt.0.load(Ordering::SeqCst) == 2 {
-            self.phase = Phase::ToStanding(self.transition(previous_target, standing_period));
+            self.phase = Phase::ToStanding(self.transition(previous_target, standing_period, tilt));
             self.interrupt.0.store(0, Ordering::SeqCst);
             standing.reset();
             eprintln!("Transitioning back to standing.");
@@ -313,7 +354,9 @@ impl Live {
         Ok(Output {
             log: json!({"phase": phase_name, "reference_time": reference_time,
             "policy": policy_log, "motor_target": target,
-            "destination_target_limited": destination_target_limited}),
+            "destination_target_limited": destination_target_limited,
+            "tilt_error_radians": tilt_error, "tilt_error_limit_radians": tilt.max_error,
+            "reference_gravity_imu": tilt.gravity.to_array()}),
             target,
             period: Duration::from_secs_f64(period),
         })

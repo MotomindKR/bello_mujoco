@@ -5,6 +5,7 @@ mod clip;
 pub mod live;
 mod pose;
 mod rotation;
+mod tilt;
 
 use anyhow::{Context, Result, ensure};
 use glam::{DQuat, DVec2, DVec3, EulerRot};

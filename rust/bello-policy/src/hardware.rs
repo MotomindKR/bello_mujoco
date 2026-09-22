@@ -195,14 +195,14 @@ impl Hardware {
     }
 
     pub async fn feedback(&self, expected: proto::GroupState) -> Result<Feedback> {
-        self.feedback_with_tilt(expected, self.config.max_tilt_radians)
+        self.feedback_with_tilt(expected, Some(self.config.max_tilt_radians))
             .await
     }
 
     pub async fn feedback_with_tilt(
         &self,
         expected: proto::GroupState,
-        max_tilt: f64,
+        max_tilt: Option<f64>,
     ) -> Result<Feedback> {
         let start = Instant::now();
         let deadline = Duration::from_secs_f64(self.config.telemetry_timeout_seconds);
@@ -259,7 +259,7 @@ fn decode_feedback(
     config: &Config,
     expected: proto::GroupState,
     transport: Duration,
-    max_tilt: f64,
+    max_tilt: Option<f64>,
 ) -> Result<Feedback> {
     let motors = unique(&frame.motors, |motor| &motor.motor_name)?;
     let groups = unique(&frame.groups, |group| &group.group)?;
@@ -345,10 +345,12 @@ fn decode_feedback(
         .context("missing IMU orientation")?;
     let orientation_xyzw = [orientation.x, orientation.y, orientation.z, orientation.w];
     let gravity = projected_gravity(orientation_xyzw)?;
-    ensure!(
-        (-gravity[2]).clamp(-1., 1.).acos() <= max_tilt,
-        "robot tilt exceeds safety limit"
-    );
+    if let Some(max_tilt) = max_tilt {
+        ensure!(
+            (-gravity[2]).clamp(-1., 1.).acos() <= max_tilt,
+            "robot tilt exceeds safety limit"
+        );
+    }
     let vector = |value: &Option<proto::Vector3>, limit: f64| -> Result<[f64; 3]> {
         let value = value.as_ref().context("missing IMU vector")?;
         let v = DVec3::new(value.x, value.y, value.z);
@@ -441,11 +443,55 @@ mod tests {
                 &config,
                 proto::GroupState::Idle,
                 Duration::from_millis(latency),
-                config.max_tilt_radians,
+                Some(config.max_tilt_radians),
             )
         };
         assert_eq!(decode(1).unwrap().motor_position, vec![0.2]);
         assert!(decode(41).unwrap_err().to_string().contains("stale"));
+    }
+
+    #[test]
+    fn motion_can_defer_absolute_tilt_but_not_feedback_safety() {
+        let (config, mut frame, motors) = fixture();
+        let q = glam::DQuat::from_rotation_y(1.4);
+        frame.imus[0].orientation = Some(proto::Quaternion {
+            x: q.x,
+            y: q.y,
+            z: q.z,
+            w: q.w,
+        });
+        let decode = |frame: &proto::GetStateFrameResponse, limit| {
+            decode_feedback(
+                frame,
+                &motors,
+                &config,
+                proto::GroupState::Idle,
+                Duration::ZERO,
+                limit,
+            )
+        };
+        assert!(
+            decode(&frame, Some(config.max_tilt_radians))
+                .unwrap_err()
+                .to_string()
+                .contains("tilt")
+        );
+        assert!(decode(&frame, None).is_ok());
+        let mut bad = frame.clone();
+        bad.motors[0].fault_bits = 1;
+        assert!(decode(&bad, None).is_err());
+        let mut bad = frame.clone();
+        bad.imus[0].orientation.as_mut().unwrap().w = f64::NAN;
+        assert!(decode(&bad, None).is_err());
+        let mut bad = frame.clone();
+        bad.groups[0].state = proto::GroupState::Fault as i32;
+        assert!(decode(&bad, None).is_err());
+        let mut bad = frame.clone();
+        bad.imus[0].angular_velocity.as_mut().unwrap().x = config.max_angular_velocity + 1.;
+        assert!(decode(&bad, None).is_err());
+        let mut bad = frame.clone();
+        bad.imus[0].sample_age_ns = 1_000_000_000;
+        assert!(decode(&bad, None).is_err());
     }
 
     #[test]
@@ -458,7 +504,7 @@ mod tests {
                 &config,
                 proto::GroupState::Idle,
                 Duration::ZERO,
-                config.max_tilt_radians,
+                Some(config.max_tilt_radians),
             )
         };
         let mut bad = frame.clone();

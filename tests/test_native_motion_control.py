@@ -14,6 +14,7 @@ import mujoco
 import numpy as np
 import pytest
 import yaml
+from scipy.spatial.transform import Rotation
 
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.hardware import _pose_pb2 as pb
@@ -39,6 +40,12 @@ XML = """<mujoco><worldbody><body name="root"><freejoint/>
 
 class MotionHardware(SyntheticHardware):
     pose_failure = None
+    pitch_ramp = (0.0, 0.0, 0.0, 1.0)
+
+    def root_orientation(self):
+        initial, target, started, duration = self.pitch_ramp
+        fraction = np.clip((time.monotonic() - started) / duration, 0.0, 1.0)
+        return Rotation.from_euler("y", initial + fraction * (target - initial))
 
     def ListHardware(self, request, context):
         response = super().ListHardware(request, context)
@@ -47,8 +54,9 @@ class MotionHardware(SyntheticHardware):
 
     def GetStateFrame(self, request, context):
         response = super().GetStateFrame(request, context)
+        q = (self.root_orientation() * Rotation.from_euler("z", 0.4)).as_quat()
         response.imus[0].orientation.CopyFrom(
-            self.pb.Quaternion(w=np.cos(0.2), z=np.sin(0.2))
+            self.pb.Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
         )
         return response
 
@@ -62,6 +70,7 @@ class MotionHardware(SyntheticHardware):
             if self.pose_failure != "repeated":
                 sequence += 1
                 stamp = time.monotonic_ns()
+            q = self.root_orientation().as_quat()
             response = pb.WatchPoseResponse(
                 reference_frame=request.reference_frame,
                 tracked_frame="wrong"
@@ -73,7 +82,7 @@ class MotionHardware(SyntheticHardware):
                 translation_metres=pb.Translation(z=0.9),
                 orientation_xyzw=pb.Orientation(w=np.cos(0.4), x=np.sin(0.4))
                 if self.pose_failure == "orientation"
-                else pb.Orientation(w=1),
+                else pb.Orientation(x=q[0], y=q[1], z=q[2], w=q[3]),
                 linear_velocity_metres_per_second=pb.LinearVelocity(),
                 angular_velocity_radians_per_second=pb.AngularVelocity(),
             )
@@ -83,15 +92,16 @@ class MotionHardware(SyntheticHardware):
             self.closed.wait(0.005)
 
 
-def motion_bundle(source):
+def motion_bundle(source, *, root_pitch=0.0, frames=3):
     model = mujoco.MjModel.from_xml_string(XML)
     data = mujoco.MjData(model)
     data.qpos[:] = [0, 0, 0.9, 1, 0, 0, 0, 0.2, -0.3, 0.4]
+    data.qpos[3:7] = Rotation.from_euler("y", root_pitch).as_quat()[[3, 0, 1, 2]]
     mujoco.mj_kinematics(model, data)
     ids = [model.body(name).id for name in ("root", "tip")]
 
     def repeat(a):
-        return jnp.array(np.repeat(a[None], 3, axis=0))
+        return jnp.array(np.repeat(a[None], frames, axis=0))
 
     clip = MotionClip(
         fps=10.0,
@@ -101,9 +111,9 @@ def motion_bundle(source):
         qvel=repeat(data.qvel),
         body_pos=repeat(data.xpos[ids]),
         body_quat=repeat(data.xquat[ids]),
-        body_lin_vel=jnp.zeros((3, 2, 3)),
-        body_ang_vel=jnp.zeros((3, 2, 3)),
-        foot_contacts=jnp.zeros((3, 2)),
+        body_lin_vel=jnp.zeros((frames, 2, 3)),
+        body_ang_vel=jnp.zeros((frames, 2, 3)),
+        foot_contacts=jnp.zeros((frames, 2)),
     )
     layout = [
         ("reference_joint_position", 3),
@@ -149,7 +159,7 @@ def control_settings(endpoint, standing, log=None):
             standing_policy=str(standing),
             start_time_seconds=0.0,
             transition_seconds=0.08,
-            max_tilt_radians=1.2,
+            max_tilt_error_radians=0.5,
             max_raw_action_abs=5.0,
             pose=dict(
                 endpoint=endpoint,
@@ -220,6 +230,9 @@ def test_motion_pose_frame_requires_fixed_coincident_root(
         "missing_velocity",
         "reject",
         "abort",
+        "deep_tilt",
+        "wrong_direction",
+        "return_still_tilted",
     ],
 )
 def test_motion_lifecycle_returns_to_standing_or_stops_safely(
@@ -227,6 +240,9 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
 ):
     _, _, source = rust_policy
     fake = MotionHardware(hardware_proto)
+    tilted = failure in ("deep_tilt", "wrong_direction", "return_still_tilted")
+    if tilted:
+        fake.pitch_ramp = (0.6, 0.6, 0.0, 1.0)
     server, pool, endpoint = start_services(fake)
     standing = tmp_path / "standing.zip"
     standing.write_bytes(
@@ -240,9 +256,16 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
         )
     )
     motion = tmp_path / "motion.zip"
-    motion.write_bytes(motion_bundle(source))
+    motion.write_bytes(
+        motion_bundle(
+            source, root_pitch=1.3 if tilted else 0.0, frames=20 if tilted else 3
+        )
+    )
     log = tmp_path / "policy.jsonl"
     settings = control_settings(endpoint, standing, log)
+    if tilted:
+        settings["motion"]["transition_seconds"] = 0.5
+        settings["control"]["max_duration_seconds"] = 4.5
     config = tmp_path / "hardware.json"
     config.write_text(json.dumps(settings))
     master, slave = pty.openpty()
@@ -285,9 +308,22 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
         wait_for("then type RUN")
         os.write(master, b"RUN\n")
         wait_for("Type MOTION")
+        if tilted:
+            fake.pitch_ramp = (0.6, 1.3, time.monotonic(), 0.5)
         os.write(master, b"MOTION\n")
         wait_for("Motion tracking policy is active")
-        if failure in ("interrupt", "second_interrupt"):
+        if tilted:
+            # Remain beyond the absolute upright limit for several policy ticks.
+            time.sleep(0.1)
+            assert "Control stopped:" not in transcript.decode()
+            if failure == "wrong_direction":
+                fake.pitch_ramp = (1.3, -1.3, time.monotonic(), 0.8)
+            else:
+                os.kill(process.pid, signal.SIGINT)
+                wait_for("requesting return to standing")
+                if failure == "deep_tilt":
+                    fake.pitch_ramp = (1.3, 0.0, time.monotonic(), 0.5)
+        elif failure in ("interrupt", "second_interrupt"):
             os.kill(process.pid, signal.SIGINT)
             wait_for("requesting return to standing")
             if failure == "second_interrupt":
@@ -300,18 +336,25 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
             fake.abort = True
         else:
             fake.pose_failure = failure
-        if failure in (None, "interrupt"):
+        if failure in (None, "interrupt", "deep_tilt"):
             wait_for("Standing policy resumed")
             assert "stop" not in fake.calls
         wait_for("Type IDLE")
         assert "stop" in fake.calls and "disable" not in fake.calls
         os.write(master, b"IDLE\n")
-        assert (process.wait(timeout=3) == 0) == (failure in (None, "interrupt")), (
-            transcript.decode(errors="replace")
-        )
+        assert (process.wait(timeout=3) == 0) == (
+            failure in (None, "interrupt", "deep_tilt")
+        ), transcript.decode(errors="replace")
         assert fake.calls[-2:] == ["disable", "release"]
         events = [json.loads(line) for line in log.read_text().splitlines()]
         rows = [row["motion"] for row in events if "motion" in row]
+        if tilted:
+            motion_rows = [row for row in rows if row["phase"] == "motion"]
+            assert len(motion_rows) >= 3
+            assert all(row["tilt_error_radians"] < 0.1 for row in motion_rows[:3])
+            if failure != "deep_tilt":
+                assert "motion tilt deviation" in transcript.decode()
+                assert "Standing policy resumed" not in transcript.decode()
         if failure == "reject":
             assert any(row.get("event") == "command_rejected" for row in events)
         phases = [row["phase"] for row in rows]
@@ -323,7 +366,7 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
         for row in applied:
             if row["motion"]["phase"] == "standing":
                 assert row["command"]["motor_target"][0] <= 0.3
-        if failure in (None, "interrupt"):
+        if failure in (None, "interrupt", "deep_tilt"):
             assert "transition_to_standing" in phases
             assert phases[-1] == "standing"
             np.testing.assert_allclose(targets[-1], [0.2, -0.3, 0.4], atol=1e-6)

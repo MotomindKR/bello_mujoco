@@ -95,7 +95,7 @@ motion:
   standing_policy: /absolute/path/to/standing.zip
   start_time_seconds: 0.0
   transition_seconds: 0.2
-  max_tilt_radians: 1.22
+  max_tilt_error_radians: 0.5
   max_raw_action_abs: 5.0
   pose:
     endpoint: http://127.0.0.1:50053
@@ -125,6 +125,24 @@ or rejected commands take the STOP path, not a standing recovery. `IDLE` remains
 required for explicit disable. Standing and motion retain their own control
 periods and histories. The remote is monitored for aborts, but its velocity
 axes are ignored in this workflow. Upper-body following must be disabled.
+
+The top-level `max_tilt_radians` remains the absolute upright limit for
+preflight, HOLD, standing, and locomotion. During motion, the runner instead
+compares the measured and reference gravity directions in the logical IMU
+frame, accounting for its fixed mounting rotation. `motion.max_tilt_error_radians`
+limits this angular deviation, not absolute lean; opposite-direction leans
+are distinguishable, while world yaw is ignored. The example uses 0.5 rad
+(about 29 degrees); commission this tolerance in the emulator before hardware.
+This replaces the removed `motion.max_tilt_radians` setting, without an alias.
+
+Entry blends the upright reference/tolerance into the starting clip reference;
+exit blends the current reference/tolerance back to upright. Both follow the
+command blend fraction. The guard runs before phase changes or interrupts,
+and must pass its upright endpoint before standing resumes. Returning to
+standing is therefore not an unguarded recovery from an arbitrary fallen pose.
+Logs include tilt error, limit, and reference gravity. Checkpoint termination
+rules (including the original scalar anchor-gravity check), hardware faults,
+freshness, pose/IMU agreement, velocity limits, and target limits remain active.
 
 Standing and motion each use their own motor/joint target limits, intersected
 with the live hardware motor bounds. Blends use a transition envelope covering

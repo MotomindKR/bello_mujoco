@@ -433,8 +433,8 @@ pub async fn run(
         {
             let max_tilt = motion
                 .as_ref()
-                .map_or(hardware.config.max_tilt_radians, |motion| {
-                    motion.tilt_limit(hardware.config.max_tilt_radians)
+                .map_or(Some(hardware.config.max_tilt_radians), |motion| {
+                    motion.absolute_tilt_limit(hardware.config.max_tilt_radians)
                 });
             let mut sample = hardware
                 .feedback_with_tilt(proto::GroupState::Running, max_tilt)
@@ -446,8 +446,13 @@ pub async fn run(
                     request.as_deref().is_none_or(|s| s == "MOTION"),
                     "expected exact MOTION"
                 );
-                let step =
-                    motion.step(&mut policy, &sample, request.is_some(), &targets.previous)?;
+                let step = motion.step(
+                    &mut policy,
+                    &sample,
+                    request.is_some(),
+                    &targets.previous,
+                    hardware.config.max_tilt_radians,
+                )?;
                 if step.period != active_period {
                     deadline = tokio::time::Instant::now();
                     active_period = step.period;
