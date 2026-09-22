@@ -10,6 +10,14 @@ gitlink. Visual meshes and collision primitives are packaged with the URDFs.
 Runtime compilation does not simplify meshes, substitute collision shapes,
 disable joints, copy descriptions, or modify URDF mesh paths.
 
+Mini uses the measured-assembly, left/right-symmetric inertials in the pinned
+description, including hand masses and a separate fixed head proxy. Allocation
+and geometry assumptions are recorded in its
+[asset provenance](../deps/bello-stack/descriptions/bello_mini/ASSET_PROVENANCE.md).
+Both training tasks consume those inertials directly; do not add the already
+included battery, hands, or head again as training payloads. Older trained
+policies are not automatically adapted to a changed mass distribution.
+
 ## Compilation
 
 `compile_robot(ModelConfig(...))` uses MuJoCo's URDF importer and adds the free
