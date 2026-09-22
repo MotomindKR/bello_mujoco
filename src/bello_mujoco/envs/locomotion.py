@@ -19,6 +19,7 @@ from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.observations import (
     build_observation,
     advance_feedback_history,
+    noisy_feedback,
     sample_feedback_delay,
 )
 from bello_mujoco.envs.geometry import (
@@ -590,7 +591,9 @@ class BelloLocomotionEnv:
             state = state.replace(data=data)
         actor_feedback = self._actor_feedback(state)
         if self.config.observation_low_pass_filter.noise_before_filter:
-            actor_feedback = self._noisy_actor_feedback(actor_feedback, feedback_rng)
+            actor_feedback = noisy_feedback(
+                actor_feedback, self.config.observation.noise, feedback_rng
+            )
         state = state.replace(
             tracking_ang_vel_z=self._raw_tracking_ang_vel_z(state),
             actor_feedback_history=jnp.repeat(
@@ -663,9 +666,11 @@ class BelloLocomotionEnv:
             and self.config.observation_low_pass_filter.noise_before_filter
         ):
             feedback_keys = jax.random.split(feedback_rng, batch_size)
-            actor_feedback = jax.vmap(self._noisy_actor_feedback)(
-                actor_feedback, feedback_keys
-            )
+            actor_feedback = jax.vmap(
+                lambda feedback, key: noisy_feedback(
+                    feedback, self.config.observation.noise, key
+                )
+            )(actor_feedback, feedback_keys)
         state = state.replace(
             actor_feedback_history=jnp.repeat(
                 actor_feedback[:, None, :],
