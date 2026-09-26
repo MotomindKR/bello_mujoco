@@ -54,7 +54,10 @@ llvmpipe through EGL only. The Nix shells supply Mesa; on Ubuntu install
 recording, and a GPU renderer fails initialization. There is no GPU or
 native-macOS rasterizer fallback. The Mesa software EGL device is selected
 explicitly, even on hosts with physical GPUs. Training videos run in a fresh
-software worker per video. Enabled video failure, crash, or timeout fails the training run.
+software worker per video. Both tasks allow five minutes of startup overhead plus
+one wall-clock second per requested simulation step for each video worker. Longer
+standing diagnostics therefore receive a proportionally longer timeout.
+Enabled video failure, crash, or timeout fails the training run.
 Set `video_enabled=false` explicitly when videos are unwanted.
 
 ### Standing and push diagnostics

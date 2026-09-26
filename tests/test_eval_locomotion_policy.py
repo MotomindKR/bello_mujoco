@@ -525,8 +525,9 @@ def test_training_video_failure_stops_training(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("activation", ["swish", "elu", "tanh"])
+@pytest.mark.parametrize("steps", [25, 500, 1500])
 def test_isolated_video_sends_host_policy_without_environment_caches(
-    monkeypatch, activation
+    monkeypatch, activation, steps
 ):
     env = object.__new__(BelloLocomotionEnv)
     model = SimpleNamespace(
@@ -548,7 +549,9 @@ def test_isolated_video_sends_host_policy_without_environment_caches(
         6, 2, config.policy, critic_obs_size=10, key=jax.random.PRNGKey(9)
     )
 
-    def capture(function, env_fields, policy, kwargs):
+    def capture(function, env_fields, policy, kwargs, *, timeout_seconds):
+        assert timeout_seconds == 300.0 + steps
+        assert kwargs["steps"] == steps
         # Native MuJoCo models must also survive the spawn serialization boundary.
         payload = pickle.loads(pickle.dumps((env_fields, policy, kwargs)))
         captured.append(payload)
@@ -573,6 +576,7 @@ def test_isolated_video_sends_host_policy_without_environment_caches(
     stats = render.render_policy_rollout_isolated(
         env,
         actor,
+        steps=steps,
         ppo_config=config,
         observation_norm_state=init_observation_norm_state(2),
     )
@@ -595,4 +599,5 @@ def test_isolated_video_rejects_training_model():
         render.render_policy_rollout_isolated(
             SimpleNamespace(model=SimpleNamespace(mjx_model=object())),
             object(),
+            steps=1,
         )

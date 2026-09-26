@@ -183,6 +183,8 @@ class NativeObservationPipeline:
 def render_policy_rollout_isolated(
     env: BelloLocomotionEnv,
     policy,
+    *,
+    steps: int,
     **kwargs,
 ) -> RolloutStats:
     if env.model.mjx_model is not None:
@@ -195,7 +197,8 @@ def render_policy_rollout_isolated(
         _render_host_policy,
         env_fields,
         weights.getvalue(),
-        jax.device_get(kwargs),
+        jax.device_get(dict(kwargs, steps=steps)),
+        timeout_seconds=300.0 + steps,
     )
 
 
