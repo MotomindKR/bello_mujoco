@@ -41,13 +41,21 @@ class ObservationEnvironment(SimpleNamespace):
     # Exercise the production JAX math with synthetic model dimensions.
     observation = BelloMotionTrackingEnv.observation
     observation_layout = BelloMotionTrackingEnv.observation_layout
+    _full_observation_layout = BelloMotionTrackingEnv._full_observation_layout
+    _actor_observation_indices = BelloMotionTrackingEnv._actor_observation_indices
+    _observation_terms = BelloMotionTrackingEnv._observation_terms
     aligned_reference = BelloMotionTrackingEnv.aligned_reference
     _unpack_actor_feedback = BelloMotionTrackingEnv._unpack_actor_feedback
     _corrupt_observation_terms = BelloMotionTrackingEnv._corrupt_observation_terms
 
 
+@pytest.fixture(params=["full_state", "proprioceptive"])
+def observation_mode(request):
+    return request.param
+
+
 @pytest.fixture(params=[("a", "b"), ("b", "a")], ids=["model-order", "policy-order"])
-def motion_fixture(rust_policy, request):
+def motion_fixture(rust_policy, request, observation_mode):
     run, _, source = rust_policy
     model = mujoco.MjModel.from_xml_string(XML)
     joint_names = request.param
@@ -86,7 +94,9 @@ def motion_fixture(rust_policy, request):
     default = np.array([0.1, -0.2])[qpos_indices - 7]
     inverse = np.array([[0.5, 0.5], [-0.5, 0.5]])
     transform = np.linalg.inv(inverse)
-    config = MotionTrackingEnvConfig(anchor_body_name="anchor")
+    config = MotionTrackingEnvConfig(
+        anchor_body_name="anchor", observation_mode=observation_mode
+    )
     env = ObservationEnvironment(
         motion=clip,
         action_size=2,
@@ -289,7 +299,6 @@ def test_motion_telemetry_matches_jax_with_alignment_history_and_coupling(
         ({"motor_position": [0.0]}, "feedback shape mismatch"),
         ({"reference_time": 0.3}, "motion complete"),
         ({"reference_time": -0.1}, "invalid reference time"),
-        ({"position": [1.0, -0.5, 2.0]}, "anchor height"),
         ({"orientation_xyzw": [1.0, 0.0, 0.0, 0.0]}, "anchor orientation"),
     ],
 )
@@ -330,6 +339,40 @@ def test_motion_checks_end_effector_height_before_inference(motion_fixture):
         content=f.bundle(metadata_updates={"environment": environment}),
         telemetry=True,
     )
-    assert result.returncode != 0
-    assert "end effector height" in result.stderr
-    assert not result.stdout
+    if f.observation_mode == "full_state":
+        assert result.returncode != 0
+        assert "end effector height" in result.stderr
+        assert not result.stdout
+    else:
+        assert result.returncode == 0, result.stderr
+
+
+def test_motion_global_feedback_is_required_only_for_full_state(motion_fixture):
+    f = motion_fixture
+    bundle = f.bundle()
+    baseline = f.run([f.sample], content=bundle, telemetry=True)
+    assert baseline.returncode == 0, baseline.stderr
+    for update, error in [
+        ({"position": [1.0, -0.5, 2.0]}, "anchor height"),
+        ({"position": None}, "requires position"),
+        ({"linear_velocity_world": None}, "requires linear_velocity_world"),
+    ]:
+        result = f.run([f.sample | update], content=bundle, telemetry=True)
+        if f.observation_mode == "full_state":
+            assert result.returncode != 0
+            assert error in result.stderr
+        else:
+            assert result.returncode == 0, result.stderr
+            assert json.loads(result.stdout) == json.loads(baseline.stdout)
+
+
+def test_motion_mode_must_match_exported_actor_layout(motion_fixture):
+    f = motion_fixture
+    other = "proprioceptive" if f.observation_mode == "full_state" else "full_state"
+    for mode, error in [(other, "observation layout"), ("unknown", "unknown variant")]:
+        environment = f.metadata["environment"] | {"observation_mode": mode}
+        result = f.run(
+            content=f.bundle(metadata_updates={"environment": environment}), check=True
+        )
+        assert result.returncode != 0
+        assert error in result.stderr

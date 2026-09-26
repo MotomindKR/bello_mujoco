@@ -1,4 +1,4 @@
-//! BeyondMimic observations from motor telemetry and measured floating-base pose.
+//! BeyondMimic observations from motor telemetry and full-state or IMU feedback.
 //! The bundled physics model is used only for kinematics, never as an emulator.
 
 mod clip;
@@ -28,8 +28,16 @@ struct Settings {
 
 #[derive(Deserialize)]
 struct Environment {
+    observation_mode: ObservationMode,
     anchor_body_name: String,
     done: Thresholds,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ObservationMode {
+    FullState,
+    Proprioceptive,
 }
 
 #[derive(Deserialize)]
@@ -43,9 +51,9 @@ struct Thresholds {
 pub struct Feedback {
     pub motor_position: Vec<f64>,
     pub motor_velocity: Vec<f64>,
-    pub position: [f64; 3],
+    pub position: Option<[f64; 3]>,
     pub orientation_xyzw: [f64; 4],
-    pub linear_velocity_world: [f64; 3],
+    pub linear_velocity_world: Option<[f64; 3]>,
     pub angular_velocity_local: [f64; 3],
     pub reference_time: f64,
     /// Begin a clip here and align its starting root XY/yaw to this pose.
@@ -130,7 +138,10 @@ impl Motion {
                 .observation_frame
                 .iter()
                 .map(|(s, n)| (s.as_str(), *n))
-                .eq(layout),
+                .eq(layout.into_iter().filter(|(name, _)| {
+                    settings.environment.observation_mode == ObservationMode::FullState
+                        || !matches!(*name, "anchor_position_error" | "base_linear_velocity")
+                })),
             "unsupported motion observation layout"
         );
         let clip = Clip::load(
@@ -289,8 +300,8 @@ impl Motion {
                 .motor_position
                 .iter()
                 .chain(&feedback.motor_velocity)
-                .chain(&feedback.position)
-                .chain(&feedback.linear_velocity_world)
+                .chain(feedback.position.iter().flatten())
+                .chain(feedback.linear_velocity_world.iter().flatten())
                 .chain(&feedback.angular_velocity_local)
                 .all(|v| v.is_finite()),
             "nonfinite motion feedback"
@@ -300,6 +311,19 @@ impl Motion {
             "invalid reference time"
         );
         ensure!(feedback.reference_time < self.duration(), "motion complete");
+        let full_state = self.settings.environment.observation_mode == ObservationMode::FullState;
+        let root_position = if full_state {
+            ensure!(
+                feedback.linear_velocity_world.is_some(),
+                "full-state motion requires linear_velocity_world"
+            );
+            feedback
+                .position
+                .context("full-state motion requires position")?
+        } else {
+            // Arbitrary FK origin, not an estimated position or a valid height.
+            [0.; 3]
+        };
         let quat = checked_quaternion(DQuat::from_array(feedback.orientation_xyzw))?;
         if feedback.initialize {
             self.reset();
@@ -310,7 +334,7 @@ impl Motion {
             );
             let position = rotation * DVec3::from_slice(&source.qpos[..3]);
             self.alignment = Some((
-                (DVec3::from_array(feedback.position) - position).truncate(),
+                (DVec3::from_array(root_position) - position).truncate(),
                 rotation,
             ));
         }
@@ -331,7 +355,7 @@ impl Motion {
             position.iter().chain(&velocity).all(|v| v.is_finite()),
             "nonfinite mapped motion feedback"
         );
-        self.data.qpos_mut()[..3].copy_from_slice(&feedback.position);
+        self.data.qpos_mut()[..3].copy_from_slice(&root_position);
         self.data.qpos_mut()[3..7].copy_from_slice(&to_wxyz(quat));
         for (&index, &value) in self.qpos_indices.iter().zip(&position) {
             self.data.qpos_mut()[index] = value;
@@ -350,27 +374,31 @@ impl Motion {
         );
         let reference = self.reference(feedback.reference_time);
         let thresholds = &self.settings.environment.done;
-        ensure!(
-            (anchor_pos[2] - reference.body_pos[self.anchor][2]).abs()
-                <= thresholds.root_height_error,
-            "motion termination: anchor height"
-        );
+        if full_state {
+            ensure!(
+                (anchor_pos[2] - reference.body_pos[self.anchor][2]).abs()
+                    <= thresholds.root_height_error,
+                "motion termination: anchor height"
+            );
+        }
         let gravity = |q: DQuat| (q.conjugate() * DVec3::NEG_Z).z;
         ensure!(
             (gravity(anchor_quat) - gravity(reference.body_quat[self.anchor])).abs()
                 <= thresholds.root_orientation_error,
             "motion termination: anchor orientation"
         );
-        // Relative-body targets use yaw-only alignment; their world Z is unchanged.
-        ensure!(
-            self.end_effectors
-                .iter()
-                .all(
-                    |&i| (self.data.xpos()[self.bodies[i]][2] - reference.body_pos[i][2]).abs()
-                        <= thresholds.end_effector_position_error
-                ),
-            "motion termination: end effector height"
-        );
+        if full_state {
+            // Relative-body targets use yaw-only alignment; their world Z is unchanged.
+            ensure!(
+                self.end_effectors
+                    .iter()
+                    .all(
+                        |&i| (self.data.xpos()[self.bodies[i]][2] - reference.body_pos[i][2]).abs()
+                            <= thresholds.end_effector_position_error
+                    ),
+                "motion termination: end effector height"
+            );
+        }
         let reference =
             self.reference(feedback.reference_time + self.policy.metadata.control_timestep);
         let indices = &self.policy.metadata.policy_indices;
@@ -386,15 +414,18 @@ impl Motion {
                 .iter()
                 .map(|&i| reference.qvel[self.qvel_indices[i]]),
         );
-        frame.extend(
-            (anchor_quat.conjugate() * (reference.body_pos[self.anchor] - anchor_pos)).to_array(),
-        );
+        if full_state {
+            frame.extend(
+                (anchor_quat.conjugate() * (reference.body_pos[self.anchor] - anchor_pos))
+                    .to_array(),
+            );
+        }
         frame.extend(rotation_6d(
             anchor_quat.conjugate() * reference.body_quat[self.anchor],
         ));
-        frame.extend(
-            (quat.conjugate() * DVec3::from_array(feedback.linear_velocity_world)).to_array(),
-        );
+        if let Some(velocity) = feedback.linear_velocity_world.filter(|_| full_state) {
+            frame.extend((quat.conjugate() * DVec3::from_array(velocity)).to_array());
+        }
         frame.extend(feedback.angular_velocity_local);
         frame.extend(indices.iter().map(|&i| position[i] - default[i]));
         frame.extend(indices.iter().map(|&i| velocity[i]));

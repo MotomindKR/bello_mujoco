@@ -127,6 +127,7 @@ def tracking_config(path: Path, *, random_start: bool = False):
 def beyondmimic_config(path: Path) -> MotionTrackingEnvConfig:
     return MotionTrackingEnvConfig(
         motion_path=path,
+        observation_mode="full_state",
         formulation="beyondmimic",
         anchor_body_name="torso_link",
         reset=MotionResetConfig(

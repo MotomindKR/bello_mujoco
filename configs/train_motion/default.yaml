@@ -50,6 +50,7 @@ config:
     action_limit: 1.0
 
 env_config:
+  observation_mode: proprioceptive
   decimation: 4
   action_clip: 1.0
   terrain:

@@ -90,6 +90,8 @@ class ActuatorConfig:
                     f"actuator config for joint {name!r} has nonfinite gains "
                     f"{config.gains}"
                 )
+            if any(gain < 0 for gain in config.gains):
+                raise ValueError(f"actuator gains must be nonnegative: {name}")
             if config.soft_limit is not None and (
                 len(config.soft_limit) != 2
                 or config.soft_limit[0] >= config.soft_limit[1]
@@ -128,6 +130,19 @@ class ActuatorConfig:
             joints={
                 name: replace(config, soft_limit=limits[name])
                 if name in limits
+                else config
+                for name, config in self.joints.items()
+            }
+        )
+
+    def with_gains(self, gains: dict[str, tuple[float, float]]) -> ActuatorConfig:
+        unknown = set(gains) - set(self.joints)
+        if unknown:
+            raise ValueError(f"unknown joints in gain overrides: {sorted(unknown)}")
+        return ActuatorConfig(
+            joints={
+                name: replace(config, gains=tuple(gains[name]))
+                if name in gains
                 else config
                 for name, config in self.joints.items()
             }

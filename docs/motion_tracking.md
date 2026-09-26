@@ -30,6 +30,40 @@ not need to be tracked in the source commit.
 Training and deployment apply actions without an action low-pass filter.
 Action/target bounds remain enforced; hardwared still filters sensor feedback.
 
+## Observation modes
+
+New motion training defaults to `proprioceptive`, including both `motion` and
+`bello_mini_motion`. To opt into estimator-dependent actor inputs, set
+`env_config.observation_mode` in the selected training profile, for example
+`configs/profiles/train/bello_mini_motion.yaml`:
+
+```yaml
+env_config:
+  observation_mode: full_state
+```
+
+`proprioceptive` follows BeyondMimic's
+no-state-estimation actor: reference joint positions/velocities, relative anchor
+orientation, root-local angular velocity, measured joints, and previous action.
+It excludes anchor-position error and base linear velocity. Critic inputs,
+rewards, and simulation height/orientation terminations retain full ground truth
+in both modes. Noise, feedback filtering, and latency still apply to actor inputs.
+
+The mode is saved in checkpoints and exported bundles. It requires training a
+new policy; changing metadata or zeroing inputs of a full-state policy is not a
+conversion. Evaluation/export use the saved mode. Runtime rejects a mode/layout
+mismatch instead of adapting the network inputs.
+
+For a proprioceptive bundle, omit `motion.pose` from the hardware YAML. The native
+runner uses hardwared's IMU orientation/gyro and measured joints, including the
+CAD IMU rotation and actual waist kinematics, with no pose-service connection.
+This removes the translational estimator dependency, not IMU orientation sensing.
+Absolute torso/foot-height guards are unavailable in this runtime mode;
+reference-relative orientation, motor/joint/step, freshness, fault, and control
+lifecycle protections remain. Full-state bundles still require `motion.pose`
+and retain their height guards. Commission new weights in the emulator before
+physical use; removing pose feedback does not guarantee stability.
+
 The [Rust policy runtime](../rust/bello-policy/README.md) supports motion telemetry
 and the standing/motion hardware lifecycle using bundled clips and headless
 MuJoCo kinematics. Synthetic inference and lifecycle checks pass. The Python
@@ -41,8 +75,16 @@ for recipes. Tracked bodies live in `src/bello_mujoco/robots/*_motion.yaml`.
 Mini overrides live in [bello_mini_motion.yaml](../configs/profiles/train/bello_mini_motion.yaml).
 Supply a Mini-retargeted clip, or `resume_path` to use a checkpoint's bundled clip.
 A G1/full-size Bello clip is not interchangeable with Mini motion data. The profile
-uses Mini's canonical mass, motor gains/limits, and ankle transmission, without
-rescaling the robot to G1. It is a starting recipe, not a commissioned policy.
+uses Mini's canonical mass, motor limits, and ankle transmission, with rounded,
+mass-adjusted G1-reference gains in `asset_config.joint_gains`. Only gains change;
+the robot is not rescaled, and the bounded motor-range action mapping is retained.
+Locomotion gains remain unchanged. Train fresh weights; existing checkpoints are
+not converted. It is a starting recipe, not a commissioned policy.
+
+The current live standing/motion runner requires identical gains in both bundles.
+Deploying these motion gains alongside an unchanged standing policy therefore
+requires an explicit, validated gain-handover implementation first. Training,
+native evaluation, and export support the task-specific gains independently.
 
 ## BeyondMimic alignment
 
@@ -71,7 +113,7 @@ This is still an adaptation, not a bit-for-bit upstream reproduction:
 
 | Mechanism | Motion behavior |
 | --- | --- |
-| Actuation | Canonical PD gains, effort bounds, ankle tendons, motor/joint target projection and target-step limits; no action LPF |
+| Actuation | Configured PD gains, canonical effort bounds, ankle tendons, motor/joint target projection and target-step limits; no action LPF |
 | Transport | Previous target is held for the configured physics substeps; actor feedback has sampled latency |
 | Feedback | First-order velocity filtering and quaternion orientation filtering; joint positions and reference commands are not smoothed |
 | Corruption | Velocity/encoder noise before filtering, optional residual noise afterwards; anchor-error noise remains observation-side |
@@ -82,11 +124,12 @@ Mini deliberately uses modest CoM variation, with no locomotion CoM curriculum.
 Its exact ranges are in its profile. Gait scheduling, standing rewards, and
 locomotion foot-placement goals are not imported into reference-motion tracking.
 
-Motion observes root pose and velocities from the state estimator, not raw IMU
-acceleration. The native runner checks the root/IMU orientation relationship and
-consumes already-filtered telemetry; it must not apply this training filter again.
-The training filter approximates hardwared plus estimator response, not their
-full asynchronous implementation. Critic observations and rewards remain clean.
+Full-state motion observes root pose and velocities from the state estimator,
+not raw IMU acceleration, and checks root/IMU orientation agreement.
+Proprioceptive motion derives orientation and angular velocity directly from
+hardwared's IMU feedback. Neither mode filters already-filtered telemetry again.
+The training filter approximates feedback response, not the full asynchronous
+implementation. Critic observations and rewards remain clean.
 
 CPU video evaluation uses nominal geometry/dynamics and an unperturbed reference
 reset, while retaining command delay and seeded actor noise/filter/latency. It

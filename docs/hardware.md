@@ -97,8 +97,11 @@ inference; after stopping, `IDLE` explicitly disables motors. Errors and
 interruptions request damping first. Without `IDLE`, hardwared's watchdog and
 lease-expiry safety remain authoritative.
 
-Motion control uses a motion bundle plus a standing bundle and a fresh pose
-stream. `MOTION` blends from standing into the clip. Completion or the first
+Motion control uses a motion bundle plus a standing bundle. Full-state bundles
+require a fresh pose stream; newly trained proprioceptive bundles use IMU/joints
+without an estimator connection and require `motion.pose` to be omitted.
+See [observation modes](motion_tracking.md#observation-modes). `MOTION` blends
+from standing into the clip. Completion or the first
 Ctrl-C during motion returns to standing; another interrupt stops control.
 Malformed/stale feedback, rejected commands, remote abort, and SIGTERM stop
 control instead of attempting a standing recovery. See the
@@ -109,7 +112,8 @@ Motion uses a reference-relative, direction-sensitive gravity-angle guard
 Transitions blend this reference and tolerance to/from upright. The top-level
 `max_tilt_radians` still protects HOLD, standing, and locomotion. Existing
 machine-local motion YAMLs must replace the removed `motion.max_tilt_radians`
-field explicitly; all other safety and checkpoint termination checks remain.
+field explicitly. Both modes retain orientation and hardware safety checks;
+absolute torso/end-effector height checks apply only to full-state runtime.
 
 The checkpoint owns normalization, motor targets, gait timing, command slew,
 and observation history. Motor feedback is converted to joint kinematics for

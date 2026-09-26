@@ -7,13 +7,13 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, ensure};
-use glam::DQuat;
+use anyhow::{Result, bail, ensure};
+use glam::{DQuat, DVec3};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::tilt::Envelope;
-use super::{Feedback, Motion, pose};
+use super::{Feedback, Motion, ObservationMode, pose};
 use crate::locomotion::{Feedback as HardwareFeedback, Locomotion};
 use crate::target_limits::TargetLimits;
 
@@ -21,7 +21,7 @@ use crate::target_limits::TargetLimits;
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub standing_policy: PathBuf,
-    pub pose: pose::Config,
+    pub pose: Option<pose::Config>,
     pub start_time_seconds: f64,
     pub transition_seconds: f64,
     pub max_tilt_error_radians: f64,
@@ -61,9 +61,17 @@ pub struct Output {
     pub period: Duration,
 }
 
+enum RootFeedback {
+    Estimated {
+        source: pose::Source,
+        max_imu_orientation_error: f64,
+    },
+    Imu,
+}
+
 pub struct Live {
     motion: Motion,
-    poses: pose::Source,
+    root_feedback: RootFeedback,
     config: Config,
     root_from_imu: DQuat,
     phase: Phase,
@@ -116,17 +124,38 @@ impl Live {
             "motion max_tilt_error_radians must be in (0, pi)"
         );
         let observation_size = a.observation_size;
-        motion.require_root_pose_frame(&config.pose.tracked_frame)?;
         let root_from_imu = motion.root_from_fixed_frame(standing.imu_frame())?;
         // Warm up the graph before acquiring a lease, not on the first motion tick.
         motion.policy.infer(&vec![0.; observation_size])?;
-        let poses = pose::Source::connect(config.pose.clone()).await?;
+        let root_feedback = match (motion.settings.environment.observation_mode, &config.pose) {
+            (ObservationMode::FullState, Some(pose)) => {
+                motion.require_root_pose_frame(&pose.tracked_frame)?;
+                RootFeedback::Estimated {
+                    source: pose::Source::connect(pose.clone()).await?,
+                    max_imu_orientation_error: pose.max_imu_orientation_error,
+                }
+            }
+            (ObservationMode::Proprioceptive, None) => {
+                eprintln!(
+                    "Using IMU/joints without a pose service; absolute-height guards unavailable."
+                );
+                RootFeedback::Imu
+            }
+            (ObservationMode::FullState, None) => bail!("full-state motion requires motion.pose"),
+            (ObservationMode::Proprioceptive, Some(_)) => {
+                bail!("proprioceptive motion uses hardware IMU feedback; remove motion.pose")
+            }
+        };
+        eprintln!(
+            "Motion observation mode: {:?}",
+            motion.settings.environment.observation_mode
+        );
         let standing_limits = standing.policy.target_limits.clone();
         let transition_limits =
             standing_limits.transition_envelope(&motion.policy.target_limits)?;
         Ok(Self {
             motion,
-            poses,
+            root_feedback,
             config,
             root_from_imu,
             phase: Phase::Standing,
@@ -199,21 +228,53 @@ impl Live {
     }
 
     pub fn check_feedback(&self, feedback: &HardwareFeedback) -> Result<()> {
-        self.pose(feedback).map(|_| ())
+        self.feedback(feedback).map(|_| ())
     }
 
-    fn pose(&self, feedback: &HardwareFeedback) -> Result<pose::Pose> {
-        let pose = self.poses.sample()?;
+    fn feedback(&self, feedback: &HardwareFeedback) -> Result<Feedback> {
         let imu =
             super::rotation::checked_quaternion(DQuat::from_array(feedback.orientation_xyzw))?;
+        let (position, orientation, linear_velocity, angular_velocity) = match &self.root_feedback {
+            RootFeedback::Estimated {
+                source,
+                max_imu_orientation_error,
+            } => {
+                let pose = source.sample()?;
+                ensure!(
+                    (pose.orientation * self.root_from_imu)
+                        .angle_between(imu)
+                        .abs()
+                        <= *max_imu_orientation_error,
+                    "pose/IMU orientation mismatch"
+                );
+                (
+                    Some(pose.position.to_array()),
+                    pose.orientation,
+                    Some(pose.linear_velocity.to_array()),
+                    pose.angular_velocity,
+                )
+            }
+            RootFeedback::Imu => (
+                None,
+                imu * self.root_from_imu.conjugate(),
+                None,
+                self.root_from_imu * DVec3::from_array(feedback.angular_velocity),
+            ),
+        };
         ensure!(
-            (pose.orientation * self.root_from_imu)
-                .angle_between(imu)
-                .abs()
-                <= self.config.pose.max_imu_orientation_error,
-            "pose/IMU orientation mismatch"
+            angular_velocity.is_finite(),
+            "nonfinite motion angular velocity"
         );
-        Ok(pose)
+        Ok(Feedback {
+            motor_position: feedback.motor_position.clone(),
+            motor_velocity: feedback.motor_velocity.clone(),
+            position,
+            orientation_xyzw: orientation.to_array(),
+            linear_velocity_world: linear_velocity,
+            angular_velocity_local: angular_velocity.to_array(),
+            reference_time: 0.,
+            initialize: false,
+        })
     }
 
     fn transition(&self, initial: &[f64], period: f64, initial_tilt: Envelope) -> Transition {
@@ -233,7 +294,7 @@ impl Live {
         previous_target: &[f64],
         standing_tilt_limit: f64,
     ) -> Result<Output> {
-        let pose = self.pose(feedback)?;
+        let mut sample = self.feedback(feedback)?;
         let now = Instant::now();
         // Validate before phase changes: interrupts must not reset an unsafe pose
         // into a newly permissive envelope. The endpoint is checked before handover.
@@ -301,16 +362,8 @@ impl Live {
                         _ => 0.,
                     };
                 let initialize = matches!(&self.phase, Phase::ToMotion(t) if t.step == 0);
-                let sample = Feedback {
-                    motor_position: feedback.motor_position.clone(),
-                    motor_velocity: feedback.motor_velocity.clone(),
-                    position: pose.position.to_array(),
-                    orientation_xyzw: pose.orientation.to_array(),
-                    linear_velocity_world: pose.linear_velocity.to_array(),
-                    angular_velocity_local: pose.angular_velocity.to_array(),
-                    reference_time: time,
-                    initialize,
-                };
+                sample.reference_time = time;
+                sample.initialize = initialize;
                 let step = self.motion.step(&sample)?;
                 ensure!(
                     step.raw_action
@@ -353,6 +406,7 @@ impl Live {
         let target: Vec<f32> = target.into_iter().map(|v| v as f32).collect();
         Ok(Output {
             log: json!({"phase": phase_name, "reference_time": reference_time,
+            "observation_mode": self.motion.settings.environment.observation_mode,
             "policy": policy_log, "motor_target": target,
             "destination_target_limited": destination_target_limited,
             "tilt_error_radians": tilt_error, "tilt_error_limit_radians": tilt.max_error,

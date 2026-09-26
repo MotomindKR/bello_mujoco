@@ -8,6 +8,13 @@ Mini joints use canonical URDF ranges. Resolved actuator limits are saved with
 the checkpoint for evaluation and deployment; changing a training profile does
 not change an already trained policy.
 
+Use `asset_config.joint_gains` for task-specific `[kp, kd]` actuator gains keyed
+by logical joint name. Unspecified entries retain the robot defaults. For coupled
+ankles, both joint entries must match and specify each differential motor's gains,
+not the effective joint impedance. Gains must be finite and nonnegative. Resolved
+gains are saved with the checkpoint and used by evaluation and policy export.
+Mini motion overrides gains in its profile; locomotion retains its existing gains.
+
 Target restrictions and reward margins are separate. `asset_config.joint_soft_limits`
 caps commanded targets; it does not change the URDF's physical stops. Locomotion's
 `reward_config.limits_pose.joint_soft_limit_factor` and motion's
@@ -37,6 +44,11 @@ uv run --group training bello-train experiment=bello_mini_locomotion seed=1 num_
 Hydra documents decode into frozen dataclasses, validating fields, dimensions,
 ranges, and incompatible combinations before simulation. Add settings to their
 owning dataclass and YAML together, without aliases or parallel CLI defaults.
+
+For motion actor inputs, select `env_config.observation_mode` in the motion
+profile: `proprioceptive` (default) or `full_state`. This changes the actor input
+layout and requires retraining; the critic and simulator terminations retain
+full state. See [motion observation modes](motion_tracking.md#observation-modes).
 
 ## Locomotion components
 

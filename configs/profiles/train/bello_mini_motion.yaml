@@ -1,4 +1,4 @@
-# Shared BeyondMimic tracking recipe; Mini dynamics stay canonical, not G1-scaled.
+# Canonical Mini dynamics with task-specific motion gains.
 motion:
   directory: motions/local
   sequence: ""  # Supplied by motion_path, or read from the resume bundle.
@@ -7,6 +7,36 @@ asset_config:
   target_total_mass_kg: null
   enforce_policy_effort_limits: true
   actuator_mode: policy
+  joint_gains:
+    left_hip_pitch_joint: [60.0, 4.0]
+    right_hip_pitch_joint: [60.0, 4.0]
+    left_hip_roll_joint: [140.0, 9.0]
+    right_hip_roll_joint: [140.0, 9.0]
+    left_hip_yaw_joint: [60.0, 4.0]
+    right_hip_yaw_joint: [60.0, 4.0]
+    left_knee_joint: [140.0, 9.0]
+    right_knee_joint: [140.0, 9.0]
+    # Gains apply to each differential motor, not the logical ankle joint.
+    left_ankle_pitch_joint: [20.0, 1.5]
+    right_ankle_pitch_joint: [20.0, 1.5]
+    left_ankle_roll_joint: [20.0, 1.5]
+    right_ankle_roll_joint: [20.0, 1.5]
+    waist_yaw_joint: [60.0, 4.0]
+    waist_roll_joint: [40.0, 2.5]
+    left_shoulder_pitch_joint: [20.0, 1.5]
+    right_shoulder_pitch_joint: [20.0, 1.5]
+    left_shoulder_roll_joint: [20.0, 1.5]
+    right_shoulder_roll_joint: [20.0, 1.5]
+    left_shoulder_yaw_joint: [20.0, 1.5]
+    right_shoulder_yaw_joint: [20.0, 1.5]
+    left_elbow_pitch_joint: [20.0, 1.5]
+    right_elbow_pitch_joint: [20.0, 1.5]
+    left_wrist_yaw_joint: [25.0, 1.5]
+    right_wrist_yaw_joint: [25.0, 1.5]
+    left_wrist_pitch_joint: [25.0, 1.5]
+    right_wrist_pitch_joint: [25.0, 1.5]
+    left_wrist_roll_joint: [20.0, 1.5]
+    right_wrist_roll_joint: [20.0, 1.5]
   imu_config:
     enabled: false
     body_name: imu_link

@@ -30,6 +30,7 @@ class ModelConfig:
     actuator_mode: ActuatorMode | None = None
     actuator_config: ActuatorConfig | None = None
     joint_soft_limits: dict[str, tuple[float, float]] = field(default_factory=dict)
+    joint_gains: dict[str, tuple[float, float]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         definition = robot_definition(self.asset)
@@ -37,13 +38,19 @@ class ModelConfig:
             {name: tuple(bounds) for name, bounds in self.joint_soft_limits.items()}
         )
         object.__setattr__(self, "joint_soft_limits", limits)
-        derived = ActuatorConfig.for_asset(
-            self.asset, mode=self.actuator_mode
-        ).with_soft_limits(limits)
+        gains = FrozenDict(
+            {name: tuple(values) for name, values in self.joint_gains.items()}
+        )
+        object.__setattr__(self, "joint_gains", gains)
+        derived = (
+            ActuatorConfig.for_asset(self.asset, mode=self.actuator_mode)
+            .with_soft_limits(limits)
+            .with_gains(gains)
+        )
         configured = (
             derived
             if self.actuator_config is None
-            else self.actuator_config.with_soft_limits(limits)
+            else self.actuator_config.with_soft_limits(limits).with_gains(gains)
         )
         if self.actuator_mode is not None and configured != derived:
             raise ValueError(

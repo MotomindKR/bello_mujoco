@@ -40,6 +40,7 @@ XML = """<mujoco><worldbody><body name="root"><freejoint/>
 
 class MotionHardware(SyntheticHardware):
     pose_failure = None
+    pose_requests = 0
     pitch_ramp = (0.0, 0.0, 0.0, 1.0)
 
     def root_orientation(self):
@@ -58,9 +59,13 @@ class MotionHardware(SyntheticHardware):
         response.imus[0].orientation.CopyFrom(
             self.pb.Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
         )
+        response.imus[0].angular_velocity.CopyFrom(
+            self.pb.Vector3(x=0.2, y=-0.1, z=0.3)
+        )
         return response
 
     def pose(self, request, context):
+        self.pose_requests += 1
         sequence = 0
         stamp = 0
         while context.is_active() and not self.closed.is_set():
@@ -92,7 +97,7 @@ class MotionHardware(SyntheticHardware):
             self.closed.wait(0.005)
 
 
-def motion_bundle(source, *, root_pitch=0.0, frames=3):
+def motion_bundle(source, *, root_pitch=0.0, frames=3, observation_mode="full_state"):
     model = mujoco.MjModel.from_xml_string(XML)
     data = mujoco.MjData(model)
     data.qpos[:] = [0, 0, 0.9, 1, 0, 0, 0, 0.2, -0.3, 0.4]
@@ -126,6 +131,12 @@ def motion_bundle(source, *, root_pitch=0.0, frames=3):
         ("joint_velocity", 3),
         ("last_action", 3),
     ]
+    if observation_mode == "proprioceptive":
+        layout = [
+            term
+            for term in layout
+            if term[0] not in {"anchor_position_error", "base_linear_velocity"}
+        ]
     return bundle(
         source,
         physics=XML.encode(),
@@ -140,7 +151,11 @@ def motion_bundle(source, *, root_pitch=0.0, frames=3):
             motor_limits=[[0.0, 0.9], [-3, 3], [-3, 3]],
             joint_limits=[[0.0, 0.8], [-3, 3], [-3, 3]],
             position_step_limits=[0.02, 0.02, 0.02],
-            environment=to_builtin(MotionTrackingEnvConfig(anchor_body_name="root")),
+            environment=to_builtin(
+                MotionTrackingEnvConfig(
+                    anchor_body_name="root", observation_mode=observation_mode
+                )
+            ),
             end_effector_names=["tip"],
         ),
     )
@@ -215,6 +230,7 @@ def test_motion_pose_frame_requires_fixed_coincident_root(
         pool.shutdown(wait=True)
 
 
+@pytest.mark.parametrize("observation_mode", ["full_state", "proprioceptive"])
 @pytest.mark.parametrize(
     "failure",
     [
@@ -228,6 +244,7 @@ def test_motion_pose_frame_requires_fixed_coincident_root(
         "frame",
         "orientation",
         "missing_velocity",
+        "hardware_stale",
         "reject",
         "abort",
         "deep_tilt",
@@ -236,14 +253,21 @@ def test_motion_pose_frame_requires_fixed_coincident_root(
     ],
 )
 def test_motion_lifecycle_returns_to_standing_or_stops_safely(
-    rust_policy, hardware_proto, tmp_path, failure
+    rust_policy, hardware_proto, tmp_path, failure, observation_mode
 ):
     _, _, source = rust_policy
     fake = MotionHardware(hardware_proto)
     tilted = failure in ("deep_tilt", "wrong_direction", "return_still_tilted")
     if tilted:
         fake.pitch_ramp = (0.6, 0.6, 0.0, 1.0)
-    server, pool, endpoint = start_services(fake)
+    server, pool, endpoint = start_services(
+        fake, pose_enabled=observation_mode == "full_state"
+    )
+    succeeds = failure in (None, "interrupt", "deep_tilt") or (
+        observation_mode == "proprioceptive"
+        and failure
+        in ("stale", "outage", "repeated", "frame", "orientation", "missing_velocity")
+    )
     standing = tmp_path / "standing.zip"
     standing.write_bytes(
         bundle(
@@ -258,11 +282,16 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
     motion = tmp_path / "motion.zip"
     motion.write_bytes(
         motion_bundle(
-            source, root_pitch=1.3 if tilted else 0.0, frames=20 if tilted else 3
+            source,
+            root_pitch=1.3 if tilted else 0.0,
+            frames=20 if tilted else 3,
+            observation_mode=observation_mode,
         )
     )
     log = tmp_path / "policy.jsonl"
     settings = control_settings(endpoint, standing, log)
+    if observation_mode == "proprioceptive":
+        del settings["motion"]["pose"]
     if tilted:
         settings["motion"]["transition_seconds"] = 0.5
         settings["control"]["max_duration_seconds"] = 4.5
@@ -332,22 +361,34 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
             os.kill(process.pid, signal.SIGTERM)
         elif failure == "reject":
             fake.failure = failure
+        elif failure == "hardware_stale":
+            fake.failure = "stale"
         elif failure == "abort":
             fake.abort = True
         else:
             fake.pose_failure = failure
-        if failure in (None, "interrupt", "deep_tilt"):
+        if succeeds:
             wait_for("Standing policy resumed")
             assert "stop" not in fake.calls
         wait_for("Type IDLE")
         assert "stop" in fake.calls and "disable" not in fake.calls
         os.write(master, b"IDLE\n")
-        assert (process.wait(timeout=3) == 0) == (
-            failure in (None, "interrupt", "deep_tilt")
-        ), transcript.decode(errors="replace")
+        assert (process.wait(timeout=3) == 0) == succeeds, transcript.decode(
+            errors="replace"
+        )
         assert fake.calls[-2:] == ["disable", "release"]
         events = [json.loads(line) for line in log.read_text().splitlines()]
         rows = [row["motion"] for row in events if "motion" in row]
+        assert all(row["observation_mode"] == observation_mode for row in rows)
+        if observation_mode == "proprioceptive":
+            assert fake.pose_requests == 0
+            for row in rows:
+                if row["phase"] == "motion":
+                    np.testing.assert_allclose(
+                        row["policy"]["observation"][12:15],
+                        Rotation.from_euler("z", 0.4).apply([0.2, -0.1, 0.3]),
+                        atol=1e-6,
+                    )
         if tilted:
             motion_rows = [row for row in rows if row["phase"] == "motion"]
             assert len(motion_rows) >= 3
@@ -366,7 +407,7 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
         for row in applied:
             if row["motion"]["phase"] == "standing":
                 assert row["command"]["motor_target"][0] <= 0.3
-        if failure in (None, "interrupt", "deep_tilt"):
+        if succeeds:
             assert "transition_to_standing" in phases
             assert phases[-1] == "standing"
             np.testing.assert_allclose(targets[-1], [0.2, -0.3, 0.4], atol=1e-6)
@@ -413,6 +454,33 @@ def test_motion_preflight_never_acquires_control(
             assert json.loads(result.stdout)["armed"] is False
         else:
             assert failure in result.stderr
+    finally:
+        fake.closed.set()
+        server.stop(0).wait()
+        pool.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("mode", ["full_state", "proprioceptive"])
+def test_motion_rejects_pose_configuration_inconsistent_with_bundle(
+    rust_policy, hardware_proto, tmp_path, mode
+):
+    run, _, source = rust_policy
+    fake = MotionHardware(hardware_proto)
+    server, pool, endpoint = start_services(fake, pose_enabled=False)
+    standing = tmp_path / "standing.zip"
+    standing.write_bytes(bundle(source))
+    settings = control_settings(endpoint, standing)
+    if mode == "full_state":
+        del settings["motion"]["pose"]
+    try:
+        result = run(
+            content=motion_bundle(source, observation_mode=mode),
+            hardware_config=settings,
+        )
+        assert result.returncode != 0
+        assert "motion.pose" in result.stderr
+        assert not fake.calls
+        assert fake.pose_requests == 0
     finally:
         fake.closed.set()
         server.stop(0).wait()

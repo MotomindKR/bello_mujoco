@@ -55,6 +55,43 @@ def test_task_soft_limits_preserve_other_actuator_properties_and_input():
         original.with_soft_limits({"missing": (-1.0, 1.0)})
 
 
+def test_task_gains_preserve_other_actuator_properties_and_input():
+    from dataclasses import replace
+
+    original = ActuatorConfig(
+        joints={
+            "hinge": JointActuatorConfig(
+                mode="policy",
+                default_pos=0.2,
+                soft_limit=(-0.4, 0.8),
+                gains=(7.0, 1.0),
+                effort_limit=3.0,
+            ),
+            "other": JointActuatorConfig(),
+        }
+    )
+    gains = {"hinge": [2.0, 0.5]}
+    modified = original.with_gains(gains)
+    gains["hinge"][0] = 99.0
+    assert modified.joints["hinge"] == replace(
+        original.joints["hinge"], gains=(2.0, 0.5)
+    )
+    assert original.joints["hinge"].gains == (7.0, 1.0)
+    assert modified.joints["other"] == original.joints["other"]
+    with pytest.raises(ValueError, match="unknown joints"):
+        original.with_gains({"missing": (2.0, 0.5)})
+
+
+@pytest.mark.parametrize(
+    "gains",
+    [(1.0,), (-1.0, 0.5), (1.0, -0.5), (1.0, float("nan")), (float("inf"), 1.0)],
+)
+def test_task_gains_reject_invalid_values(gains):
+    config = ActuatorConfig(joints={"hinge": JointActuatorConfig()})
+    with pytest.raises(ValueError, match="gains"):
+        config.with_gains({"hinge": gains})
+
+
 @pytest.mark.parametrize(
     "bounds", [(0.5, 1.0), (1.0, -1.0), (0.0,), (0.0, float("nan"))]
 )
@@ -80,7 +117,7 @@ def test_compiler_does_not_expand_physical_range_or_modify_joint_limits():
         )
 
 
-def test_model_task_limits_decode_freeze_and_round_trip(monkeypatch):
+def test_model_task_overrides_decode_freeze_and_round_trip(monkeypatch):
     from dataclasses import asdict
     from bello_mujoco.configuration import dataclass_from_dict
     from bello_mujoco.models import compiler
@@ -103,11 +140,25 @@ def test_model_task_limits_decode_freeze_and_round_trip(monkeypatch):
     )
     config = dataclass_from_dict(
         ModelConfig,
-        {"actuator_mode": "policy", "joint_soft_limits": {"hinge": [-0.4, 0.8]}},
+        {
+            "actuator_mode": "policy",
+            "joint_soft_limits": {"hinge": [-0.4, 0.8]},
+            "joint_gains": {"hinge": [5.0, 0.5]},
+        },
         strict=True,
     )
     assert config.actuator_config.joints["hinge"].mode == "policy"
     assert config.actuator_config.joints["hinge"].soft_limit == (-0.4, 0.8)
-    assert dataclass_from_dict(ModelConfig, asdict(config), strict=True) == config
+    assert config.actuator_config.joints["hinge"].gains == (5.0, 0.5)
+    assert (
+        dataclass_from_dict(
+            ModelConfig, asdict(config), strict=True, require_all_fields=True
+        )
+        == config
+    )
     with pytest.raises(TypeError):
         config.joint_soft_limits["hinge"] = (-1.0, 1.0)
+    with pytest.raises(TypeError):
+        config.joint_gains["hinge"] = (10.0, 1.0)
+    unchanged = ModelConfig(actuator_mode="policy")
+    assert unchanged.actuator_config.joints["hinge"].gains == (40.0, 2.0)

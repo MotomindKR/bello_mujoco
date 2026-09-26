@@ -271,7 +271,7 @@ class SyntheticHardware:
             self.closed.wait(0.01)
 
 
-def start_services(fake):
+def start_services(fake, *, pose_enabled=True):
     pool = ThreadPoolExecutor(max_workers=8)
     server = grpc.server(pool)
     methods = {}
@@ -316,7 +316,7 @@ def start_services(fake):
             ),
         ]
     )
-    if hasattr(fake, "pose"):
+    if pose_enabled and hasattr(fake, "pose"):
         server.add_generic_rpc_handlers(
             [
                 grpc.method_handlers_generic_handler(

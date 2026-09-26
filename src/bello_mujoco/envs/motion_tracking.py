@@ -163,6 +163,7 @@ class MotionTrackingEnvConfig:
     )
     decimation: int = CONTROL_DECIMATION
     action_clip: float = 1.0
+    observation_mode: Literal["full_state", "proprioceptive"] = "proprioceptive"
     formulation: Literal[
         "beyondmimic",
         "beyondmimic_joint_limits",
@@ -184,6 +185,12 @@ class MotionTrackingEnvConfig:
     push: MotionPushConfig = MotionPushConfig()
     reward: MotionRewardConfig = MotionRewardConfig()
     done: MotionDoneConfig = MotionDoneConfig()
+
+    def __post_init__(self) -> None:
+        if self.observation_mode not in {"full_state", "proprioceptive"}:
+            raise ValueError(
+                "observation_mode must be 'full_state' or 'proprioceptive'"
+            )
 
 
 @dataclass(frozen=True)
@@ -412,6 +419,19 @@ class BelloMotionTrackingEnv:
 
     @property
     def observation_layout(self) -> ObservationLayout:
+        components = self._full_observation_layout.components
+        return ObservationLayout(
+            tuple(components[i] for i in self._actor_observation_indices)
+        )
+
+    @property
+    def _actor_observation_indices(self) -> tuple[int, ...]:
+        if self.config.observation_mode == "proprioceptive":
+            return (0, 1, 3, 5, 6, 7, 8)
+        return tuple(range(9))
+
+    @property
+    def _full_observation_layout(self) -> ObservationLayout:
         action_size = self.action_size
         return ObservationLayout(
             (
@@ -434,7 +454,7 @@ class BelloMotionTrackingEnv:
             ("tracked_body_position_relative_to_anchor", 3 * body_count),
             ("tracked_body_orientation_relative_to_anchor_6d", 6 * body_count),
         )
-        return ObservationLayout(self.observation_layout.components + extra)
+        return ObservationLayout(self._full_observation_layout.components + extra)
 
     @property
     def observation_size(self) -> int:
@@ -777,9 +797,15 @@ class BelloMotionTrackingEnv:
     ) -> jax.Array:
         if _feedback is None:
             _feedback = self._delayed_actor_feedback(state)
-        qpos, qvel, anchor_position, anchor_quat = self._unpack_actor_feedback(
-            _feedback
+        terms = self._corrupt_observation_terms(
+            self._observation_terms(state, _feedback), rng
         )
+        return jnp.concatenate(tuple(terms[i] for i in self._actor_observation_indices))
+
+    def _observation_terms(
+        self, state: MotionTrackingState, feedback: jax.Array
+    ) -> tuple[jax.Array, ...]:
+        qpos, qvel, anchor_position, anchor_quat = self._unpack_actor_feedback(feedback)
         reference = self.aligned_reference(
             jnp.minimum(
                 state.reference_time + self.control_timestep, self.motion.duration
@@ -808,7 +834,7 @@ class BelloMotionTrackingEnv:
         current_joint_position = (
             qpos[qpos_indices] - joint_default - state.joint_default_offset
         )
-        terms = (
+        return (
             reference.qpos[qpos_indices] - joint_default,
             reference.qvel[qvel_indices],
             anchor_position_error,
@@ -819,7 +845,6 @@ class BelloMotionTrackingEnv:
             qvel[qvel_indices],
             state.last_action,
         )
-        return self._corrupt_observation_terms(terms, rng)
 
     def observation_batch(
         self, state: MotionTrackingState, rng: jax.Array | None = None
@@ -830,8 +855,8 @@ class BelloMotionTrackingEnv:
         return jax.vmap(self.observation)(state, keys)
 
     def critic_observation(self, state: MotionTrackingState) -> jax.Array:
-        current_observation = self.observation(
-            state, _feedback=self._actor_feedback(state.data)
+        current_observation = jnp.concatenate(
+            self._observation_terms(state, self._actor_feedback(state.data))
         )
         ids = jnp.asarray(self.tracked_body_ids)
         anchor_id = self.anchor_body_id
@@ -1200,10 +1225,10 @@ class BelloMotionTrackingEnv:
 
     def _corrupt_observation_terms(
         self, terms: tuple[jax.Array, ...], rng: jax.Array | None
-    ) -> jax.Array:
+    ) -> tuple[jax.Array, ...]:
         config = self.config.observation_noise
         if rng is None or not config.enabled:
-            return jnp.concatenate(terms)
+            return terms
         keys = jax.random.split(rng, 6)
         mutable = list(terms)
         for index, magnitude, key in zip(
@@ -1229,7 +1254,7 @@ class BelloMotionTrackingEnv:
                 maxval=magnitude,
                 dtype=jnp.float32,
             )
-        return jnp.concatenate(tuple(mutable))
+        return tuple(mutable)
 
     def _actor_feedback(self, data: mjx.Data) -> jax.Array:
         return jnp.concatenate(

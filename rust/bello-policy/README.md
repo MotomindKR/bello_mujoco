@@ -44,7 +44,12 @@ For a motion bundle, `--telemetry` accepts `motor_position`, `motor_velocity`,
 Set `initialize: true` on the first sample or when restarting the clip. This
 aligns the bundled reference root XY/yaw to the measured pose and resets history.
 The runner samples the reference one control step ahead, computes anchor-link
-kinematics, and checks the checkpoint's height/orientation/end-effector limits.
+kinematics, and checks the checkpoint's height/orientation/end-effector limits
+for `full_state` bundles. For `proprioceptive` bundles, `position` and
+`linear_velocity_world` may be omitted and are not consumed. Root orientation
+and angular velocity are still required; kinematics use an arbitrary origin,
+never a fabricated height estimate. Only orientation termination is available
+in this telemetry mode. Simulation training/evaluation retains all terminations.
 Output contains the stacked observation, raw/clipped action, and motor target.
 No action low-pass filter is applied. Quaternion/vector operations use `glam`;
 `npyz` reads the bundled NumPy arrays without a Python process.
@@ -129,7 +134,16 @@ motion:
     max_imu_orientation_error: 0.25
 ```
 
-Use the actual pose producer endpoint and floating-base frame. The stream must
+The example is for a `full_state` bundle. For a newly trained `proprioceptive`
+bundle, omit the entire `pose` mapping (or set `pose: null`); providing it is an
+error, not an ignored endpoint. The runner does not connect to a pose service.
+It converts hardwared IMU orientation/gyro into the floating-base frame using
+the bundled mounting rotation, then computes the articulated anchor orientation
+from measured joints. Estimator position, linear velocity, and absolute-height
+guards are not used. The bundle, not a deployment override, selects the mode.
+See [training modes](../../docs/motion_tracking.md#observation-modes).
+
+For full-state motion, use the actual pose producer endpoint and floating-base frame. The stream must
 provide world-frame linear velocity and root-local angular velocity, not just
 position/orientation. Preflight checks both bundles' motor mapping and gains,
 pose freshness, and pose/IMU agreement using the model's fixed IMU mounting
@@ -161,9 +175,11 @@ exit blends the current reference/tolerance back to upright. Both follow the
 command blend fraction. The guard runs before phase changes or interrupts,
 and must pass its upright endpoint before standing resumes. Returning to
 standing is therefore not an unguarded recovery from an arbitrary fallen pose.
-Logs include tilt error, limit, and reference gravity. Checkpoint termination
-rules (including the original scalar anchor-gravity check), hardware faults,
-freshness, pose/IMU agreement, velocity limits, and target limits remain active.
+Logs include observation mode, tilt error, limit, and reference gravity.
+Both modes retain the scalar anchor-gravity check, hardware faults, feedback
+freshness, IMU plausibility, and target limits. Full-state mode additionally
+enforces pose freshness/IMU agreement, estimated velocity limits, and checkpoint
+absolute-height terminations. Proprioceptive mode cannot check absolute height.
 
 Standing and motion each use their own motor/joint target limits, intersected
 with the live hardware motor bounds. Blends use a transition envelope covering

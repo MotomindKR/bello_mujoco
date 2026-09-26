@@ -80,6 +80,80 @@ def env():
     return result
 
 
+@pytest.mark.parametrize("mode", ["full_state", "proprioceptive"])
+def test_actor_state_dependency_and_full_critic_under_jit_vmap(env, mode, monkeypatch):
+    object.__setattr__(env, "config", replace(env.config, observation_mode=mode))
+    monkeypatch.setattr(
+        BelloMotionTrackingEnv, "end_effector_names", property(lambda _: ("anchor",))
+    )
+    data = mujoco.MjData(env.model.mj_model)
+    state, _ = reset_native_motion_rollout(env, data)
+    shift = jnp.array([0.3, -0.2, 0.7])
+    changed_data = replace(
+        state.data,
+        qpos=state.data.qpos.at[:3].add(shift),
+        qvel=state.data.qvel.at[:3].set(jnp.array([0.4, -0.3, 0.2])),
+        xpos=state.data.xpos + shift,
+    )
+    changed = state.replace(
+        data=changed_data,
+        actor_feedback_history=jnp.tile(
+            env._actor_feedback(changed_data),
+            (env.maximum_observation_delay_steps + 1, 1),
+        ),
+    )
+    states = jax.tree.map(lambda a, b: jnp.stack([a, b]), state, changed)
+    actors = jax.jit(env.observation_batch)(states)
+    critics = jax.jit(env.critic_observation_batch)(states)
+    assert actors.shape == (2, env.observation_size)
+    assert critics.shape == (2, env.critic_observation_size)
+    assert not np.allclose(critics[0], critics[1])
+    if mode == "proprioceptive":
+        np.testing.assert_array_equal(actors[0], actors[1])
+        assert env.observation_size == env._full_observation_layout.size - 6
+    else:
+        assert not np.allclose(actors[0], actors[1])
+        np.testing.assert_array_equal(actors, critics[:, : env.observation_size])
+    # Height termination is still ground-truth-based in training, for both modes.
+    flags = jax.jit(jax.vmap(env.termination_flags))(states)
+    np.testing.assert_array_equal(flags["done/height"], [False, True])
+    clean_critics = np.asarray(critics)
+    object.__setattr__(
+        env,
+        "config",
+        replace(
+            env.config,
+            observation_noise=MotionObservationNoiseConfig(
+                enabled=True, anchor_orientation=0.1, base_angular_velocity=0.2
+            ),
+        ),
+    )
+    noisy = jax.jit(env.observation_batch)(states, jax.random.PRNGKey(42))
+    assert noisy.shape == actors.shape
+    assert not np.allclose(noisy, actors)
+    np.testing.assert_array_equal(env.critic_observation_batch(states), clean_critics)
+
+
+def test_unknown_motion_observation_mode_rejected():
+    with pytest.raises(ValueError, match="observation_mode"):
+        MotionTrackingEnvConfig(observation_mode="unknown")
+
+
+@pytest.mark.parametrize("mode", ["full_state", "proprioceptive"])
+def test_motion_observation_mode_survives_strict_config_roundtrip(mode):
+    from bello_mujoco.configuration import dataclass_from_dict
+    from bello_mujoco.training.tracking import to_builtin
+
+    config = MotionTrackingEnvConfig(observation_mode=mode)
+    restored = dataclass_from_dict(
+        MotionTrackingEnvConfig,
+        to_builtin(config),
+        strict=True,
+        require_all_fields=True,
+    )
+    assert restored == config
+
+
 def test_filter_retains_raw_positions_filters_velocity_and_normalizes_pose(env):
     data = mujoco.MjData(env.model.mj_model)
     mujoco.mj_forward(env.model.mj_model, data)
