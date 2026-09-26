@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from mujoco import mjx
 from bello_mujoco.envs.locomotion_state import BelloState
 from bello_mujoco.envs.geometry import tree_where
+from bello_mujoco.envs.torso import slew_torso_command
 from bello_mujoco.envs.gait import (
     advance_gait_phase,
     advance_standing_blend,
@@ -221,6 +222,12 @@ def step_outcome(
         )
     )
     next_state = reward_state.replace(
+        torso_command=slew_torso_command(
+            state.torso_command,
+            state.torso_command_target,
+            env.command_config.torso.slew_rate,
+            env.control_timestep,
+        ),
         foot_contact_debounce_time=foot_contact_debounce_time,
         last_foot_contact=foot_contact.astype(bool),
         command=next_command,
@@ -246,6 +253,9 @@ def step_outcome(
         "foot_contact/filtered": foot_contact,
         "foot_contact/debounce_time": foot_contact_debounce_time,
         "target/motor_saturation_fraction": motor_saturation,
+        "command/torso_roll": reward_state.torso_command[0],
+        "command/torso_pitch": reward_state.torso_command[1],
+        "command/torso_yaw": reward_state.torso_command[2],
         "latency/observation_steps": (
             next_state.actor_feedback_delay_steps.astype(jnp.float32)
         ),
@@ -267,6 +277,10 @@ def step_outcome(
         **done_flags,
         **reward_info,
     }
+    if env.reward_config.enabled("track_torso_orientation"):
+        info["tracking/torso_orientation_error"] = env._torso_orientation_error(
+            reward_state
+        )
     return next_state, reward, done, info
 
 
@@ -420,6 +434,17 @@ def step_batch(
         gait_phase=next_gait_phase,
         standing_transition_pending=standing_transition_pending,
         command_resample_step_count=command_resample_step_count,
+        torso_command_target=(
+            jnp.where(
+                command_resampled[:, None],
+                env.command_config.torso.sample(
+                    jax.random.fold_in(resample_rng, 4), (batch_size,)
+                ),
+                transitioned_state.torso_command_target,
+            )
+            if resample_rng is not None and env.command_config.enabled
+            else transitioned_state.torso_command_target
+        ),
     )
     stepped_state = finish_command_step(env, state, stepped_state)
     stepped_obs = env.observation_batch(stepped_state, obs_rng)

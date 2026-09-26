@@ -2,12 +2,65 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 import math
 
 import chex
 import jax
 import jax.numpy as jnp
+
+
+@dataclass(frozen=True)
+class TorsoCommandConfig:
+    """Level-ground lean and pelvis-heading-relative twist, in radians."""
+
+    body_name: str = "torso_link"
+    roll: tuple[float, float] = (0.0, 0.0)
+    pitch: tuple[float, float] = (0.0, 0.0)
+    yaw: tuple[float, float] = (0.0, 0.0)
+    slew_rate: tuple[float, float, float] = (0.35, 0.35, 0.5)
+    neutral_probability: float = 0.25
+
+    def __post_init__(self) -> None:
+        if not self.body_name or self.body_name != self.body_name.strip():
+            raise ValueError("torso.body_name must be a nonempty body name")
+        for name in ("roll", "pitch", "yaw"):
+            bounds = getattr(self, name)
+            validate_range(f"torso.{name}", bounds)
+            if not -math.pi / 2 < bounds[0] <= 0 <= bounds[1] < math.pi / 2:
+                raise ValueError(f"torso.{name} must contain zero within (-pi/2, pi/2)")
+        if len(self.slew_rate) != 3 or any(
+            not math.isfinite(x) or x <= 0 for x in self.slew_rate
+        ):
+            raise ValueError("torso.slew_rate requires three positive finite rates")
+        if not 0 <= self.neutral_probability <= 1:
+            raise ValueError("torso.neutral_probability must be in [0, 1]")
+
+    @property
+    def ranges(self) -> tuple[tuple[float, float], ...]:
+        return self.roll, self.pitch, self.yaw
+
+    @property
+    def variable(self) -> bool:
+        return any(low != high for low, high in self.ranges)
+
+    def sample(self, rng: jax.Array, shape: tuple[int, ...] = ()) -> jax.Array:
+        angle_key, neutral_key = jax.random.split(rng)
+        bounds = jnp.asarray(self.ranges, dtype=jnp.float32)
+        angles = jax.random.uniform(
+            angle_key, shape + (3,), minval=bounds[:, 0], maxval=bounds[:, 1]
+        )
+        neutral = jax.random.bernoulli(neutral_key, self.neutral_probability, shape)
+        return jnp.where(neutral[..., None], 0.0, angles)
+
+    def validate_target(self, target) -> None:
+        if len(target) != 3 or any(
+            not math.isfinite(x) or not low <= x <= high
+            for x, (low, high) in zip(target, self.ranges, strict=True)
+        ):
+            raise ValueError(
+                "torso_command must contain three finite angles within trained ranges"
+            )
 
 
 @dataclass(frozen=True)
@@ -25,6 +78,7 @@ class CommandConfig:
     minimum_moving_yaw_speed: float = 0.20
     resample_seconds: float = 10.0
     standing_transitions_enabled: bool = False
+    torso: TorsoCommandConfig = field(default_factory=TorsoCommandConfig)
 
     def __post_init__(self) -> None:
         validate_range("lin_vel_x", self.lin_vel_x)
@@ -201,6 +255,7 @@ class RewardWeights:
     lin_vel_z: float = -2.0
     ang_vel_xy: float = -0.15
     flat_orientation: float = -2.0
+    track_torso_orientation: float = 0.0
     base_height: float = -10.0
     action_rate: float = -0.01
     action_acceleration: float = -0.005
@@ -246,6 +301,7 @@ class RewardLinks:
 
 @dataclass(frozen=True)
 class TrackingRewardConfig:
+    torso_orientation_std: float = 0.25
     lin_vel_xy_moving_std: float = 0.30
     lin_vel_xy_still_std: float = 0.25
     lin_vel_xy_error_delta: float = 0.25
@@ -427,6 +483,7 @@ class RewardInputs:
     done: jax.Array
     control_timestep: jax.Array
     action_clip_limit: jax.Array
+    torso_orientation_error: jax.Array
     standing_reward_blend: jax.Array = 1.0
     foot_foreaft: jax.Array = 0.0
     foot_separation: jax.Array = 0.0
@@ -504,6 +561,9 @@ def compute_locomotion_reward(
     lin_vel_z = inputs.lin_vel_z**2
     ang_vel_xy = jnp.sum(inputs.ang_vel_xy**2)
     flat_orientation = jnp.sum(inputs.projected_gravity[:2] ** 2)
+    track_torso_orientation = jnp.exp(
+        -((inputs.torso_orientation_error / config.tracking.torso_orientation_std) ** 2)
+    )
     stand_upright = jnp.where(standing_command, flat_orientation, 0.0)
     base_height = (inputs.base_height - config.limits_pose.base_height_target) ** 2
     action_delta = inputs.action - inputs.last_action
@@ -740,6 +800,7 @@ def compute_locomotion_reward(
         "lin_vel_z": lin_vel_z,
         "ang_vel_xy": ang_vel_xy,
         "flat_orientation": flat_orientation,
+        "track_torso_orientation": track_torso_orientation,
         "base_height": base_height,
         "action_rate": action_rate,
         "action_acceleration": action_acceleration,
@@ -808,6 +869,7 @@ def validate_reward_config(config: RewardConfig) -> None:
             raise ValueError("joint_pose_weights values must be finite and nonnegative")
         names.add(name)
     for name, value in {
+        "tracking.torso_orientation_std": config.tracking.torso_orientation_std,
         "standing.position_scale": config.standing.position_scale,
         "gait.crossing_scale": config.gait.crossing_scale,
         "gait.stumble_load_body_weights": config.gait.stumble_load_body_weights,

@@ -20,6 +20,7 @@ pub mod locomotion;
 pub mod motion;
 pub mod remote;
 pub mod target_limits;
+pub mod torso;
 
 #[derive(Debug, Deserialize)]
 pub struct PolicyMetadata {

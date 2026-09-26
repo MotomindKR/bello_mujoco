@@ -68,6 +68,7 @@ from bello_mujoco.envs.locomotion_config import (
 )
 from bello_mujoco.envs.locomotion_state import BelloState
 from bello_mujoco.envs import locomotion_step
+from bello_mujoco.envs.torso import neutral_torso_quaternion, torso_orientation_error
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,8 @@ class BelloLocomotionEnv:
             physics_dt=float(self.model.mj_model.opt.timestep),
         )
         self._validate_model_metadata()
+        if self.reward_config.enabled("track_torso_orientation"):
+            _ = self._neutral_torso_quat
         _ = self.model.target_limits
         if self.reward_config.enabled("stand_motor_continuous_torque_excess"):
             _ = self._motor_continuous_torque
@@ -328,6 +331,7 @@ class BelloLocomotionEnv:
         ]
         if self.command_config.enabled:
             components.append(("command", 3))
+            components.append(("torso_command", 3))
             components.append(("gait_phase", 3))
         components.extend(
             (
@@ -420,6 +424,8 @@ class BelloLocomotionEnv:
                 *self.reward_config.enabled_link_names,
                 *self.done_config.enabled_link_names,
             }
+            if self.reward_config.enabled("track_torso_orientation"):
+                required_link_names.add(self.command_config.torso.body_name)
             if self.reward_config.enabled(
                 "stand_foot_heading"
             ) or self.reward_config.enabled("foot_heading"):
@@ -565,6 +571,12 @@ class BelloLocomotionEnv:
             last_foot_contact=jnp.zeros(self.model.foot_body_ids.size, dtype=bool),
             command=command,
             command_target=command,
+            torso_command=jnp.zeros(3, dtype=jnp.float32),
+            torso_command_target=(
+                self.command_config.torso.sample(jax.random.fold_in(command_rng, 4))
+                if self.command_config.enabled and command_rng is not None
+                else jnp.zeros(3, dtype=jnp.float32)
+            ),
             gait_phase=gait_phase,
             standing_transition_pending=jnp.asarray(0, dtype=jnp.int32),
             next_start_left=~command_is_moving(command, self.command_config),
@@ -834,6 +846,7 @@ class BelloLocomotionEnv:
             observation,
             rng,
             _feedback,
+            torso_command=state.torso_command,
             noise_before_filter=filtering.noise_before_filter,
             residual_noise_scale=filtering.residual_noise_scale,
         )
@@ -1489,6 +1502,7 @@ class BelloLocomotionEnv:
                 lin_vel_z=lin_vel_z,
                 ang_vel_xy=ang_vel_xy,
                 projected_gravity=projected_gravity,
+                torso_orientation_error=self._torso_orientation_error(next_state),
                 base_height=base_height,
                 joint_pos=next_state.data.qpos[qpos_idx],
                 joint_pos_rel=joint_pos_rel,
@@ -1541,6 +1555,26 @@ class BelloLocomotionEnv:
                 action_clip_limit=jnp.asarray(self.action_clip, dtype=jnp.float32),
             ),
             self.command_config,
+        )
+
+    @cached_property
+    def _neutral_torso_quat(self) -> np.ndarray:
+        return neutral_torso_quaternion(
+            self.model.mj_model,
+            self.model.default_qpos,
+            self._link_body_id(self.command_config.torso.body_name),
+            self._link_body_id(self.model.robot.locomotion_command_frame_body_name),
+        ).astype(np.float32)
+
+    def _torso_orientation_error(self, state: BelloState) -> jax.Array:
+        if not self.reward_config.enabled("track_torso_orientation"):
+            return jnp.asarray(0.0, dtype=jnp.float32)
+        return torso_orientation_error(
+            self._link_quat(state, self.command_config.torso.body_name),
+            self._link_quat(state, self.model.robot.locomotion_command_frame_body_name),
+            state.torso_command,
+            jnp.asarray(self._neutral_torso_quat),
+            self.model.robot.locomotion_forward_axis,
         )
 
     def _raw_tracking_ang_vel_z(self, state: BelloState) -> jax.Array:

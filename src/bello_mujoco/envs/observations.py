@@ -87,6 +87,7 @@ def build_observation(
     rng,
     feedback=None,
     *,
+    torso_command,
     noise_before_filter=False,
     residual_noise_scale=0.0,
 ):
@@ -115,7 +116,11 @@ def build_observation(
     ]
     if gait_features is not None:
         components.extend(
-            [(command, "command", 3, 1.0), (gait_features, "gait_phase", 4, 1.0)]
+            [
+                (command, "command", 3, 1.0),
+                (torso_command, "command", 3, 0.0),
+                (gait_features, "gait_phase", 4, 1.0),
+            ]
         )
     components.extend(
         [

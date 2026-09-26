@@ -60,6 +60,7 @@ class TrainingVideoConfig:
     output_dir: Path = Path("outputs/train_videos")
     filename_prefix: str = "rollout"
     command: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    torso_command: tuple[float, float, float] = (0.0, 0.0, 0.0)
     steps: int = 250
     width: int = 640
     height: int = 480
@@ -104,6 +105,7 @@ def run_training(run_config: TrainingRunConfig) -> None:
 
     validate_ppo_config(config)
     validate_video_config(video_config)
+    command_config.torso.validate_target(video_config.torso_command)
     if (
         video_config.enabled
         and video_config.standing_push_enabled
@@ -403,6 +405,7 @@ def render_training_video(
     def render_case(path, name, *, diagnostic=False, **overrides):
         options = dict(
             command=config.command,
+            torso_command=config.torso_command,
             steps=config.steps,
             stop_on_done=config.stop_on_done,
             camera_config=config.camera_config,

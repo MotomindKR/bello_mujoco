@@ -1,4 +1,4 @@
-"""Independent XRoboToolkit/GMR producer of latest URDF joint references; no motor IO."""
+"""Latest XRoboToolkit/GMR arm and torso references; no motor IO."""
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -60,12 +60,15 @@ class ReferenceService:
         except RuntimeError as error:
             context.abort(grpc.StatusCode.INTERNAL, str(error))
         qpos, qvel = np.asarray(reference.qpos), np.asarray(reference.qvel)
+        torso = np.asarray(reference.torso_command)
         age = reference.age_ms()
         if (
             qpos.shape != (self.nq,)
             or qvel.shape != (self.nv,)
             or not np.all(np.isfinite(qpos))
             or not np.all(np.isfinite(qvel))
+            or torso.shape != (3,)
+            or not np.all(np.isfinite(torso))
             or age is None
             or not math.isfinite(age)
             or age < 0
@@ -82,6 +85,7 @@ class ReferenceService:
             joint_names=self.names,
             position=qpos[self.qpos_indices].tolist(),
             velocity=qvel[self.qvel_indices].tolist(),
+            torso_command=torso.tolist(),
         )
 
     def handler(self):
@@ -138,7 +142,7 @@ def run(config: ProducerConfig) -> None:
                     raise RuntimeError("cannot bind reference producer")
                 server.start()
                 print(
-                    f"Joint references at {config.listen}; no motor control.",
+                    f"Body references at {config.listen}; no motor control.",
                     flush=True,
                 )
                 try:

@@ -1,7 +1,7 @@
 syntax = "proto3";
 package bello.reference.v1;
 
-// Latest retargeted URDF joint reference. This service never owns motor control.
+// Latest retargeted robot reference. This service never owns motor control.
 service ReferenceService {
   rpc GetReference(GetReferenceRequest) returns (GetReferenceResponse);
 }
@@ -15,4 +15,8 @@ message GetReferenceResponse {
   repeated string joint_names = 5;
   repeated double position = 6; // URDF joint coordinates, radians.
   repeated double velocity = 7; // Radians/second.
+  // Exactly three radians, required when available: anatomical torso roll/pitch
+  // relative to level ground and yaw relative to pelvis heading, with the
+  // nominal robot CAD orientation removed. Same sample as the joint references.
+  repeated double torso_command = 8;
 }

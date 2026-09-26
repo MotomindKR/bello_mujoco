@@ -35,6 +35,11 @@ and checkpoint resume require the checkpoint's exact clean source commit.
 Evaluation rasterization is Mesa llvmpipe software-only on Linux/Lima. Enabled training
 video failures are fatal; use `video_enabled=false` to disable videos explicitly.
 
+For a freshly trained torso-conditioned locomotion policy, add
+`torso_command=[0.1,-0.15,0.2]` to `bello-eval`. Values are roll/pitch/yaw radians;
+the torso target can accompany either fixed velocity commands or gamepad walking.
+It is not a motion-playback setting. See [torso command semantics](training_configuration.md#torso-orientation-commands).
+
 ## Hardware workflow
 
 ```bash

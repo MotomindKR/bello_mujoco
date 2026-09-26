@@ -42,6 +42,7 @@ def test_pose_stream_retargets_and_serves_named_robot_references():
             rotations = np.zeros((24, 3))
             if changed.is_set():
                 rotations[18:22, 1] = 0.7
+                rotations[BODY_NAMES.index("Spine3"), 0] = 0.2
             quaternions = Rotation.from_rotvec(rotations).as_quat(scalar_first=True)
             yield pose_pb.PoseFrame(
                 sequence=sequence,
@@ -112,6 +113,8 @@ def test_pose_stream_retargets_and_serves_named_robot_references():
                         request = ref_pb.GetReferenceRequest(robot="bello_mini")
                         first = get(request, timeout=2)
                         assert first.available and first.joint_names
+                        assert len(first.torso_command) == 3
+                        assert np.isfinite(first.torso_command).all()
                         changed.set()
                         deadline = time.monotonic() + 5
                         while time.monotonic() < deadline:
@@ -128,10 +131,17 @@ def test_pose_stream_retargets_and_serves_named_robot_references():
                         assert (
                             np.isfinite(latest.position).all()
                             and np.isfinite(latest.velocity).all()
+                            and np.isfinite(latest.torso_command).all()
                         )
                         assert 0 <= latest.source_age_ms < 500
                         assert (
                             np.max(np.abs(np.array(latest.position) - first.position))
+                            > 0.01
+                        )
+                        assert (
+                            np.linalg.norm(
+                                np.array(latest.torso_command) - first.torso_command
+                            )
                             > 0.01
                         )
         finally:

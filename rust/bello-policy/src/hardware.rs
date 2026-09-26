@@ -373,6 +373,7 @@ fn decode_feedback(
         angular_velocity: vector(&imu.angular_velocity, config.max_angular_velocity)?,
         linear_acceleration: vector(&imu.linear_acceleration, config.max_linear_acceleration)?,
         command: [0.; 3],
+        torso_command: [0.; 3],
     })
 }
 

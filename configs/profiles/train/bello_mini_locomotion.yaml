@@ -51,7 +51,8 @@ reward_config:
     stand_upright: 0.0
     hip_deviation: 0.0
     knee_deviation: 0.0
-    flat_orientation: -5.0
+    flat_orientation: 0.0
+    track_torso_orientation: 5.0
     joint_pose: -1.0
     foot_heading: -1.0
     foot_slip: -0.5
@@ -92,9 +93,13 @@ reward_config:
       - [right_ankle_pitch_joint, 0.1]
       - [left_ankle_roll_joint, 0.1]
       - [right_ankle_roll_joint, 0.1]
-      - [waist_yaw_joint, 2.0]
-      - [waist_roll_joint, 2.0]
+      - [waist_yaw_joint, 0.0]
+      - [waist_roll_joint, 0.0]
 command_config:
+  torso:
+    roll: [-0.1745329252, 0.1745329252]
+    pitch: [-0.2617993878, 0.2617993878]
+    yaw: [-0.5235987756, 0.5235987756]
   lin_vel_x: [-0.5, 0.5]
   lin_vel_y: [-0.5, 0.5]
 done_config:

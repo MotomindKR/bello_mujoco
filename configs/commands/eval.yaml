@@ -3,6 +3,7 @@ checkpoint_path: null
 end_effector_payload_mass_kg: null
 output_path: outputs/evaluation/motion.mp4
 command: [0.0, 0.0, 0.0]
+torso_command: [0.0, 0.0, 0.0]
 steps: null
 stop_on_done: false
 stochastic_actions: false

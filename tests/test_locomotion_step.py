@@ -99,6 +99,8 @@ def toy_state():
         foot_contact_debounce_time=jnp.zeros(2),
         command=jnp.asarray([0.5, 0.0, 0.0]),
         command_target=jnp.asarray([0.5, 0.0, 0.0]),
+        torso_command=jnp.asarray([0.0, 0.0, 0.0]),
+        torso_command_target=jnp.asarray([0.2, -0.1, 0.3]),
         standing_transition_pending=jnp.asarray(0),
         next_start_left=jnp.asarray(True),
         step_count=jnp.asarray(1),

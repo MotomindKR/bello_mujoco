@@ -53,6 +53,7 @@ pub struct Feedback {
     /// Gravity-removed local acceleration, as published by hardwared.
     pub linear_acceleration: [f64; 3],
     pub command: [f32; 3],
+    pub torso_command: [f32; 3],
 }
 
 #[derive(Serialize)]
@@ -62,6 +63,7 @@ pub struct Step {
     pub action: Vec<f32>,
     pub motor_target: Vec<f32>,
     pub gait: GaitState,
+    pub torso_command: [f32; 3],
 }
 
 pub struct Locomotion {
@@ -70,6 +72,7 @@ pub struct Locomotion {
     gait: GaitState,
     history: Vec<f32>,
     last_action: Vec<f32>,
+    torso_command: [f32; 3],
 }
 
 impl Locomotion {
@@ -121,12 +124,14 @@ impl Locomotion {
             .gait
             .validate(&settings.command, policy.metadata.control_timestep as f32)?;
         let scale = &settings.environment.observation.scale;
+        settings.command.torso.validate()?;
         for (name, size) in &policy.metadata.observation_frame {
             let (expected, factor) = match name.as_str() {
                 "imu_linear_acceleration" => (3, scale.base_lin_acc),
                 "imu_angular_velocity" => (3, scale.base_ang_vel),
                 "projected_gravity" => (3, scale.projected_gravity),
                 "command" => (3, scale.command),
+                "torso_command" => (3, scale.command),
                 "gait_phase" => (3, scale.gait_phase),
                 "joint_position" => (policy.metadata.policy_indices.len(), scale.joint_pos),
                 "joint_velocity" => (policy.metadata.policy_indices.len(), scale.joint_vel),
@@ -145,6 +150,7 @@ impl Locomotion {
             gait: GaitState::default(),
             history: Vec::new(),
             last_action,
+            torso_command: [0.; 3],
         })
     }
 
@@ -153,6 +159,7 @@ impl Locomotion {
     }
 
     pub fn reset(&mut self) {
+        self.torso_command = [0.; 3];
         self.gait = GaitState::default();
         self.history.clear();
         self.last_action.fill(0.);
@@ -249,6 +256,16 @@ impl Locomotion {
         let force: [f32; 3] =
             std::array::from_fn(|i| acceleration[i] as f32 - 9.80665_f32 * gravity[i] as f32);
         let s = &self.settings;
+        self.validate_torso_command(sample.torso_command)?;
+        self.torso_command = s.command.torso.advance(
+            self.torso_command,
+            sample.torso_command,
+            if self.history.is_empty() {
+                0.
+            } else {
+                self.policy.metadata.control_timestep as f32
+            },
+        )?;
         self.gait.advance(
             sample.command,
             &s.environment.gait,
@@ -267,6 +284,7 @@ impl Locomotion {
                     .to_vec(),
                 "projected_gravity" => gravity.map(|x| x as f32 * scale.projected_gravity).to_vec(),
                 "command" => self.gait.command.map(|x| x * scale.command).to_vec(),
+                "torso_command" => self.torso_command.map(|x| x * scale.command).to_vec(),
                 "gait_phase" => gait.map(|x| x * scale.gait_phase).to_vec(),
                 "last_action" => self
                     .last_action
@@ -327,7 +345,23 @@ impl Locomotion {
             action: self.last_action.clone(),
             motor_target: output.motor_target,
             gait: self.gait.clone(),
+            torso_command: self.torso_command,
         })
+    }
+
+    pub fn validate_torso_command(&self, target: [f32; 3]) -> Result<()> {
+        self.settings.command.torso.validate_target(target)?;
+        ensure!(
+            self.settings.command.enabled || target == [0.; 3],
+            "torso targets require command conditioning"
+        );
+        Ok(())
+    }
+
+    pub fn tracked_torso_command(&self, target: [f32; 3]) -> Result<[f32; 3]> {
+        let target = self.settings.command.torso.clamp(target)?;
+        self.validate_torso_command(target)?;
+        Ok(target)
     }
 }
 

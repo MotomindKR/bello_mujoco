@@ -464,7 +464,9 @@ def run_rerun_evaluation(
     obs_stack_size: int,
     stochastic_actions: bool,
     action_seed: int,
+    torso_command: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> None:
+    env.command_config.torso.validate_target(torso_command)
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
     command_ranges = (
@@ -572,6 +574,7 @@ def run_rerun_evaluation(
         obs = feedback.observe(
             mj_data,
             command=effective_command,
+            torso_command=torso_command,
             last_action=last_action,
             step_count=episode_step_count,
             gait_phase=gait_phase,
@@ -640,6 +643,7 @@ def run_rerun_evaluation(
             current_observation = feedback.observe(
                 mj_data,
                 command=effective_command,
+                torso_command=torso_command,
                 last_action=last_action,
                 step_count=episode_step_count,
                 gait_phase=gait_phase,
@@ -669,6 +673,7 @@ def run_rerun_evaluation(
                 env,
                 mj_data,
                 command=effective_command,
+                torso_command=feedback.torso_command,
                 last_action=last_action,
                 last_action_delta=last_action_delta,
                 foot_contact_debounce_time=foot_contact_debounce_time,
@@ -755,6 +760,7 @@ def run_rerun_evaluation(
                 env,
                 mj_data,
                 command=effective_command,
+                torso_command=feedback.torso_command,
                 last_action=last_action,
                 last_action_delta=last_action_delta,
                 foot_contact_debounce_time=foot_contact_debounce_time,
@@ -845,6 +851,7 @@ def run_rerun_evaluation(
                 obs = feedback.observe(
                     mj_data,
                     command=effective_command,
+                    torso_command=torso_command,
                     last_action=last_action,
                     step_count=episode_step_count,
                     gait_phase=gait_phase,
@@ -862,6 +869,7 @@ def run_rerun_evaluation(
 @dataclass(frozen=True)
 class EvalPolicyConfig:
     command: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    torso_command: tuple[float, float, float] = (0.0, 0.0, 0.0)
     steps: int | None = None
     stop_on_done: bool = False
     stochastic_actions: bool = False
@@ -885,6 +893,7 @@ def evaluate_locomotion_checkpoint(
         ppo_config=runtime.metadata.ppo,
         urdf_path=runtime.urdf_path,
         command=eval_config.command,
+        torso_command=eval_config.torso_command,
         gamepad_config=eval_config.gamepad,
         steps=eval_config.steps,
         stop_on_done=eval_config.stop_on_done,

@@ -178,6 +178,8 @@ class FakeEnv:
             last_foot_contact=jnp.zeros((batch_size, 2), dtype=bool),
             command=jnp.zeros((batch_size, 3), dtype=jnp.float32),
             command_target=jnp.zeros((batch_size, 3), dtype=jnp.float32),
+            torso_command=jnp.zeros((batch_size, 3), dtype=jnp.float32),
+            torso_command_target=jnp.zeros((batch_size, 3), dtype=jnp.float32),
             gait_phase=zeros,
             standing_transition_pending=jnp.zeros((batch_size,), dtype=jnp.int32),
             next_start_left=jnp.ones((batch_size,), dtype=bool),

@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0freference.proto\x12\x12\x62\x65llo.reference.v1\"$\n\x13GetReferenceRequest\x12\r\n\x05robot\x18\x01 \x01(\t\"\x9a\x01\n\x14GetReferenceResponse\x12\r\n\x05robot\x18\x01 \x01(\t\x12\x11\n\tavailable\x18\x02 \x01(\x08\x12\x10\n\x08sequence\x18\x03 \x01(\x04\x12\x15\n\rsource_age_ms\x18\x04 \x01(\x01\x12\x13\n\x0bjoint_names\x18\x05 \x03(\t\x12\x10\n\x08position\x18\x06 \x03(\x01\x12\x10\n\x08velocity\x18\x07 \x03(\x01\x32u\n\x10ReferenceService\x12\x61\n\x0cGetReference\x12\'.bello.reference.v1.GetReferenceRequest\x1a(.bello.reference.v1.GetReferenceResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0freference.proto\x12\x12\x62\x65llo.reference.v1\"$\n\x13GetReferenceRequest\x12\r\n\x05robot\x18\x01 \x01(\t\"\xb1\x01\n\x14GetReferenceResponse\x12\r\n\x05robot\x18\x01 \x01(\t\x12\x11\n\tavailable\x18\x02 \x01(\x08\x12\x10\n\x08sequence\x18\x03 \x01(\x04\x12\x15\n\rsource_age_ms\x18\x04 \x01(\x01\x12\x13\n\x0bjoint_names\x18\x05 \x03(\t\x12\x10\n\x08position\x18\x06 \x03(\x01\x12\x10\n\x08velocity\x18\x07 \x03(\x01\x12\x15\n\rtorso_command\x18\x08 \x03(\x01\x32u\n\x10ReferenceService\x12\x61\n\x0cGetReference\x12\'.bello.reference.v1.GetReferenceRequest\x1a(.bello.reference.v1.GetReferenceResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,7 +34,7 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_GETREFERENCEREQUEST']._serialized_start=39
   _globals['_GETREFERENCEREQUEST']._serialized_end=75
   _globals['_GETREFERENCERESPONSE']._serialized_start=78
-  _globals['_GETREFERENCERESPONSE']._serialized_end=232
-  _globals['_REFERENCESERVICE']._serialized_start=234
-  _globals['_REFERENCESERVICE']._serialized_end=351
+  _globals['_GETREFERENCERESPONSE']._serialized_end=255
+  _globals['_REFERENCESERVICE']._serialized_start=257
+  _globals['_REFERENCESERVICE']._serialized_end=374
 # @@protoc_insertion_point(module_scope)

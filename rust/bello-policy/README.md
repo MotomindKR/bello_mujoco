@@ -30,7 +30,8 @@ to the platform loader at runtime (`LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`).
 
 `--telemetry` instead reads JSON objects containing `motor_position`,
 `motor_velocity`, `orientation_xyzw`, `angular_velocity`, `linear_acceleration`,
-and `command`. Motor arrays follow the bundle's coordinate order. Acceleration
+`command`, and `torso_command` (three requested roll/pitch/yaw radians). Motor arrays
+follow the bundle's coordinate order. Acceleration
 is hardwared's gravity-removed local acceleration. Command is the requested
 robot-frame velocity, not normalized joystick axes. Output includes the raw
 observation, action, motor target, and gait state. The checkpoint owns gait
@@ -84,6 +85,26 @@ Synthetic motion telemetry checks compare observations/actions/targets against
 JAX through root alignment, coupled coordinates, history reset, quaternion sign
 changes, clip-end lookahead, and both BeyondMimic action mappings.
 ONNX Runtime must provide the API supported by the pinned `ort` crate.
+
+## Locomotion torso commands
+
+Use a newly trained/exported torso-conditioned locomotion bundle. Set
+`control.torso_command: [roll, pitch, yaw]` in the hardware YAML (neutral by
+default). After RUN, type `TORSO 0.1 -0.15 0.2` to change the target, or
+`TORSO 0 0 0` to return upright. Angles are radians: ground-relative lean plus
+pelvis-heading-relative twist, in anatomical forward/left/up axes. The command
+does not request gait steps or replace the existing yaw-rate command.
+
+Targets start neutral and follow the checkpoint's per-axis slew limits. An
+invalid terminal request is rejected without replacing the previous target;
+invalid YAML/telemetry targets fail validation. Logs contain requested
+`feedback.torso_command` and effective `policy.torso_command`. The three-axis
+gamepad protocol is unchanged. Gamepad disconnection requests zero velocity but
+retains the separately selected torso target; remote abort still stops control.
+When body following is enabled, tracking owns the torso target instead: keep
+`control.torso_command` neutral; terminal `TORSO` overrides are rejected.
+Motion playback requires a neutral torso command. Hardware safety limits are unchanged;
+fresh CPU evaluation and emulator commissioning are required before hardware.
 
 ## Live motion control
 
@@ -167,15 +188,28 @@ uv run bello-run-reference asset=bello_mini \
 
 Producer settings live in `configs/commands/reference.yaml`. Enable
 `control.following.enabled` in the Rust hardware YAML and point its endpoint at
-the producer. The protocol is `proto/reference.proto`: named URDF joint angles
-and velocities, not motor commands or world-space poses. The producer never
+the producer. The protocol is `proto/reference.proto`: named URDF joint angles,
+velocities, and three torso-command angles, not motor commands. The producer never
 connects to hardwared and does not load policy weights.
 
-Rust follows only checkpoint-held coordinates, validates robot/joint names and
-numeric shape, and owns speed limits plus connection/outage blending. Missing,
-stale, or unsafe references transition to the checkpoint nominal pose. Malformed
+The producer extracts torso orientation from forward kinematics of the same GMR
+pose as the arms. It removes the nominal CAD orientation and pelvis heading,
+not pelvis tilt: roll/pitch remain ground-relative lean and yaw is pelvis-relative
+twist. This changes neither the upstream GMR solver nor its targets.
+
+Rust samples one reference per tick. Torso angles are clamped to the checkpoint's
+trained ranges and passed through its normal command slew before inference.
+The policy retains waist/leg motor ownership; only checkpoint-held arm targets
+are merged afterward. Zero trained torso ranges keep that axis neutral.
+Gamepad walking/turning commands remain independent of body tracking.
+
+Rust validates robot/joint names and numeric shape and owns arm speed limits plus
+connection/outage blending. Missing, stale, or unsafe references return the arms
+to the checkpoint nominal pose and slew torso commands back to zero. Malformed
 messages or terminal producer errors stop control. The polling worker stores
 only the latest result and cannot block the policy loop. Joint references and
 policy motor ownership must be disjoint. Synthetic tests cover live following,
-producer outage, malformed references, and unchanged policy-owned targets;
-live tracking/retargeter commissioning is separate.
+producer outage, malformed references, torso limits/slew, and unchanged
+policy-owned targets. Update producer and runner together: available references
+must contain all three torso angles. Retraining with torso commands and live
+tracking/emulator commissioning are required before deploying this behavior.

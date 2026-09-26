@@ -24,6 +24,7 @@ def test_named_reference_keeps_joint_order_units_and_source_age():
         17,
         25,
         time.monotonic() - 0.01,
+        np.array([0.1, -0.2, 0.3]),
     )
     service = ReferenceService(
         "test", SimpleNamespace(latest=lambda: frame), ["b", "a"], [3, 1], [2, 0], 4, 3
@@ -33,11 +34,22 @@ def test_named_reference_keeps_joint_order_units_and_source_age():
     assert list(result.joint_names) == ["b", "a"]
     assert list(result.position) == [1.0, 3.0]
     assert list(result.velocity) == [0.2, 0.4]
+    assert list(result.torso_command) == [0.1, -0.2, 0.3]
     assert result.source_age_ms >= 35
 
 
 @pytest.mark.parametrize(
-    "failure", ["outage", "shape", "nonfinite", "age", "robot", "terminal"]
+    "failure",
+    [
+        "outage",
+        "shape",
+        "nonfinite",
+        "age",
+        "robot",
+        "terminal",
+        "torso_shape",
+        "torso_nan",
+    ],
 )
 def test_unavailability_is_distinct_from_malformed_or_failed_producer(failure):
     def latest():
@@ -51,6 +63,10 @@ def test_unavailability_is_distinct_from_malformed_or_failed_producer(failure):
             1,
             None if failure == "age" else 0,
             time.monotonic(),
+            np.full(
+                2 if failure == "torso_shape" else 3,
+                np.nan if failure == "torso_nan" else 0.0,
+            ),
         )
 
     service = ReferenceService(

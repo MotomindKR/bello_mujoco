@@ -23,13 +23,23 @@ import yaml
 
 from bello_mujoco.deployment import deployment_bundle
 from bello_mujoco.envs.locomotion_config import BelloEnvConfig
-from bello_mujoco.envs.rewards import CommandConfig
+from bello_mujoco.envs.rewards import CommandConfig, TorsoCommandConfig
 from bello_mujoco.hardware import _remote_pb2 as remote_pb
 from bello_mujoco.hardware import reference_pb2 as reference_pb
 from bello_mujoco.hardware import _pose_pb2 as pose_pb
 from bello_mujoco.training.tracking import to_builtin
 
 pytestmark = pytest.mark.integration
+
+FOLLOWING_CASES = (
+    "follow",
+    "outage",
+    "bad_reference",
+    "missing_torso",
+    "nan_torso",
+    "stale_reference",
+    "unsafe_reference",
+)
 
 
 @pytest.fixture(scope="module")
@@ -218,10 +228,19 @@ class SyntheticHardware:
             robot="synthetic",
             available=live,
             sequence=time.monotonic_ns(),
-            source_age_ms=0,
+            source_age_ms=1000 if self.reference_mode == "stale_reference" else 0,
             joint_names=["wrong" if self.reference_mode == "bad_reference" else "held"],
             position=[-0.1],
-            velocity=[0.0],
+            velocity=[100.0 if self.reference_mode == "unsafe_reference" else 0.0],
+            torso_command=(
+                []
+                if self.reference_mode == "missing_torso"
+                else [
+                    float("nan") if self.reference_mode == "nan_torso" else 1.0,
+                    -1.0,
+                    1.0,
+                ]
+            ),
         )
 
     def StreamCommands(self, requests, context):
@@ -396,9 +415,7 @@ def bundle(
         "interrupt",
         "terminate",
         "start_timeout",
-        "follow",
-        "outage",
-        "bad_reference",
+        *FOLLOWING_CASES,
         "remote_absent",
         "limited",
         "startup_quantization",
@@ -427,6 +444,21 @@ def test_native_operator_lifecycle_and_failure_cleanup(
     )
     if failure in ("startup_quantization", "startup_margin"):
         limits = dict(motor_limits=[[0, 1.2], [-3, 3], [-3, 3]])
+    if failure in FOLLOWING_CASES:
+        limits = dict(
+            command=to_builtin(
+                CommandConfig(
+                    torso=TorsoCommandConfig(
+                        roll=(-0.1, 0.1),
+                        pitch=(-0.2, 0.2),
+                        yaw=(-0.3, 0.3),
+                        slew_rate=(1.0, 2.0, 3.0),
+                    )
+                )
+            ),
+            observation_size=5,
+            observation_frame=[["last_action", 2], ["torso_command", 3]],
+        )
     policy.write_bytes(
         bundle(
             source,
@@ -448,7 +480,7 @@ def test_native_operator_lifecycle_and_failure_cleanup(
     settings["control"]["remote"]["endpoint"] = endpoint
     if failure == "remote_absent":
         settings["control"]["remote"]["endpoint"] = "http://127.0.0.1:0"
-    if failure in ("follow", "outage", "bad_reference"):
+    if failure in FOLLOWING_CASES:
         settings["control"].update(
             max_duration_seconds=0.8,
             following=dict(
@@ -505,7 +537,7 @@ def test_native_operator_lifecycle_and_failure_cleanup(
             assert "start" in fake.calls and "disable" not in fake.calls
             fake.failure = failure if failure in ("reject", "stale") else None
             fake.abort = failure == "abort"
-            if failure in ("follow", "outage", "bad_reference"):
+            if failure in FOLLOWING_CASES:
                 fake.reference_mode = failure
                 fake.reference_started = time.monotonic()
             os.write(master, b"RUN\n")
@@ -527,6 +559,8 @@ def test_native_operator_lifecycle_and_failure_cleanup(
                 None,
                 "follow",
                 "outage",
+                "stale_reference",
+                "unsafe_reference",
                 "remote_absent",
                 "limited",
                 "startup_quantization",
@@ -565,6 +599,37 @@ def test_native_operator_lifecycle_and_failure_cleanup(
             assert targets[:, 1].max() > -0.25
             assert np.abs(np.diff(targets[:, 1])).max() <= 0.020001
             assert abs(targets[-1, 1] - (-0.3 if failure == "outage" else -0.1)) < 0.02
+            ticks = [row for row in log if "following_live" in row]
+            desired = np.asarray([row["feedback"]["torso_command"] for row in ticks])
+            actual = np.asarray([row["policy"]["torso_command"] for row in ticks])
+            live = np.asarray([row["following_live"] for row in ticks])
+            np.testing.assert_allclose(
+                desired[live], np.tile([0.1, -0.2, 0.3], (live.sum(), 1))
+            )
+            np.testing.assert_array_equal(desired[~live], 0.0)
+            assert np.all(
+                np.abs(np.diff(actual, axis=0)) <= np.array([0.02, 0.04, 0.06]) + 1e-6
+            )
+            assert np.max(np.abs(actual)) > 0.1
+            np.testing.assert_allclose(
+                actual[-1],
+                [0, 0, 0] if failure == "outage" else [0.1, -0.2, 0.3],
+                atol=1e-6,
+            )
+            for row in ticks:
+                np.testing.assert_allclose(
+                    row["policy"]["observation"][-3:], row["policy"]["torso_command"]
+                )
+        if failure in ("stale_reference", "unsafe_reference"):
+            ticks = [row for row in log if "following_live" in row]
+            assert ticks and all(not row["following_live"] for row in ticks)
+            for row in ticks:
+                np.testing.assert_array_equal(row["policy"]["torso_command"], 0.0)
+            np.testing.assert_allclose(
+                fake.targets,
+                np.tile([0.2, -0.3, 0.4], (len(fake.targets), 1)),
+                atol=1e-6,
+            )
     finally:
         if process.poll() is None:
             os.kill(process.pid, signal.SIGKILL)

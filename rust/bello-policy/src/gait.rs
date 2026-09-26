@@ -19,6 +19,7 @@ pub struct GaitConfig {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct CommandConfig {
+    pub torso: crate::torso::Config,
     pub enabled: bool,
     pub minimum_moving_linear_speed: f32,
     pub minimum_moving_yaw_speed: f32,

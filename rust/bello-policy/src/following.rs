@@ -1,4 +1,4 @@
-//! Latest-only joint references; the policy owns safe connection/outage blending.
+//! One latest-only body reference per policy tick, including torso intent.
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -230,11 +230,11 @@ impl Following {
         })
     }
 
-    pub fn apply(&mut self, target: &mut [f32], measured: &[f64], dt: f64) -> Result<bool> {
+    pub fn update(&mut self, measured: &[f64], dt: f64) -> Result<(bool, [f32; 3])> {
         let m = &self.mapping;
         ensure!(
-            target.len() == m.joint_names.len() && measured.len() == target.len(),
-            "following target shape mismatch"
+            measured.len() == m.joint_names.len(),
+            "following feedback shape mismatch"
         );
         let sample = self.latest.borrow().clone().map_err(anyhow::Error::msg)?;
         let mut desired: Vec<_> = self
@@ -243,6 +243,7 @@ impl Following {
             .map(|&i| m.default_joint_position[i])
             .collect();
         let mut live = false;
+        let mut torso = [0.; 3];
         if let Some(sample) = sample {
             let msg = sample.message;
             ensure!(msg.robot == self.robot, "reference producer robot mismatch");
@@ -270,6 +271,11 @@ impl Following {
                             .all(|v| v.is_finite()),
                     "invalid reference joint names/shape/values"
                 );
+                ensure!(
+                    msg.torso_command.len() == 3
+                        && msg.torso_command.iter().all(|x| (*x as f32).is_finite()),
+                    "invalid reference torso shape/values"
+                );
                 live = msg.source_age_ms + sample.requested.elapsed().as_secs_f64() * 1000.
                     <= self.config.max_reference_age_ms;
                 for (slot, &joint) in self.indices.iter().enumerate() {
@@ -285,7 +291,9 @@ impl Following {
                             > self.config.min_live_joint_limit_margin_radians;
                     desired[slot] = q;
                 }
-                if !live {
+                if live {
+                    torso = std::array::from_fn(|i| msg.torso_command[i] as f32);
+                } else {
                     for (slot, &joint) in self.indices.iter().enumerate() {
                         desired[slot] = m.default_joint_position[joint];
                     }
@@ -298,7 +306,7 @@ impl Following {
         }
         let measured = multiply(&m.joint_from_motor, measured);
         let measured: Vec<_> = self.indices.iter().map(|&i| measured[i]).collect();
-        let followed = self.transition.advance(
+        self.transition.advance(
             &measured,
             &desired,
             live,
@@ -306,9 +314,19 @@ impl Following {
             self.config.connection_transition_duration_seconds,
             self.config.max_target_speed_rps,
         );
+        Ok((live, torso))
+    }
+
+    pub fn apply(&self, target: &mut [f32]) -> Result<()> {
+        let m = &self.mapping;
+        ensure!(
+            target.len() == m.joint_names.len()
+                && self.transition.target.len() == self.indices.len(),
+            "following target shape mismatch or reference not sampled"
+        );
         let values: Vec<_> = target.iter().map(|v| *v as f64).collect();
         let mut logical = multiply(&m.joint_from_motor, &values);
-        for (&joint, &value) in self.indices.iter().zip(followed) {
+        for (&joint, &value) in self.indices.iter().zip(&self.transition.target) {
             logical[joint] = value;
         }
         for ((value, result), [low, high]) in target
@@ -318,7 +336,7 @@ impl Following {
         {
             *value = result.clamp(*low, *high) as f32;
         }
-        Ok(live)
+        Ok(())
     }
 }
 impl Drop for Following {

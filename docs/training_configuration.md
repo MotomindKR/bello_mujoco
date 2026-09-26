@@ -40,6 +40,7 @@ owning dataclass and YAML together, without aliases or parallel CLI defaults.
 
 ## Locomotion components
 
+- `torso.py`: level-ground torso lean/twist targets and independent slew.
 - `gait.py`: cadence, directional start, command slew, delayed stop, standing blend.
 - `actions.py`: motor targets and calibration offsets.
 - `observations.py`: actor/critic assembly, noise, filtering, feedback history,
@@ -54,10 +55,37 @@ The motor-coordinate action convention requires fresh training. Keep training,
 native evaluation, and hardware observation/filter conventions aligned.
 
 Mini uses shared joint-posture, torso-orientation, foot-heading, and contact-slip
-penalties across walking and standing. Standing alignment uses deadband Huber
-costs, including during single support; speed and lean do not relax posture,
+terms across walking and standing. Standing alignment uses deadband Huber
+costs, including during single support; speed and lean do not relax leg posture,
 alignment, or thermal penalties. Explicit per-joint posture weights live in the
 Mini training profile. Full-size Bello retains its active standing-specific terms.
+
+### Torso orientation commands
+
+`command_config.torso` owns roll/pitch/yaw ranges (radians), per-axis slew rates
+(radians/second), the neutral-command probability, and the tracked body name.
+Mini's locomotion/standing recipes enable these commands. They are sampled
+independently of standing/walking, on the velocity-command resampling clock;
+episode startup begins at neutral and ramps toward the sampled target.
+
+Roll and pitch describe lean relative to level ground. Yaw describes torso twist
+relative to the pelvis heading, not an absolute compass heading or a turn rate.
+Axes are anatomical forward/left/up, accounting for the robot's CAD frame;
+rotations use `Rz(yaw) Ry(pitch) Rx(roll)`. The nominal CAD torso orientation
+defines zero. The existing velocity/yaw-rate command and gait scheduler remain
+independent; a torso-only command does not initiate stepping.
+
+The actor and critic receive a separate three-angle `torso_command` observation.
+`track_torso_orientation` rewards `exp(-(SO(3) angle error / std)^2)` using
+`reward_config.tracking.torso_orientation_std`. Fixed upright penalties must be
+disabled when nonzero torso targets are sampled. Mini also removes the nominal
+waist-angle penalty so it does not oppose twist; leg posture, foot placement,
+torque penalties, joint/motor limits and absolute tilt termination remain active.
+This observation change requires fresh training and export: changing a previous
+bundle's commit metadata cannot add this capability.
+
+`video_config.torso_command` selects a fixed target for training videos. Native
+evaluation and deployment use the checkpoint's same torso slew rates and bounds.
 
 `foot_crossing` penalizes signed lateral clearance between the current sole
 collision primitives, accounting for yaw, roll, pitch, and thickness. It remains

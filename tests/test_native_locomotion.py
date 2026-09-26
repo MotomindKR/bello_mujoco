@@ -23,7 +23,8 @@ from bello_mujoco.envs.locomotion_config import (
     ObservationConfig,
     ObservationScaleConfig,
 )
-from bello_mujoco.envs.rewards import CommandConfig
+from bello_mujoco.envs.rewards import CommandConfig, TorsoCommandConfig
+from bello_mujoco.envs.torso import slew_torso_command
 from bello_mujoco.envs.observations import build_observation
 from bello_mujoco.policy import ActorCritic, ActorCriticConfig, infer_policy_action
 from bello_mujoco.training.ppo_config import PPOConfig
@@ -46,7 +47,10 @@ def test_native_telemetry_matches_python_through_command_transitions(
         stop_extra_steps=1,
         speed_dependent=True,
     )
-    command_config = CommandConfig(standing_transitions_enabled=transitions)
+    torso = TorsoCommandConfig(roll=(-0.2, 0.2), pitch=(-0.3, 0.3), yaw=(-0.5, 0.5))
+    command_config = CommandConfig(
+        standing_transitions_enabled=transitions, torso=torso
+    )
     scales = ObservationScaleConfig(
         base_lin_acc=0.2,
         base_ang_vel=0.3,
@@ -62,6 +66,7 @@ def test_native_telemetry_matches_python_through_command_transitions(
             ("imu_angular_velocity", 3),
             ("projected_gravity", 3),
             ("command", 3),
+            ("torso_command", 3),
             ("gait_phase", 3),
             ("joint_position", 2),
             ("joint_velocity", 2),
@@ -137,6 +142,7 @@ def test_native_telemetry_matches_python_through_command_transitions(
         True,
     )
     history = None
+    torso_command = jnp.zeros(3)
     infer = jax.jit(lambda obs: infer_policy_action(actor, obs, norm, config, 1.0))
 
     @jax.jit
@@ -172,8 +178,15 @@ def test_native_telemetry_matches_python_through_command_transitions(
             angular_velocity=rng.normal(0, 0.1, 3).tolist(),
             linear_acceleration=rng.normal(0, 0.1, 3).tolist(),
             command=request,
+            torso_command=[0.15, -0.2, 0.4] if index < 200 else [-0.1, 0.1, -0.3],
         )
         samples.append(sample)
+        torso_command = slew_torso_command(
+            torso_command,
+            jnp.asarray(sample["torso_command"]),
+            torso.slew_rate,
+            0.02 if index else 0.0,
+        )
         active = bool(gait_is_active(current, command_config, pending, gait))
         current, phase, pending = transition(
             current, jnp.array(request), phase, pending, preference, index > 0
@@ -209,6 +222,7 @@ def test_native_telemetry_matches_python_through_command_transitions(
                 gait_phase_features(phase, current, command_config, pending, gait),
                 env_config.observation,
                 None,
+                torso_command=torso_command,
             )
         )
         history = (

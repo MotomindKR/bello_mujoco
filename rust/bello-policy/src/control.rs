@@ -30,6 +30,8 @@ pub struct Config {
     pub ramp_seconds: f64,
     pub gain_scale: f64,
     pub joystick_command_scale: f32,
+    #[serde(default)]
+    pub torso_command: [f32; 3],
     pub max_loop_lag_seconds: f64,
     pub max_duration_seconds: Option<f64>,
     pub max_nominal_error_radians: f64,
@@ -274,6 +276,15 @@ pub async fn run(
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     policy.remote_command([0.; 3], config.joystick_command_scale)?;
+    policy.validate_torso_command(config.torso_command)?;
+    ensure!(
+        motion.is_none() || config.torso_command == [0.; 3],
+        "motion playback requires a neutral standing torso command"
+    );
+    ensure!(
+        !config.following.enabled || config.torso_command == [0.; 3],
+        "body following owns torso commands; leave control.torso_command neutral"
+    );
     let rpc = Duration::from_secs_f64(config.rpc_timeout_seconds);
     let remote = remote::Source::start(&config.remote, rpc)?;
     let mut following = if config.following.enabled {
@@ -422,9 +433,16 @@ pub async fn run(
         deadline = tokio::time::Instant::now();
         let started = Instant::now();
         let mut active_period = period;
+        let mut torso_command = config.torso_command;
         if motion.is_some() {
             operator.prompt(
                 "Standing policy is active with zero command. Type MOTION to begin the clip:",
+            )?;
+        } else if following.is_some() {
+            operator.prompt("Locomotion active with body following; Ctrl-C stops.")?;
+        } else {
+            operator.prompt(
+                "Locomotion active. Optional: TORSO <roll> <pitch> <yaw> in radians; Ctrl-C stops.",
             )?;
         }
         while config
@@ -481,16 +499,38 @@ pub async fn run(
             }
             sample.command =
                 policy.remote_command(remote.sample()?, config.joystick_command_scale)?;
-            let mut step = policy.step(&sample)?;
+            if let Some(line) = operator.line()? {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                let requested = (|| -> Result<[f32; 3]> {
+                    ensure!(following.is_none(), "body following owns torso commands");
+                    ensure!(
+                        fields.len() == 4 && fields[0] == "TORSO",
+                        "expected TORSO <roll> <pitch> <yaw> in radians"
+                    );
+                    let values = [fields[1].parse()?, fields[2].parse()?, fields[3].parse()?];
+                    policy.validate_torso_command(values)?;
+                    Ok(values)
+                })();
+                match requested {
+                    Ok(values) => torso_command = values,
+                    Err(error) => {
+                        eprintln!("Torso command rejected; retaining previous target: {error}")
+                    }
+                }
+            }
             let following_live = if let Some(following) = &mut following {
-                following.apply(
-                    &mut step.motor_target,
-                    &sample.motor_position,
-                    period.as_secs_f64(),
-                )?
+                let (live, tracked_torso) =
+                    following.update(&sample.motor_position, period.as_secs_f64())?;
+                sample.torso_command = policy.tracked_torso_command(tracked_torso)?;
+                live
             } else {
+                sample.torso_command = torso_command;
                 false
             };
+            let mut step = policy.step(&sample)?;
+            if let Some(following) = &following {
+                following.apply(&mut step.motor_target)?;
+            }
             let target: Vec<f64> = step.motor_target.iter().map(|v| *v as f64).collect();
             let command = send(
                 &mut controls,

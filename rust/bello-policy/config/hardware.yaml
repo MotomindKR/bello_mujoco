@@ -31,6 +31,7 @@ control:
   ramp_seconds: 10.0
   gain_scale: 1.0
   joystick_command_scale: 1.0
+  torso_command: [0.0, 0.0, 0.0]
   max_loop_lag_seconds: 0.10
   max_duration_seconds: null
   max_nominal_error_radians: 0.5

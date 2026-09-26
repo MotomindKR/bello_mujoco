@@ -53,6 +53,7 @@ class EvalCommandConfig:
     end_effector_payload_mass_kg: float | None
     output_path: Path
     command: tuple[float, float, float]
+    torso_command: tuple[float, float, float]
     steps: int | None
     stop_on_done: bool
     stochastic_actions: bool
@@ -229,6 +230,7 @@ def _eval_hydra(config: DictConfig) -> None:
         _reject_explicit_fields(
             (
                 "command",
+                "torso_command",
                 "stochastic_actions",
                 "action_seed",
                 "gamepad_enabled",
@@ -266,6 +268,7 @@ def _eval_hydra(config: DictConfig) -> None:
         checkpoint,
         EvalPolicyConfig(
             command=command.command,
+            torso_command=command.torso_command,
             steps=command.steps,
             stop_on_done=command.stop_on_done,
             stochastic_actions=command.stochastic_actions,

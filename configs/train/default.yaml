@@ -149,6 +149,7 @@ reward_config:
     lin_vel_z: -2.0
     ang_vel_xy: -0.15
     flat_orientation: -2.0
+    track_torso_orientation: 0.0
     base_height: -10.0
     action_rate: -0.01
     action_acceleration: -0.005
@@ -180,6 +181,7 @@ reward_config:
     flat_orientation: null
     base_height: null
   tracking:
+    torso_orientation_std: 0.25
     lin_vel_xy_moving_std: 0.3
     lin_vel_xy_still_std: 0.25
     lin_vel_xy_error_delta: 0.25
@@ -213,6 +215,13 @@ reward_config:
     knee_deviation_apply_while_moving: false
 command_config:
   enabled: true
+  torso:
+    body_name: torso_link
+    roll: [0.0, 0.0]
+    pitch: [0.0, 0.0]
+    yaw: [0.0, 0.0]
+    slew_rate: [0.35, 0.35, 0.5]
+    neutral_probability: 0.25
   lin_vel_x: [-0.5, 0.5]
   lin_vel_y: [-0.5, 0.5]
   ang_vel_yaw: [-0.5, 0.5]
@@ -254,6 +263,7 @@ video_config:
   output_dir: outputs/train_videos
   filename_prefix: rollout
   command: [0.0, 0.0, 0.0]
+  torso_command: [0.0, 0.0, 0.0]
   steps: 250
   width: 640
   height: 480

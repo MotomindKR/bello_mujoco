@@ -16,6 +16,7 @@ class RobotReferenceFrame:
     sequence: int
     source_age_ms: int | None
     received_at: float
+    torso_command: np.ndarray  # Anatomical roll/pitch lean and pelvis-heading twist.
 
     def age_ms(self, now: float | None = None) -> float | None:
         if self.source_age_ms is None:

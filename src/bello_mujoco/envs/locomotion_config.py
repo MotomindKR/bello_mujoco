@@ -296,6 +296,15 @@ def validate_locomotion_config(
                 f"numerical_safety.{name} must be positive and finite, got {value}"
             )
     validate_reward_config(reward)
+    if command.torso.variable:
+        if not command.enabled or reward.weights.track_torso_orientation <= 0:
+            raise ValueError(
+                "variable torso commands require commands and positive torso tracking"
+            )
+        if reward.enabled("flat_orientation") or reward.enabled("stand_upright"):
+            raise ValueError(
+                "torso commands conflict with fixed upright rewards; disable those terms"
+            )
     if done.base_height.enabled and not math.isfinite(done.base_height.min_height):
         raise ValueError(
             "done_config.base_height.min_height must be finite, got "

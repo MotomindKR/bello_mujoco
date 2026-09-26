@@ -70,11 +70,17 @@ def boundary(monkeypatch):
         module, "import_pinned_gmr_retargeter", lambda: UpstreamSignature
     )
     env = SimpleNamespace(
+        command_config=SimpleNamespace(torso=SimpleNamespace(body_name="arm")),
         model=SimpleNamespace(
-            robot=SimpleNamespace(asset="synthetic"),
+            robot=SimpleNamespace(
+                asset="synthetic",
+                locomotion_command_frame_body_name="base",
+                locomotion_forward_axis=(1.0, 0.0, 0.0),
+            ),
+            default_qpos=model.qpos0.copy(),
             xml_path="unused",
             mj_model=model,
-        )
+        ),
     )
     return module.GmrRetargeter(env)
 
@@ -100,6 +106,7 @@ def test_one_solve_and_one_time_seed_without_ground_or_posture_correction(bounda
     assert engine.initial_poses[0][-1] == -0.2
     assert output.qpos[2] == -0.2
     assert output.qpos[-1] == 0.4
+    np.testing.assert_allclose(output.torso_command, [0.0, 0.0, 0.4], atol=1e-7)
     live = boundary.retarget(frame())
     assert engine.calls == 2
     assert engine.initial_poses[-1][-1] == -0.2
@@ -108,6 +115,21 @@ def test_one_solve_and_one_time_seed_without_ground_or_posture_correction(bounda
     boundary.retarget(frame(2, 1_100_000_000))
     assert engine.calls == 3
     assert live.qpos[2] == -0.2
+
+
+def test_torso_reference_preserves_lean_but_removes_global_heading(boundary):
+    from scipy.spatial.transform import Rotation
+
+    target = frame()
+    target.transforms["pelvis"][1][:] = np.roll(
+        Rotation.from_euler("xyz", [0.15, -0.2, 1.1]).as_quat(), 1
+    )
+    result = boundary.retarget(target)
+    # The arm body is the synthetic torso, with a 0.4-rad hinge twist.
+    expected = (
+        Rotation.from_euler("xyz", [0.15, -0.2, 0.0]) * Rotation.from_euler("z", 0.4)
+    ).as_euler("xyz")
+    np.testing.assert_allclose(result.torso_command, expected, atol=1e-7)
 
 
 @pytest.mark.parametrize(

@@ -100,6 +100,7 @@ class NativeObservationPipeline:
         self.reset()
 
     def reset(self) -> None:
+        self.torso_command = jnp.zeros(3, dtype=jnp.float32)
         self._history: jax.Array | None = None
         self._step: int | None = None
         self._delay = jnp.asarray(0, dtype=jnp.int32)
@@ -114,12 +115,33 @@ class NativeObservationPipeline:
         step_count: int,
         gait_phase: float | jax.Array | None = None,
         standing_transition_pending: int | jax.Array = 0,
+        torso_command=(0.0, 0.0, 0.0),
     ) -> jax.Array:
         env = self.env
+        env.command_config.torso.validate_target(torso_command)
+        if not env.command_config.enabled and any(torso_command):
+            raise ValueError("torso targets require command conditioning")
+        if self._step != step_count:
+            expected = 0 if self._step is None else self._step + 1
+            if step_count != expected:
+                raise ValueError(
+                    f"native feedback expected step {expected}, got {step_count}; "
+                    "reset feedback when resetting the episode"
+                )
+        if self._step is not None and self._step != step_count:
+            from bello_mujoco.envs.torso import slew_torso_command
+
+            self.torso_command = slew_torso_command(
+                self.torso_command,
+                jnp.asarray(torso_command),
+                env.command_config.torso.slew_rate,
+                env.control_timestep,
+            )
         state = mujoco_eval_state(
             env,
             mj_data,
             command=command,
+            torso_command=self.torso_command,
             last_action=last_action,
             foot_contact_debounce_time=jnp.zeros(env.model.foot_body_ids.size),
             last_foot_contact=jnp.zeros(env.model.foot_body_ids.size),
@@ -131,12 +153,6 @@ class NativeObservationPipeline:
             standing_transition_pending=standing_transition_pending,
         )
         if self._step != step_count:
-            expected = 0 if self._step is None else self._step + 1
-            if step_count != expected:
-                raise ValueError(
-                    f"native feedback expected step {expected}, got {step_count}; "
-                    "reset feedback when resetting the episode"
-                )
             self._key, feedback_key, self._observation_key, delay_key = (
                 jax.random.split(self._key, 4)
             )
@@ -217,7 +233,9 @@ def render_policy_rollout(
     push_at_step: int | None = None,
     push_velocity: tuple[float, float] = (0.0, 0.0),
     record_standing: bool = False,
+    torso_command: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> RolloutStats:
+    env.command_config.torso.validate_target(torso_command)
     if push_at_step is not None and not 0 < push_at_step < steps:
         raise ValueError("push_at_step must be inside the rollout")
     if len(push_velocity) != 2 or not np.all(np.isfinite(push_velocity)):
@@ -237,6 +255,7 @@ def render_policy_rollout(
     obs = feedback.observe(
         mj_data,
         command=command_array,
+        torso_command=torso_command,
         last_action=last_action,
         step_count=step_count,
     )
@@ -335,6 +354,7 @@ def render_policy_rollout(
                 obs = feedback.observe(
                     mj_data,
                     command=command_array,
+                    torso_command=torso_command,
                     last_action=last_action,
                     step_count=step_count,
                 )
@@ -358,6 +378,7 @@ def render_policy_rollout(
                 obs = feedback.observe(
                     mj_data,
                     command=command_array,
+                    torso_command=torso_command,
                     last_action=last_action,
                     step_count=step_count,
                 )
@@ -366,6 +387,7 @@ def render_policy_rollout(
             obs = feedback.observe(
                 mj_data,
                 command=command_array,
+                torso_command=torso_command,
                 last_action=last_action,
                 step_count=step_count,
             )
@@ -730,6 +752,7 @@ def mujoco_eval_state(
     standing_reward_blend: float | jax.Array = 1.0,
     last_action_delta: np.ndarray | None = None,
     tracking_ang_vel_z: float | jax.Array | None = None,
+    torso_command=(0.0, 0.0, 0.0),
 ) -> BelloState:
     if gait_phase is None:
         moving = command_is_moving(
@@ -815,6 +838,8 @@ def mujoco_eval_state(
         last_foot_contact=last_foot_contact,
         command=jnp.asarray(command, dtype=jnp.float32),
         command_target=jnp.asarray(command, dtype=jnp.float32),
+        torso_command=jnp.asarray(torso_command, dtype=jnp.float32),
+        torso_command_target=jnp.asarray(torso_command, dtype=jnp.float32),
         gait_phase=jnp.asarray(gait_phase, dtype=jnp.float32),
         standing_transition_pending=jnp.asarray(
             standing_transition_pending, dtype=jnp.int32

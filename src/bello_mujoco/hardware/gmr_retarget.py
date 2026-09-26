@@ -18,6 +18,10 @@ from typing import Any, Protocol
 import mujoco
 import numpy as np
 
+from bello_mujoco.envs.torso import (
+    neutral_torso_quaternion,
+    torso_command_from_quaternions,
+)
 from bello_mujoco.hardware.smplx_contract import (
     SMPLX_BODY_JOINT_NAMES,
     SMPLX_BODY_JOINT_PARENTS,
@@ -221,6 +225,15 @@ class GmrRetargeter:
         self.retargeter = retargeter
         self.model = retargeter.model
         _validate_model_identity(self.model, env.model.mj_model)
+        self._torso_id = self.model.body(env.command_config.torso.body_name).id
+        self._pelvis_id = self.model.body(
+            env.model.robot.locomotion_command_frame_body_name
+        ).id
+        self._forward_axis = env.model.robot.locomotion_forward_axis
+        self._neutral_torso = neutral_torso_quaternion(
+            self.model, env.model.default_qpos, self._torso_id, self._pelvis_id
+        )
+        self._kinematics = mujoco.MjData(self.model)
         self._initialized = False
         self._previous_qpos: np.ndarray | None = None
         self._previous_timestamp_ns: int | None = None
@@ -269,6 +282,7 @@ class GmrRetargeter:
             sequence=frame.sequence,
             source_age_ms=None,
             received_at=frame.received_at,
+            torso_command=self._torso_command(qpos),
         )
         if self.validate_reference is not None:
             self.validate_reference(result)
@@ -312,6 +326,7 @@ class GmrRetargeter:
                 sequence=frame.sequence,
                 source_age_ms=frame.source_age_ms,
                 received_at=frame.received_at,
+                torso_command=self._torso_command(qpos),
             )
             if self.validate_reference is not None:
                 self.validate_reference(result)
@@ -324,6 +339,16 @@ class GmrRetargeter:
         self._last_sequence = frame.sequence
         self._cached = result
         return result
+
+    def _torso_command(self, qpos: np.ndarray) -> np.ndarray:
+        self._kinematics.qpos[:] = qpos
+        mujoco.mj_kinematics(self.model, self._kinematics)
+        return torso_command_from_quaternions(
+            self._kinematics.xquat[self._torso_id],
+            self._kinematics.xquat[self._pelvis_id],
+            self._neutral_torso,
+            self._forward_axis,
+        )
 
     def _solve(self, targets: dict[str, tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
         if not self._initialized:

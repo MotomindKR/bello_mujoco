@@ -345,6 +345,7 @@ def reward_config(
 
 def reward_inputs(**updates) -> RewardInputs:
     inputs = RewardInputs(
+        torso_orientation_error=jnp.asarray(0.0),
         command=jnp.zeros(3, dtype=jnp.float32),
         lin_vel_xy=jnp.zeros(2, dtype=jnp.float32),
         yaw_vel_z=jnp.asarray(0.0, dtype=jnp.float32),
@@ -386,6 +387,20 @@ def reward_inputs(**updates) -> RewardInputs:
         action_clip_limit=jnp.asarray(1.0, dtype=jnp.float32),
     )
     return inputs.replace(**updates)
+
+
+@pytest.mark.parametrize("error", [0.0, 0.25, 0.5])
+def test_torso_reward_tracks_full_orientation_error(error):
+    config = reward_config(track_torso_orientation=3.0)
+    inputs = reward_inputs(torso_orientation_error=jnp.asarray(error))
+    total, terms = compute_locomotion_reward(config, inputs)
+    expected = (
+        3.0
+        * float(inputs.control_timestep)
+        * np.exp(-((error / config.tracking.torso_orientation_std) ** 2))
+    )
+    assert float(terms["reward/track_torso_orientation"]) == pytest.approx(expected)
+    assert float(total) == pytest.approx(expected)
 
 
 def test_command_sampler_respects_ranges_and_exact_standing_probability() -> None:

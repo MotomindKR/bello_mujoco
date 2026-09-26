@@ -134,9 +134,19 @@ positions in metres and unit WXYZ orientations, in native right-handed Y-up
 tracking space. The caller applies upstream GMR's proper rotation
 `(x, y, z) -> (x, -z, y)` once. No reference-pose rotation subtraction, neutral
 SMPL-X skeleton, mesh, floor correction, or reconstructed wrist position is used.
-GMR publishes joint references; Rust retains motor ownership, limits and
-outage-to-nominal blending. Malformed messages or terminal producer errors stop
-control.
+The producer publishes held-arm joint references and torso lean/twist from the
+same retargeted robot pose. Torso roll/pitch are ground-relative; yaw is relative
+to pelvis heading, after removing the nominal CAD frame orientation. Rust clamps
+these commands to trained ranges and uses the checkpoint's torso slew before
+locomotion inference. It does not copy waist joints directly. Gamepad velocity
+commands remain independent.
+
+Enable `control.following.enabled` with a newly trained torso-conditioned bundle;
+leave `control.torso_command` neutral (manual torso overrides are disabled while
+following). Rust retains motor ownership and safety limits. Tracking loss
+transitions arms toward nominal and slews torso commands to neutral. Malformed
+messages or terminal producer errors stop control. The producer and runner must
+be updated together; available references require all three torso angles.
 
 Start the updated tracking bridge first, then use
 `bello-run-reference asset=bello_mini xrobot.endpoint=HOST:50051`.

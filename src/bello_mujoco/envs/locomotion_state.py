@@ -18,6 +18,8 @@ class BelloState:
     last_foot_contact: jax.Array
     command: jax.Array
     command_target: jax.Array
+    torso_command: jax.Array
+    torso_command_target: jax.Array
     gait_phase: jax.Array
     standing_transition_pending: (
         jax.Array
