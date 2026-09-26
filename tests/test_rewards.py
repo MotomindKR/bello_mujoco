@@ -390,12 +390,17 @@ def reward_inputs(**updates) -> RewardInputs:
 
 
 @pytest.mark.parametrize("error", [0.0, 0.25, 0.5])
-def test_torso_reward_tracks_full_orientation_error(error):
-    config = reward_config(track_torso_orientation=3.0)
-    inputs = reward_inputs(torso_orientation_error=jnp.asarray(error))
+@pytest.mark.parametrize("weight", [0.2, 3.0])
+@pytest.mark.parametrize("standing_blend", [0.0, 1.0])
+def test_torso_reward_tracks_full_orientation_error(error, weight, standing_blend):
+    config = reward_config(track_torso_orientation=weight)
+    inputs = reward_inputs(
+        torso_orientation_error=jnp.asarray(error),
+        standing_reward_blend=jnp.asarray(standing_blend),
+    )
     total, terms = compute_locomotion_reward(config, inputs)
     expected = (
-        3.0
+        weight
         * float(inputs.control_timestep)
         * np.exp(-((error / config.tracking.torso_orientation_std) ** 2))
     )

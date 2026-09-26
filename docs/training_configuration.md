@@ -84,6 +84,11 @@ torque penalties, joint/motor limits and absolute tilt termination remain active
 This observation change requires fresh training and export: changing a previous
 bundle's commit metadata cannot add this capability.
 
+The torso reward's peak is its weight; its small-angle error coefficient is
+`weight / torso_orientation_std^2`. Mini balances this coefficient against the
+previous tilt penalty instead of reusing its weight for the sharper exponential.
+Torso tracking remains active during both walking and standing.
+
 `video_config.torso_command` selects a fixed target for training videos. Native
 evaluation and deployment use the checkpoint's same torso slew rates and bounds.
 

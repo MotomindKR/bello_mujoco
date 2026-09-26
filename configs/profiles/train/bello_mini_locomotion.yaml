@@ -34,6 +34,7 @@ env_config:
     root_vel_range: [0.0, 0.0]
 reward_config:
   tracking:
+    torso_orientation_std: 0.25
     # exp(-error^2 / std^2): match the reference 0.25 denominator.
     lin_vel_xy_moving_std: 0.5
     lin_vel_xy_still_std: 0.5
@@ -52,7 +53,8 @@ reward_config:
     hip_deviation: 0.0
     knee_deviation: 0.0
     flat_orientation: 0.0
-    track_torso_orientation: 5.0
+    # Match the prior tilt penalty's local curvature: weight / std^2 = 5.
+    track_torso_orientation: 0.3125
     joint_pose: -1.0
     foot_heading: -1.0
     foot_slip: -0.5
