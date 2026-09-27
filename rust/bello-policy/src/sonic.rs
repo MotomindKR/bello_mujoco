@@ -191,7 +191,9 @@ impl Sonic {
         let orientation = hardware_orientation * self.root_from_hardware_imu.conjugate();
         if feedback.initialize {
             self.reset();
-            let reference = self.clip.sample(feedback.reference_time);
+            let reference = self.clip.sample_frame(f64::from(
+                feedback.reference_time as f32 * self.clip.fps() as f32,
+            ));
             let reference_root = from_wxyz(reference.qpos[3..7].try_into()?);
             self.alignment = Some(DQuat::from_rotation_z(
                 orientation.to_euler(EulerRot::ZYX).0 - reference_root.to_euler(EulerRot::ZYX).0,
@@ -214,11 +216,16 @@ impl Sonic {
         let mut source_velocities =
             Vec::with_capacity(self.settings.future_frames * self.settings.source_neutral.len());
         let mut root_orientations = Vec::with_capacity(self.settings.future_frames);
-        let policy_reference_time = feedback.reference_time + self.policy.metadata.control_timestep;
+        // Match JAX's float32 clock and integer future-frame offsets, including
+        // ties-to-even rounding for clips whose rate is not a multiple of 10 Hz.
+        let fps = self.clip.fps() as f32;
+        let policy_reference_frame =
+            (feedback.reference_time as f32 + self.policy.metadata.control_timestep as f32) * fps;
         for frame in 0..self.settings.future_frames {
+            let offset = (frame as f32 * self.settings.future_dt as f32 * fps).round_ties_even();
             let sample = self
                 .clip
-                .sample(policy_reference_time + frame as f64 * self.settings.future_dt);
+                .sample_frame(f64::from(policy_reference_frame + offset));
             let mut source_position = self.settings.source_neutral.clone();
             let mut source_velocity = vec![0.; source_position.len()];
             for target in 0..n {

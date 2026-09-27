@@ -29,8 +29,9 @@ from bello_mujoco.sonic.reference import ReferenceBank
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.parametrize("fps,frames", [(50.0, 20), (25.0, 20), (50.0, 2048)])
 def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
-    rust_policy, tmp_path
+    rust_policy, tmp_path, fps, frames
 ) -> None:
     run, _, source = rust_policy
     source_names = tuple(name for name in G1_JOINT_NAMES if name != "waist_pitch_joint")
@@ -76,7 +77,6 @@ def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
         SonicCritic(mlp(1645, 1, 2, keys[2]), adapter, body_count=14),
         jnp.full(29, np.log(0.05), dtype=jnp.float32),
     )
-    frames = 20
     qpos = np.zeros((frames, 7 + len(joint_names)), dtype=np.float32)
     qpos[:, 2] = 0.8
     root_yaw = np.arange(frames, dtype=np.float32) * 0.03
@@ -88,7 +88,7 @@ def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
     body_quat = np.zeros((frames, 14, 4), dtype=np.float32)
     body_quat[..., 0] = 1.0
     clip = MotionClip(
-        fps=50.0,
+        fps=fps,
         joint_names=joint_names,
         body_names=tuple(f"body_{index}" for index in range(14)),
         qpos=jnp.asarray(qpos),
@@ -174,7 +174,12 @@ def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
             "reference_time": reference_time,
             "initialize": initialize,
         }
-        for reference_time, initialize in ((0.0, True), (0.017, False), (0.379, True))
+        for reference_time, initialize in (
+            (0.0, True),
+            (0.017, False),
+            (clip.duration * 0.75, True),
+            (clip.duration - 0.001, True),
+        )
     ]
     result = run(samples, content=bundle, telemetry=True, clip="walk")
     assert result.returncode == 0, result.stderr
@@ -196,7 +201,7 @@ def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
                     1.0 - 2.0 * (quaternion[2] ** 2 + quaternion[3] ** 2),
                 )
             )
-        local_frame = (sample["reference_time"] + 0.02) * clip.fps
+        local_frame = (jnp.asarray(sample["reference_time"]) + 0.02) * clip.fps
         reference = assembler.reference(
             bank,
             jnp.asarray(0),
