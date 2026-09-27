@@ -69,17 +69,7 @@ async fn main() -> Result<()> {
         };
         let hardware = Hardware::connect(config, &runtime).await?;
         if let Some(live) = &mut live {
-            live.configure_target_limits(
-                hardware.target_limits.clone(),
-                hardware.restrict_target_limits(live.motion_limits())?,
-            )?;
-            anyhow::ensure!(
-                hardware
-                    .groups
-                    .iter()
-                    .all(|group| group.control_rate_hz() + 1e-6 >= 1. / live.motion_period()),
-                "hardware control rate is slower than the motion policy"
-            );
+            live.configure_hardware(&hardware)?;
         }
         if args.arm {
             return bello_policy::control::run(

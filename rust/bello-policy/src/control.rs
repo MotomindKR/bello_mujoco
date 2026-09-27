@@ -132,19 +132,18 @@ impl Operator {
 
 fn frame(
     group: &MotorGroup,
-    policy: &Locomotion,
+    coordinates: &[String],
     target: &[f64],
+    gains: &[[f32; 2]],
     scale: f64,
 ) -> Result<CommandFrame> {
-    let metadata = &policy.policy.metadata;
     ensure!(
-        target.len() == metadata.coordinates.len(),
-        "motor target shape mismatch"
+        target.len() == coordinates.len() && gains.len() == target.len(),
+        "motor target/gain shape mismatch"
     );
     let mut builder = group.frame();
     for motor in group.motors() {
-        let i = metadata
-            .coordinates
+        let i = coordinates
             .iter()
             .position(|c| c == motor.coordinate())
             .context("missing policy coordinate")?;
@@ -159,7 +158,7 @@ fn frame(
         builder = builder.coordinate(
             motor.coordinate(),
             CoordinateTarget::position(target[i])
-                .gains(metadata.kp[i] as f64 * scale, metadata.kd[i] as f64 * scale),
+                .gains(gains[i][0] as f64 * scale, gains[i][1] as f64 * scale),
         )?;
     }
     Ok(builder.build()?)
@@ -188,8 +187,8 @@ fn nominal(policy: &Locomotion, sample: &Feedback, config: &Config) -> Result<()
 
 async fn send(
     controls: &mut [ControlSession],
-    policy: &Locomotion,
     target: &[f64],
+    gains: &[[f32; 2]],
     config: &Config,
     targets: &mut CommandTargets,
     limits: &crate::target_limits::TargetLimits,
@@ -198,7 +197,15 @@ async fn send(
     let command = limits.constrain(target, &targets.previous)?;
     let frames = controls
         .iter()
-        .map(|c| frame(c.group(), policy, &command.motor_target, config.gain_scale))
+        .map(|c| {
+            frame(
+                c.group(),
+                &targets.coordinates,
+                &command.motor_target,
+                gains,
+                config.gain_scale,
+            )
+        })
         .collect::<Result<Vec<_>>>()?;
     let results = join_all(controls.iter_mut().zip(frames).map(|(c, f)| c.send(f))).await;
     for result in results {
@@ -236,6 +243,7 @@ async fn send(
 }
 
 struct CommandTargets {
+    coordinates: Vec<String>,
     previous: Vec<f64>,
     limited_count: u64,
 }
@@ -257,6 +265,14 @@ pub async fn run(
     mut motion: Option<crate::motion::live::Live>,
 ) -> Result<()> {
     config.validate()?;
+    let standing_gains: Vec<[f32; 2]> = policy
+        .policy
+        .metadata
+        .kp
+        .iter()
+        .zip(&policy.policy.metadata.kd)
+        .map(|(&kp, &kd)| [kp, kd])
+        .collect();
     ensure!(
         config.command_validity_seconds > policy.policy.metadata.control_timestep,
         "command validity must exceed the policy period"
@@ -339,6 +355,7 @@ pub async fn run(
             log.flush()?;
         }
         let mut targets = CommandTargets {
+            coordinates: policy.policy.metadata.coordinates.clone(),
             previous: startup_target.clone(),
             limited_count: 0,
         };
@@ -357,7 +374,15 @@ pub async fn run(
         }
         let frames = controls
             .iter()
-            .map(|c| frame(c.group(), &policy, &startup_target, config.gain_scale))
+            .map(|c| {
+                frame(
+                    c.group(),
+                    &targets.coordinates,
+                    &startup_target,
+                    &standing_gains,
+                    config.gain_scale,
+                )
+            })
             .collect::<Result<Vec<_>>>()?;
         let results = join_all(
             controls
@@ -393,8 +418,8 @@ pub async fn run(
                 .collect();
             send(
                 &mut controls,
-                &policy,
                 &ramp,
+                &standing_gains,
                 &config,
                 &mut targets,
                 &limits,
@@ -415,8 +440,8 @@ pub async fn run(
             nominal(&policy, &sample, &config)?;
             send(
                 &mut controls,
-                &policy,
                 &target,
+                &standing_gains,
                 &config,
                 &mut targets,
                 &limits,
@@ -478,8 +503,8 @@ pub async fn run(
                 let target: Vec<f64> = step.target.iter().map(|v| *v as f64).collect();
                 let command = send(
                     &mut controls,
-                    &policy,
                     &target,
+                    &step.motor_gains,
                     &config,
                     &mut targets,
                     motion.target_limits(),
@@ -534,8 +559,8 @@ pub async fn run(
             let target: Vec<f64> = step.motor_target.iter().map(|v| *v as f64).collect();
             let command = send(
                 &mut controls,
-                &policy,
                 &target,
+                &standing_gains,
                 &config,
                 &mut targets,
                 &limits,

@@ -10,6 +10,7 @@ use bello_hardware_client::{
 use glam::DVec3;
 use serde::Deserialize;
 
+use crate::PolicyMetadata;
 use crate::locomotion::{Feedback, Locomotion, projected_gravity};
 
 #[derive(Debug, Deserialize)]
@@ -76,6 +77,30 @@ pub struct Hardware {
 }
 
 impl Hardware {
+    pub fn validate_policy_gains(&self, metadata: &PolicyMetadata) -> Result<()> {
+        for group in &self.groups {
+            for motor in group.motors() {
+                let i = metadata
+                    .coordinates
+                    .iter()
+                    .position(|name| name == motor.coordinate())
+                    .context("hardware coordinate missing from policy")?;
+                let limits = motor.limits();
+                for (name, value, low, high) in [
+                    ("kp", metadata.kp[i], limits.kp_min(), limits.kp_max()),
+                    ("kd", metadata.kd[i], limits.kd_min(), limits.kd_max()),
+                ] {
+                    ensure!(
+                        (low..=high).contains(&f64::from(value)),
+                        "{} {name} exceeds hardware limits",
+                        motor.coordinate()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn restrict_target_limits(
         &self,
         limits: &crate::target_limits::TargetLimits,
@@ -158,40 +183,22 @@ impl Hardware {
             let motor = by_coordinate[coordinate.as_str()];
             let limits = motor.limits();
             target_limits.restrict_motor(i, limits.position_min(), limits.position_max())?;
-            for (name, value, low, high) in [
-                (
-                    "nominal position",
-                    metadata.default_position[i] as f64,
-                    limits.position_min(),
-                    limits.position_max(),
-                ),
-                (
-                    "kp",
-                    metadata.kp[i] as f64,
-                    limits.kp_min(),
-                    limits.kp_max(),
-                ),
-                (
-                    "kd",
-                    metadata.kd[i] as f64,
-                    limits.kd_min(),
-                    limits.kd_max(),
-                ),
-            ] {
-                ensure!(
-                    (low..=high).contains(&value),
-                    "{coordinate} {name} exceeds hardware limits"
-                );
-            }
+            ensure!(
+                (limits.position_min()..=limits.position_max())
+                    .contains(&f64::from(metadata.default_position[i])),
+                "{coordinate} nominal position exceeds hardware limits"
+            );
             motors.push(motor.name().to_owned());
         }
-        Ok(Self {
+        let hardware = Self {
             robot,
             groups,
             config,
             target_limits,
             motors,
-        })
+        };
+        hardware.validate_policy_gains(metadata)?;
+        Ok(hardware)
     }
 
     pub async fn feedback(&self, expected: proto::GroupState) -> Result<Feedback> {

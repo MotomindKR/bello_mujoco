@@ -43,6 +43,16 @@ class MotionHardware(SyntheticHardware):
     pose_requests = 0
     pitch_ramp = (0.0, 0.0, 0.0, 1.0)
 
+    def __init__(self, pb):
+        super().__init__(pb)
+        self.applied_gains = []
+
+    def apply(self, commands):
+        super().apply(commands)
+        self.applied_gains.append(
+            [[c.kp, c.kd] for c in sorted(commands, key=lambda c: c.motor_name)]
+        )
+
     def root_orientation(self):
         initial, target, started, duration = self.pitch_ramp
         fraction = np.clip((time.monotonic() - started) / duration, 0.0, 1.0)
@@ -97,7 +107,15 @@ class MotionHardware(SyntheticHardware):
             self.closed.wait(0.005)
 
 
-def motion_bundle(source, *, root_pitch=0.0, frames=3, observation_mode="full_state"):
+def motion_bundle(
+    source,
+    *,
+    root_pitch=0.0,
+    frames=3,
+    observation_mode="full_state",
+    kp=(4.0, 1.0, 0.0),
+    kd=(0.3, 0.05, 0.5),
+):
     model = mujoco.MjModel.from_xml_string(XML)
     data = mujoco.MjData(model)
     data.qpos[:] = [0, 0, 0.9, 1, 0, 0, 0, 0.2, -0.3, 0.4]
@@ -144,6 +162,8 @@ def motion_bundle(source, *, root_pitch=0.0, frames=3, observation_mode="full_st
         target=[0.75, -0.34, 0.44],
         metadata_updates=dict(
             task="motion_tracking",
+            kp=kp,
+            kd=kd,
             policy_indices=[0, 1, 2],
             observation_size=sum(n for _, n in layout),
             observation_frame=layout,
@@ -235,6 +255,7 @@ def test_motion_pose_frame_requires_fixed_coincident_root(
     "failure",
     [
         None,
+        "entry_interrupt",
         "interrupt",
         "second_interrupt",
         "terminate",
@@ -263,7 +284,7 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
     server, pool, endpoint = start_services(
         fake, pose_enabled=observation_mode == "full_state"
     )
-    succeeds = failure in (None, "interrupt", "deep_tilt") or (
+    succeeds = failure in (None, "entry_interrupt", "interrupt", "deep_tilt") or (
         observation_mode == "proprioceptive"
         and failure
         in ("stale", "outage", "repeated", "frame", "orientation", "missing_velocity")
@@ -290,6 +311,8 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
     )
     log = tmp_path / "policy.jsonl"
     settings = control_settings(endpoint, standing, log)
+    if failure == "entry_interrupt":
+        settings["motion"]["transition_seconds"] = 0.3
     if observation_mode == "proprioceptive":
         del settings["motion"]["pose"]
     if tilted:
@@ -340,7 +363,13 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
         if tilted:
             fake.pitch_ramp = (0.6, 1.3, time.monotonic(), 0.5)
         os.write(master, b"MOTION\n")
-        wait_for("Motion tracking policy is active")
+        if failure == "entry_interrupt":
+            wait_for("Transitioning to motion tracking")
+            time.sleep(0.04)
+            os.kill(process.pid, signal.SIGINT)
+            wait_for("requesting return to standing")
+        else:
+            wait_for("Motion tracking policy is active")
         if tilted:
             # Remain beyond the absolute upright limit for several policy ticks.
             time.sleep(0.1)
@@ -380,6 +409,35 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
         events = [json.loads(line) for line in log.read_text().splitlines()]
         rows = [row["motion"] for row in events if "motion" in row]
         assert all(row["observation_mode"] == observation_mode for row in rows)
+        gains = np.asarray([row["motor_gains"] for row in rows])
+        starting_gains = np.asarray([[2.0, 0.1]] * 3)
+        motion_gains = np.asarray([[4.0, 0.3], [1.0, 0.05], [0.0, 0.5]])
+        low = np.minimum(starting_gains, motion_gains)
+        high = np.maximum(starting_gains, motion_gains)
+        assert np.all(gains >= low - 1e-6)
+        assert np.all(gains <= high + 1e-6)
+        for row in rows:
+            if row["phase"] in ("standing", "motion"):
+                expected = (
+                    starting_gains if row["phase"] == "standing" else motion_gains
+                )
+                np.testing.assert_allclose(row["motor_gains"], expected, atol=1e-6)
+        wire_gains = np.asarray(fake.applied_gains)
+        np.testing.assert_allclose(wire_gains[0], starting_gains, atol=1e-6)
+        assert np.all(wire_gains >= low - 1e-6)
+        assert np.all(wire_gains <= high + 1e-6)
+        if succeeds:
+            np.testing.assert_allclose(wire_gains[-1], starting_gains, atol=1e-6)
+            reached_motion_gains = np.any(
+                np.all(np.isclose(wire_gains, motion_gains), axis=(1, 2))
+            )
+            assert reached_motion_gains == (failure != "entry_interrupt")
+            bound = (
+                abs(motion_gains - starting_gains)
+                * 0.02
+                / settings["motion"]["transition_seconds"]
+            )
+            assert np.all(np.abs(np.diff(wire_gains, axis=0)) <= bound + 1e-6)
         if observation_mode == "proprioceptive":
             assert fake.pose_requests == 0
             for row in rows:
@@ -429,7 +487,9 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
         pool.shutdown(wait=True)
 
 
-@pytest.mark.parametrize("failure", [None, "frame", "orientation", "gains"])
+@pytest.mark.parametrize(
+    "failure", [None, "frame", "orientation", "coordinates", "kp", "kd"]
+)
 def test_motion_preflight_never_acquires_control(
     rust_policy, hardware_proto, tmp_path, failure
 ):
@@ -440,12 +500,17 @@ def test_motion_preflight_never_acquires_control(
     standing = tmp_path / "standing.zip"
     standing.write_bytes(
         bundle(
-            source, metadata_updates={"kp": [3, 3, 3]} if failure == "gains" else None
+            source,
+            metadata_updates={"coordinates": ["other", "held", "last"]}
+            if failure == "coordinates"
+            else None,
         )
     )
     try:
         result = run(
-            content=motion_bundle(source),
+            content=motion_bundle(source, **{failure: [101.0] * 3})
+            if failure in ("kp", "kd")
+            else motion_bundle(source),
             hardware_config=control_settings(endpoint, standing),
         )
         assert (result.returncode == 0) == (failure is None), result.stderr

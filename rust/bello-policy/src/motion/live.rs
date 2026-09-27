@@ -8,12 +8,13 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail, ensure};
-use glam::{DQuat, DVec3};
+use glam::{DQuat, DVec3, Vec2};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::tilt::Envelope;
 use super::{Feedback, Motion, ObservationMode, pose};
+use crate::hardware::Hardware;
 use crate::locomotion::{Feedback as HardwareFeedback, Locomotion};
 use crate::target_limits::TargetLimits;
 
@@ -43,6 +44,7 @@ impl Interrupt {
 
 struct Transition {
     initial: Vec<f64>,
+    initial_gains: Vec<[f32; 2]>,
     step: usize,
     steps: usize,
     initial_tilt: Envelope,
@@ -57,6 +59,7 @@ enum Phase {
 
 pub struct Output {
     pub target: Vec<f32>,
+    pub motor_gains: Vec<[f32; 2]>,
     pub log: Value,
     pub period: Duration,
 }
@@ -89,8 +92,8 @@ impl Live {
         let a = &motion.policy.metadata;
         let b = &standing.policy.metadata;
         ensure!(
-            a.robot == b.robot && a.coordinates == b.coordinates && a.kp == b.kp && a.kd == b.kd,
-            "standing/motion motor coordinates or gains differ"
+            a.robot == b.robot && a.coordinates == b.coordinates,
+            "standing/motion robot or motor coordinates differ"
         );
         for key in ["joint_names", "joint_from_motor"] {
             ensure!(
@@ -173,11 +176,17 @@ impl Live {
         &self.motion.policy.target_limits
     }
 
-    pub fn configure_target_limits(
-        &mut self,
-        standing: TargetLimits,
-        motion: TargetLimits,
-    ) -> Result<()> {
+    pub fn configure_hardware(&mut self, hardware: &Hardware) -> Result<()> {
+        hardware.validate_policy_gains(&self.motion.policy.metadata)?;
+        ensure!(
+            hardware
+                .groups
+                .iter()
+                .all(|group| group.control_rate_hz() + 1e-6 >= 1. / self.motion_period()),
+            "hardware control rate is slower than the motion policy"
+        );
+        let standing = hardware.target_limits.clone();
+        let motion = hardware.restrict_target_limits(self.motion_limits())?;
         self.transition_limits = standing.transition_envelope(&motion)?;
         self.standing_limits = standing;
         self.motion.policy.target_limits = motion;
@@ -277,9 +286,40 @@ impl Live {
         })
     }
 
-    fn transition(&self, initial: &[f64], period: f64, initial_tilt: Envelope) -> Transition {
+    fn motor_gains(&self, standing: &Locomotion) -> Vec<[f32; 2]> {
+        let (destination, transition) = match &self.phase {
+            Phase::Standing => (&standing.policy.metadata, None),
+            Phase::Motion(_) => (&self.motion.policy.metadata, None),
+            Phase::ToStanding(t) => (&standing.policy.metadata, Some(t)),
+            Phase::ToMotion(t) => (&self.motion.policy.metadata, Some(t)),
+        };
+        destination
+            .kp
+            .iter()
+            .zip(&destination.kd)
+            .enumerate()
+            .map(|(i, (&kp, &kd))| {
+                let destination = Vec2::new(kp, kd);
+                transition
+                    .map_or(destination, |t| {
+                        Vec2::from_array(t.initial_gains[i])
+                            .lerp(destination, t.step as f32 / t.steps as f32)
+                    })
+                    .to_array()
+            })
+            .collect()
+    }
+
+    fn transition(
+        &self,
+        initial: &[f64],
+        standing: &Locomotion,
+        period: f64,
+        initial_tilt: Envelope,
+    ) -> Transition {
         Transition {
             initial: initial.to_vec(),
+            initial_gains: self.motor_gains(standing),
             step: 0,
             steps: (self.config.transition_seconds / period).ceil() as usize,
             initial_tilt,
@@ -323,8 +363,12 @@ impl Live {
                 matches!(self.phase, Phase::Standing),
                 "MOTION is only accepted while standing"
             );
-            self.phase =
-                Phase::ToMotion(self.transition(previous_target, self.motion_period(), tilt));
+            self.phase = Phase::ToMotion(self.transition(
+                previous_target,
+                standing,
+                self.motion_period(),
+                tilt,
+            ));
             self.motion.reset();
             self.interrupt.0.store(1, Ordering::SeqCst);
             eprintln!("Transitioning to motion tracking.");
@@ -332,7 +376,12 @@ impl Live {
         let complete = matches!(self.phase, Phase::Motion(started)
             if self.config.start_time_seconds + now.saturating_duration_since(started).as_secs_f64() >= self.motion.duration());
         if complete || self.interrupt.0.load(Ordering::SeqCst) == 2 {
-            self.phase = Phase::ToStanding(self.transition(previous_target, standing_period, tilt));
+            self.phase = Phase::ToStanding(self.transition(
+                previous_target,
+                standing,
+                standing_period,
+                tilt,
+            ));
             self.interrupt.0.store(0, Ordering::SeqCst);
             standing.reset();
             eprintln!("Transitioning back to standing.");
@@ -404,14 +453,16 @@ impl Live {
             }
         }
         let target: Vec<f32> = target.into_iter().map(|v| v as f32).collect();
+        let motor_gains = self.motor_gains(standing);
         Ok(Output {
             log: json!({"phase": phase_name, "reference_time": reference_time,
             "observation_mode": self.motion.settings.environment.observation_mode,
-            "policy": policy_log, "motor_target": target,
+            "policy": policy_log, "motor_target": target, "motor_gains": motor_gains,
             "destination_target_limited": destination_target_limited,
             "tilt_error_radians": tilt_error, "tilt_error_limit_radians": tilt.max_error,
             "reference_gravity_imu": tilt.gravity.to_array()}),
             target,
+            motor_gains,
             period: Duration::from_secs_f64(period),
         })
     }

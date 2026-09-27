@@ -145,7 +145,8 @@ See [training modes](../../docs/motion_tracking.md#observation-modes).
 
 For full-state motion, use the actual pose producer endpoint and floating-base frame. The stream must
 provide world-frame linear velocity and root-local angular velocity, not just
-position/orientation. Preflight checks both bundles' motor mapping and gains,
+position/orientation. Preflight checks both bundles' motor mapping and validates
+each bundle's gains against hardware limits,
 pose freshness, and pose/IMU agreement using the model's fixed IMU mounting
 rotation. Both bundles must match the checked-out source commit.
 A differently named pose frame is accepted only if the bundled model proves
@@ -157,8 +158,12 @@ zero velocity command. Type `MOTION` to blend into the clip. Completion or the
 first Ctrl-C during motion blends back to standing; another Ctrl-C stops and
 requests damping. SIGTERM, remote abort, malformed/stale pose, hardware faults,
 or rejected commands take the STOP path, not a standing recovery. `IDLE` remains
-required for explicit disable. Standing and motion retain their own control
-periods and histories. The remote is monitored for aborts, but its velocity
+required for explicit disable. Standing and motion retain their own gains,
+control periods, and histories. Targets and KP/KD blend together over
+`motion.transition_seconds`, including when returning before a blend finishes.
+HOLD uses the standing gains; `control.gain_scale` multiplies both policies'
+gains. Logs record the active, unscaled `motor_gains` pairs in coordinate order.
+The remote is monitored for aborts, but its velocity
 axes are ignored in this workflow. Upper-body following must be disabled.
 
 The top-level `max_tilt_radians` remains the absolute upright limit for
@@ -188,7 +193,7 @@ does not switch to its destination limits until the last acknowledged target
 is valid there, even if the configured blend duration has elapsed. Hardwared
 continues independently enforcing its motor and coupled-joint limits.
 
-Synthetic gRPC tests cover both transitions, different policy periods, mounted
+Synthetic gRPC tests cover both transitions, different gains and policy periods, mounted
 IMU rotation, pose failures, rejection/abort, interruptions, and read-only
 preflight. They do not establish trained-policy stability on the full emulator.
 

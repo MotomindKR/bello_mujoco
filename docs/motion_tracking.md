@@ -81,10 +81,12 @@ the robot is not rescaled, and the bounded motor-range action mapping is retaine
 Locomotion gains remain unchanged. Train fresh weights; existing checkpoints are
 not converted. It is a starting recipe, not a commissioned policy.
 
-The current live standing/motion runner requires identical gains in both bundles.
-Deploying these motion gains alongside an unchanged standing policy therefore
-requires an explicit, validated gain-handover implementation first. Training,
-native evaluation, and export support the task-specific gains independently.
+The native runner blends each motor's KP/KD alongside the target
+during standing/motion transitions. Each active policy uses its own trained
+gains. An interrupted transition returns from the last applied blend, not from
+an assumed endpoint. Preflight validates both policies' gains against hardware
+limits; motor-coordinate compatibility and hardware protections remain mandatory.
+Commission the standing/motion pair and transitions together before physical use.
 
 ## BeyondMimic alignment
 
