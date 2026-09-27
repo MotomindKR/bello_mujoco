@@ -79,18 +79,26 @@ class LoRALinear(eqx.Module):
 
     def __call__(self, value: jax.Array) -> jax.Array:
         # The imported backbone is part of the checkpoint but never trainable.
-        base = value @ jax.lax.stop_gradient(self.weight).T + jax.lax.stop_gradient(
-            self.bias
-        )
+        base = jnp.matmul(
+            value,
+            jax.lax.stop_gradient(self.weight).T,
+            precision=jax.lax.Precision.HIGHEST,
+        ) + jax.lax.stop_gradient(self.bias)
         if self.rank == 0:
             return base
-        delta = (value @ self.lora_a.T) @ self.lora_b.T
+        delta = jnp.matmul(
+            jnp.matmul(value, self.lora_a.T, precision=jax.lax.Precision.HIGHEST),
+            self.lora_b.T,
+            precision=jax.lax.Precision.HIGHEST,
+        )
         return base + delta * (self.alpha / self.rank)
 
     def merged_weight(self) -> jax.Array:
         if self.rank == 0:
             return self.weight
-        return self.weight + (self.lora_b @ self.lora_a) * (self.alpha / self.rank)
+        return self.weight + jnp.matmul(
+            self.lora_b, self.lora_a, precision=jax.lax.Precision.HIGHEST
+        ) * (self.alpha / self.rank)
 
 
 class SonicMLP(eqx.Module):

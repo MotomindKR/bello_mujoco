@@ -226,6 +226,33 @@ def test_zero_lora_preserves_base_and_only_adapters_receive_gradients() -> None:
     assert np.linalg.norm(np.asarray(gradients.lora_b)) > 0.0
 
 
+def test_lora_uses_float32_matmul_precision_independent_of_process_defaults() -> None:
+    layer = LoRALinear(
+        np.ones((3, 4), dtype=np.float32),
+        np.zeros(3, dtype=np.float32),
+        rank=2,
+        alpha=4.0,
+        key=jax.random.PRNGKey(3),
+    )
+    with jax.default_matmul_precision("bfloat16"):
+        graphs = (
+            jax.make_jaxpr(layer)(jnp.ones((2, 4))),
+            jax.make_jaxpr(layer.merged_weight)(),
+        )
+    products = [
+        equation
+        for graph in graphs
+        for equation in graph.jaxpr.eqns
+        if equation.primitive.name == "dot_general"
+    ]
+    assert len(products) == 4
+    assert all(
+        equation.params["precision"]
+        == (jax.lax.Precision.HIGHEST, jax.lax.Precision.HIGHEST)
+        for equation in products
+    )
+
+
 def test_fsq_uses_release_even_level_offset() -> None:
     inputs = jnp.asarray([-100.0, 0.0, 100.0])
     values = finite_scalar_quantize(inputs, levels=32)
