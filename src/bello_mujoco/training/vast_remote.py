@@ -178,6 +178,10 @@ end_effector_payload_mass_kg="$7"
 run_name="$8"
 total_timesteps="${9}"
 learning_rate="${10}"
+motion_dataset_artifact="${MOTION_DATASET_ARTIFACT:-}"
+pretrained_revision="${PRETRAINED_REVISION:-}"
+evaluation_clips="${EVALUATION_CLIPS:-[]}"
+job_dir="${BELLO_JOB_DIR:-}"
 
 export DEBIAN_FRONTEND=noninteractive
 for apt_source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
@@ -213,6 +217,14 @@ if [ -z "$submodule_status" ] || printf '%s\n' "$submodule_status" | grep -Eq '^
   echo "bello-stack submodule is absent, uninitialized, or not at its pinned commit" >&2
   exit 1
 fi
+if [ "$experiment" = "bello_mini_sonic_transfer" ]; then
+  git -C "$remote_dir" submodule update --init --recursive -- deps/gear_sonic
+  sonic_submodule_status="$(git -C "$remote_dir" submodule status -- deps/gear_sonic)"
+  if [ -z "$sonic_submodule_status" ] || printf '%s\n' "$sonic_submodule_status" | grep -Eq '^[-+U]'; then
+    echo "gear_sonic submodule is absent, uninitialized, or not at its pinned commit" >&2
+    exit 1
+  fi
+fi
 unset GITHUB_TOKEN GIT_ASKPASS
 cleanup_askpass
 trap - EXIT
@@ -239,6 +251,33 @@ export JAX_DEFAULT_MATMUL_PRECISION=highest
 
 uv python install
 uv sync --frozen --group training
+if [ "$experiment" = "bello_mini_sonic_transfer" ]; then
+  uv sync --frozen --group training --group reference-validation
+  uv run --group reference-validation python - \
+    "$motion_dataset_artifact" "$pretrained_revision" "$job_dir" <<'PY'
+import sys
+from pathlib import Path
+
+import wandb
+from huggingface_hub import snapshot_download
+
+artifact_ref, revision, job_dir = sys.argv[1:]
+if not artifact_ref or not revision:
+    raise RuntimeError("SONIC artifact and pretrained revision are required")
+root = Path(job_dir)
+artifact = wandb.Api().artifact(artifact_ref, type="dataset")
+artifact.download(root=root / "motion_dataset")
+(root / "dataset_artifact.txt").write_text(
+    f"{artifact.entity}/{artifact.project}/{artifact.name}\n"
+)
+snapshot_download(
+    repo_id="nvidia/GEAR-SONIC",
+    revision=revision,
+    allow_patterns=["sonic_release/last.pt", "sonic_release/config.yaml", "config.json"],
+    local_dir=root / "pretrained",
+)
+PY
+fi
 uv run --group training python -c 'import jax; devices=jax.devices(); print({"backend": jax.default_backend(), "devices": [str(x) for x in devices]}); assert jax.default_backend() == "gpu"'
 uv run --group training python - <<'PY'
 from contextlib import ExitStack
@@ -284,6 +323,15 @@ if [ -n "$total_timesteps" ]; then
 fi
 if [ -n "$learning_rate" ]; then
   training_overrides+=("learning_rate=$learning_rate")
+fi
+if [ "$experiment" = "bello_mini_sonic_transfer" ]; then
+  training_overrides+=(
+    "motion_dataset=$job_dir/motion_dataset"
+    "motion_dataset_artifact=$(cat "$job_dir/dataset_artifact.txt")"
+    "pretrained_checkpoint=$job_dir/pretrained/sonic_release/last.pt"
+    "pretrained_revision=$pretrained_revision"
+    "evaluation_clips=$evaluation_clips"
+  )
 fi
 
 preflight_overrides=(
@@ -341,7 +389,62 @@ print({"motion_preflight_checkpoint_restored": str(checkpoint),
 PY
 fi
 
-if [[ -z "$motion_path" && "$experiment" == bello_* ]]; then
+if [ "$experiment" = "bello_mini_sonic_transfer" ]; then
+  JAX_PLATFORMS=cpu uv run --group training python - \
+    "checkpoints/vast-preflight-$run_name" "$job_dir/motion_dataset" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+import equinox as eqx
+import jax
+import numpy as np
+
+from bello_mujoco.deployment import ExportConfig, export_checkpoint
+from bello_mujoco.evaluation.motion import render_motion_policy
+from bello_mujoco.evaluation.software import configure_software_rendering
+from bello_mujoco.sonic.runtime import load_sonic_policy_runtime
+from bello_mujoco.training.normalization import init_observation_norm_state
+
+configure_software_rendering()
+directory, dataset = map(Path, sys.argv[1:])
+paths = list(directory.glob("smoke_*/final"))
+clips = sorted(dataset.glob("*.npz"))
+if len(paths) != 1 or not clips:
+    raise RuntimeError("SONIC preflight checkpoint or corpus clip is missing")
+checkpoint, clip = paths[0], clips[0]
+metadata = json.loads((checkpoint / "metadata.json").read_text())
+if metadata.get("update", 0) < 1:
+    raise RuntimeError("SONIC preflight did not complete a PPO update")
+runtime = load_sonic_policy_runtime(
+    checkpoint, (clip,), evaluation_names=(), use_viewer_model=True
+)
+leaves = jax.tree_util.tree_leaves(eqx.filter(runtime.policy, eqx.is_array))
+if not all(np.all(np.isfinite(np.asarray(leaf))) for leaf in leaves):
+    raise RuntimeError("restored SONIC policy contains nonfinite parameters")
+video = directory / "restored-sonic-policy.mp4"
+render_motion_policy(
+    runtime.env, runtime.policy, video, steps=25, width=256, height=192, fps=50,
+    obs_stack_size=runtime.run_config.config.policy.obs_stack_size,
+    ppo_config=runtime.run_config.config,
+    observation_norm_state=init_observation_norm_state(
+        runtime.policy.actor.observation_size
+    ),
+)
+if not video.is_file() or video.stat().st_size == 0:
+    raise RuntimeError("restored SONIC policy produced no video")
+bundle = export_checkpoint(ExportConfig(
+    checkpoint_path=checkpoint,
+    output_path=directory / "sonic-policy.zip",
+    motion_dataset=dataset,
+    reference_clips=(clip.stem,),
+))
+print({"sonic_preflight_checkpoint_restored": str(checkpoint),
+       "policy_video": str(video), "deployment_bundle": str(bundle)})
+PY
+fi
+
+if [[ -z "$motion_path" && "$experiment" == bello_* && "$experiment" != "bello_mini_sonic_transfer" ]]; then
   uv run --group training python - "checkpoints/vast-preflight-$run_name" <<'PY'
 import sys
 from pathlib import Path
@@ -418,6 +521,12 @@ def run_remote_training(
             "environment": {
                 "WANDB_API_KEY": wandb_key,
                 "GITHUB_TOKEN": github_token,
+            },
+            "sonic_transfer": {
+                "motion_dataset_artifact": config.motion_dataset_artifact or "",
+                "pretrained_revision": config.pretrained_revision or "",
+                "evaluation_clips": json.dumps(config.evaluation_clips),
+                "job_dir": f"/workspace/.bello-vast/{run_name}",
             },
             "script": REMOTE_TRAIN_SCRIPT,
             "timeout_seconds": config.job_timeout_seconds,
@@ -636,6 +745,13 @@ def remote_start_command(
     bootstrap = r"""import fcntl, hashlib, json, os, pathlib, subprocess, sys
 payload = json.load(sys.stdin)
 env = payload["environment"]
+sonic_transfer = payload.get("sonic_transfer", {})
+env.update({
+    "MOTION_DATASET_ARTIFACT": str(sonic_transfer.get("motion_dataset_artifact", "")),
+    "PRETRAINED_REVISION": str(sonic_transfer.get("pretrained_revision", "")),
+    "EVALUATION_CLIPS": str(sonic_transfer.get("evaluation_clips", "[]")),
+    "BELLO_JOB_DIR": str(sonic_transfer.get("job_dir", "")),
+})
 script = payload["script"]
 job_dir = pathlib.Path(sys.argv[1])
 supervisor_root = job_dir.parent

@@ -42,6 +42,7 @@ from bello_mujoco.training.ppo_types import (
 )
 from bello_mujoco.training.ppo_config import (
     PPOConfig,
+    parameter_learning_rate,
     validate_action_limit_contract,
     validate_ppo_config,
 )
@@ -60,6 +61,16 @@ from bello_mujoco.policy import (
 )
 
 LOG_RATIO_CLIP = 20.0
+
+
+def policy_trainable_filter(policy):
+    """Return a model's explicit trainability mask or the default array mask."""
+
+    return (
+        policy.trainable_filter()
+        if hasattr(policy, "trainable_filter")
+        else eqx.is_array
+    )
 
 
 def init_train_state(
@@ -315,7 +326,8 @@ def update_ppo(
     advantages = normalize_advantages(sanitize_array(advantages, config.target_max_abs))
     targets = sanitize_array(targets, config.target_max_abs)
     batch = flatten_batch((safe_transitions, advantages, targets))
-    init_params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
+    trainable_filter = policy_trainable_filter(train_state.policy)
+    init_params, static_policy = eqx.partition(train_state.policy, trainable_filter)
     if learning_rate is None:
         learning_rate = jnp.asarray(config.learning_rate, dtype=jnp.float32)
     else:
@@ -362,12 +374,15 @@ def update_ppo(
                 params
             )
             updates, opt_state = optimizer.update(grads, opt_state, params)
-            updates = jax.tree_util.tree_map(
-                lambda update: -learning_rate * update, updates
+            updates = jax.tree_util.tree_map_with_path(
+                lambda path, update: (
+                    -parameter_learning_rate(config, learning_rate, path) * update
+                ),
+                updates,
             )
             next_params = optax.apply_updates(params, updates)
             policy = clamp_policy_log_std(eqx.combine(next_params, static_policy))
-            next_params, _ = eqx.partition(policy, eqx.is_array)
+            next_params, _ = eqx.partition(policy, trainable_filter)
 
             finite_loss = jnp.isfinite(loss_value)
             finite_metrics = tree_all_finite(metrics)
@@ -737,6 +752,61 @@ def init_runner_state(
     )
 
 
+def init_runner_state_with_policy(
+    rng: jax.Array,
+    env: PPOEnvironment,
+    config: PPOConfig,
+    policy: eqx.Module,
+) -> tuple[RunnerState, eqx.Module, optax.GradientTransformation]:
+    """Initialize the shared PPO runner from an imported, non-random policy."""
+
+    validate_action_limit_contract(config, env.action_clip)
+    rng, env_key, step_count_key = jax.random.split(rng, 3)
+    optimizer = make_optimizer(config)
+    filter_spec = policy_trainable_filter(policy)
+    params, static_policy = eqx.partition(policy, filter_spec)
+    opt_state = optimizer.init(params)
+    task_state = env.initial_task_state()
+    initial_env = env.with_task_state(task_state)
+    env_state, obs = initial_env.reset_batch(config.num_envs, rng=env_key)
+    step_count = env.initial_step_counts(config.num_envs, step_count_key)
+    env_state = initial_env.with_initial_step_counts(env_state, step_count)
+    if env.ppo_stagger_initial_step_count:
+        rng, staggered_obs_key = jax.random.split(rng)
+        obs = initial_env.observation_batch(env_state, staggered_obs_key)
+    critic_obs = initial_env.critic_observation_batch(env_state)
+    obs_stack = init_observation_stack(obs, config.policy.obs_stack_size)
+    critic_obs_stack = init_observation_stack(critic_obs, config.policy.obs_stack_size)
+    expected_actor = policy_observation_size(env.observation_size, config.policy)
+    expected_critic = policy_observation_size(
+        env.critic_observation_size, config.policy
+    )
+    if getattr(policy.actor, "observation_size", expected_actor) != expected_actor:
+        raise ValueError("imported actor observation layout does not match environment")
+    if getattr(policy.critic, "observation_size", expected_critic) != expected_critic:
+        raise ValueError(
+            "imported critic observation layout does not match environment"
+        )
+    return (
+        RunnerState(
+            params=params,
+            opt_state=opt_state,
+            update=jnp.asarray(0, dtype=jnp.int32),
+            env_state=env_state,
+            obs_stack=obs_stack,
+            critic_obs_stack=critic_obs_stack,
+            rng=rng,
+            learning_rate=jnp.asarray(config.learning_rate, dtype=jnp.float32),
+            value_norm_state=init_value_norm_state(),
+            observation_norm_state=init_observation_norm_state(expected_actor),
+            critic_observation_norm_state=init_observation_norm_state(expected_critic),
+            task_state=task_state,
+        ),
+        static_policy,
+        optimizer,
+    )
+
+
 def runner_train_state(
     runner_state: RunnerState,
     static_policy: eqx.Module,
@@ -823,7 +893,9 @@ def update_runner_state(
         config,
         target_kl_exceeded=metrics["target_kl_exceeded"] > 0,
     )
-    params, _ = eqx.partition(train_state.policy, eqx.is_array)
+    params, _ = eqx.partition(
+        train_state.policy, policy_trainable_filter(train_state.policy)
+    )
     task_metrics = env.task_state_metrics(task_state)
     metrics = {
         **metrics,

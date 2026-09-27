@@ -20,6 +20,8 @@ from bello_mujoco.training.ppo_config import PPOConfig
 class ExportConfig:
     checkpoint_path: Path | None = None
     output_path: Path | None = None
+    motion_dataset: Path | None = None
+    reference_clips: tuple[str, ...] = ()
 
 
 def actor_onnx(
@@ -202,6 +204,13 @@ def export_checkpoint(config: ExportConfig) -> Path:
     require_checkpoint_output_directory(output.parent)
     if output.exists():
         raise FileExistsError(output)
+    raw_metadata = json.loads(
+        (config.checkpoint_path.expanduser().resolve() / "metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    if raw_metadata.get("task") == "sonic_transfer":
+        return export_sonic_checkpoint(config, output)
     git_commit = capture_repository_commit()
     saved = load_checkpoint_metadata(config.checkpoint_path)
     if saved.task == "locomotion":
@@ -278,6 +287,358 @@ def export_checkpoint(config: ExportConfig) -> Path:
     require_repository_commit(git_commit)
     _publish_policy(output, content)
     return output
+
+
+def sonic_actor_onnx(policy, *, model, env, metadata: dict):
+    """Export the frozen encoder, FSQ, merged LoRA decoder, and Mini mapping."""
+
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+
+    from bello_mujoco.sonic.control import logical_action_scale
+
+    nodes, constants = [], []
+
+    def constant(name, value, *, dtype=np.float32):
+        constants.append(numpy_helper.from_array(np.asarray(value, dtype=dtype), name))
+        return name
+
+    def op(kind, inputs, output_name, **attributes):
+        nodes.append(helper.make_node(kind, inputs, [output_name], **attributes))
+        return output_name
+
+    actor = policy.actor
+    config = actor.config
+    step = actor.per_step_observation_size
+    history = config.history_steps
+    target_size = actor.adapter.target_size
+    reference = op(
+        "Gather",
+        [
+            "observation",
+            constant(
+                "reference_indices",
+                np.arange((history - 1) * step, (history - 1) * step + 640),
+                dtype=np.int64,
+            ),
+        ],
+        "future_reference",
+        axis=1,
+    )
+
+    def history_indices(offset, width):
+        return np.concatenate(
+            [
+                np.arange(index * step + offset, index * step + offset + width)
+                for index in range(history)
+            ]
+        )
+
+    gravity_offset = config.reference_size
+    angular_offset = gravity_offset + 3
+    position_offset = angular_offset + 3
+    velocity_offset = position_offset + target_size
+    action_offset = velocity_offset + target_size
+
+    def gather_history(name, offset, width):
+        return op(
+            "Gather",
+            [
+                "observation",
+                constant(
+                    f"{name}_indices",
+                    history_indices(offset, width),
+                    dtype=np.int64,
+                ),
+            ],
+            name,
+            axis=1,
+        )
+
+    angular = gather_history("angular_history", angular_offset, 3)
+    gravity = gather_history("gravity_history", gravity_offset, 3)
+    source_map = np.zeros((target_size, config.source_action_size), dtype=np.float32)
+    for target, source in enumerate(actor.adapter.target_to_source_indices):
+        source_map[target, source] = actor.adapter.signs[target]
+
+    def mapped_history(name, offset):
+        target = gather_history(f"target_{name}", offset, target_size)
+        shaped = op(
+            "Reshape",
+            [
+                target,
+                constant(
+                    f"{name}_target_shape", [history, target_size], dtype=np.int64
+                ),
+            ],
+            f"{name}_target_history",
+        )
+        source = op(
+            "MatMul",
+            [shaped, constant(f"{name}_source_map", source_map)],
+            f"{name}_source_history",
+        )
+        return op(
+            "Reshape",
+            [source, constant(f"{name}_source_shape", [1, -1], dtype=np.int64)],
+            f"{name}_source_flat",
+        )
+
+    position = mapped_history("position", position_offset)
+    velocity = mapped_history("velocity", velocity_offset)
+    actions = mapped_history("actions", action_offset)
+    proprioception = op(
+        "Concat",
+        [angular, position, velocity, actions, gravity],
+        "proprioception",
+        axis=1,
+    )
+
+    def mlp(value, network, prefix):
+        for index, layer in enumerate(network.layers):
+            value = op(
+                "Gemm",
+                [
+                    value,
+                    constant(
+                        f"{prefix}_weight_{index}", np.asarray(layer.merged_weight()).T
+                    ),
+                    constant(f"{prefix}_bias_{index}", layer.bias),
+                ],
+                f"{prefix}_linear_{index}",
+            )
+            if index != len(network.layers) - 1:
+                sigmoid = op("Sigmoid", [value], f"{prefix}_sigmoid_{index}")
+                value = op("Mul", [value, sigmoid], f"{prefix}_silu_{index}")
+        return value
+
+    latent = mlp(reference, actor.encoder, "encoder")
+    half_level = (config.fsq_levels - 1) * (1.0 - 1.0e-3) / 2.0
+    fsq_offset = 0.5 if config.fsq_levels % 2 == 0 else 0.0
+    fsq_shift = np.arctanh(fsq_offset / half_level) if fsq_offset else 0.0
+    shifted = op("Add", [latent, constant("fsq_shift", fsq_shift)], "fsq_shifted")
+    bounded = op("Tanh", [shifted], "fsq_tanh")
+    bounded = op("Mul", [bounded, constant("fsq_half_level", half_level)], "fsq_scaled")
+    bounded = op("Sub", [bounded, constant("fsq_offset", fsq_offset)], "fsq_bounded")
+    rounded = op("Round", [bounded], "fsq_rounded")
+    tokens = op(
+        "Div",
+        [rounded, constant("fsq_denominator", config.fsq_levels // 2)],
+        "tokens",
+    )
+    source_action = mlp(
+        op("Concat", [tokens, proprioception], "decoder_input", axis=1),
+        actor.decoder,
+        "decoder",
+    )
+    mapped_action = op(
+        "Gather",
+        [
+            source_action,
+            constant(
+                "target_action_indices",
+                actor.adapter.target_to_source_indices,
+                dtype=np.int64,
+            ),
+        ],
+        "mapped_action",
+        axis=1,
+    )
+    action = op(
+        "Mul",
+        [mapped_action, constant("target_action_signs", actor.adapter.signs)],
+        "action",
+    )
+    applied_action = op(
+        "Clip",
+        [
+            action,
+            constant("action_low", -env.action_clip),
+            constant("action_high", env.action_clip),
+        ],
+        "applied_action",
+    )
+    logical_delta = op(
+        "Mul",
+        [
+            applied_action,
+            constant(
+                "logical_action_scale",
+                logical_action_scale(model, env.actuator_config),
+            ),
+        ],
+        "logical_delta",
+    )
+    logical_target = op(
+        "Add",
+        [logical_delta, constant("default_joint_target", model.default_joint_target)],
+        "logical_target",
+    )
+    requested = op(
+        "MatMul",
+        [
+            logical_target,
+            constant("motor_from_joint_graph", model.actuator_coordinate_transform.T),
+        ],
+        "requested_motor_target",
+    )
+    limits = np.asarray(model.mj_model.actuator_ctrlrange)
+    lower = op(
+        "Max",
+        [requested, constant("motor_low_graph", limits[:, 0])],
+        "motor_lower_bounded",
+    )
+    op("Min", [lower, constant("motor_high_graph", limits[:, 1])], "motor_target")
+
+    graph = helper.make_graph(
+        nodes,
+        "bello_sonic_actor",
+        [
+            helper.make_tensor_value_info(
+                "observation", TensorProto.FLOAT, [1, actor.observation_size]
+            )
+        ],
+        [
+            helper.make_tensor_value_info(
+                "action", TensorProto.FLOAT, [1, target_size]
+            ),
+            helper.make_tensor_value_info(
+                "motor_target", TensorProto.FLOAT, [1, target_size]
+            ),
+        ],
+        initializer=constants,
+    )
+    onnx_model = helper.make_model(
+        graph,
+        opset_imports=[helper.make_opsetid("", 17)],
+        producer_name="bello_mujoco",
+    )
+    onnx_model.ir_version = 9
+    helper.set_model_props(
+        onnx_model,
+        {"bello": json.dumps(metadata, allow_nan=False, separators=(",", ":"))},
+    )
+    onnx.checker.check_model(onnx_model, full_check=True)
+    return onnx_model
+
+
+def export_sonic_checkpoint(config: ExportConfig, output: Path) -> Path:
+    import mujoco
+
+    from bello_mujoco.repository import (
+        capture_repository_commit,
+        require_repository_commit,
+    )
+    from bello_mujoco.sonic.runtime import load_sonic_policy_runtime
+    from bello_mujoco.training.tracking import to_builtin
+
+    if config.motion_dataset is None or not config.reference_clips:
+        raise ValueError("SONIC export requires motion_dataset and reference_clips")
+    if len(set(config.reference_clips)) != len(config.reference_clips) or any(
+        not name or Path(name).name != name or Path(name).suffix
+        for name in config.reference_clips
+    ):
+        raise ValueError("SONIC reference_clips must be unique plain clip stems")
+    dataset = config.motion_dataset.expanduser().resolve()
+    paths = tuple(dataset / f"{name}.npz" for name in config.reference_clips)
+    missing = [str(path) for path in paths if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"SONIC export clips are missing: {missing}")
+    runtime = load_sonic_policy_runtime(
+        config.checkpoint_path,
+        paths,
+        evaluation_names=(),
+        use_viewer_model=False,
+    )
+    git_commit = capture_repository_commit()
+    env, model = runtime.env, runtime.env.model
+    kinematics = mujoco.MjData(model.mj_model)
+    mujoco.mj_forward(model.mj_model, kinematics)
+    root_id = mujoco.mj_name2id(
+        model.mj_model, mujoco.mjtObj.mjOBJ_BODY, model.robot.root_body_name
+    )
+    imu_id = mujoco.mj_name2id(
+        model.mj_model, mujoco.mjtObj.mjOBJ_BODY, model.robot.default_imu_body_name
+    )
+    if root_id < 0 or imu_id < 0:
+        raise ValueError("SONIC deployment root or hardware IMU frame is missing")
+    root_conjugate = np.asarray(kinematics.xquat[root_id]).copy()
+    root_conjugate[1:] *= -1.0
+    root_from_hardware_imu = np.empty(4, dtype=np.float64)
+    mujoco.mju_mulQuat(
+        root_from_hardware_imu,
+        root_conjugate,
+        np.asarray(kinematics.xquat[imu_id]),
+    )
+    metadata = {
+        "git_commit": git_commit,
+        "task": "sonic_transfer",
+        "robot": model.robot.asset,
+        "observation_size": runtime.policy.actor.observation_size,
+        "observation_frame": to_builtin(env.observation_layout.components),
+        "observation_stack_size": runtime.run_config.config.policy.obs_stack_size,
+        "observation_max_abs": runtime.run_config.config.rollout_observation_max_abs,
+        "coordinates": model.actuator_coordinate_names,
+        "actuators": model.actuator_names,
+        "policy_indices": model.policy_ctrl_indices.tolist(),
+        "default_position": model.default_ctrl.tolist(),
+        "kp": model.mj_model.actuator_gainprm[:, 0].tolist(),
+        "kd": (-model.mj_model.actuator_biasprm[:, 2]).tolist(),
+        "control_timestep": env.control_timestep,
+        "joint_from_motor": np.linalg.inv(model.actuator_coordinate_transform).tolist(),
+        "default_joint_position": model.default_joint_target.tolist(),
+        "joint_names": model.actuator_joint_names,
+        "joint_limits": model.target_limits.joint.tolist(),
+        "position_step_limits": model.target_limits.position_step.tolist(),
+        "motor_from_joint": model.actuator_coordinate_transform.tolist(),
+        "motor_limits": model.mj_model.actuator_ctrlrange.tolist(),
+        "environment": to_builtin(env.config),
+        "action_clip": env.action_clip,
+        "hardware_imu_frame": model.robot.default_imu_body_name,
+        "root_from_hardware_imu_xyzw": np.roll(root_from_hardware_imu, -1).tolist(),
+        "reference_clips": list(config.reference_clips),
+        "future_frames": env.observation_assembler.future_frames,
+        "future_dt": env.observation_assembler.future_dt,
+        "source_joint_indices": env.embodiment.target_to_source_indices.tolist(),
+        "source_neutral": env.embodiment.source_neutral.tolist(),
+        "source_signs": env.embodiment.signs.tolist(),
+        "pretrained_revision": runtime.metadata["pretrained_revision"],
+        "pretrained_sha256": runtime.metadata["pretrained_sha256"],
+        "dataset_artifact": runtime.metadata["dataset_artifact"],
+    }
+    graph = sonic_actor_onnx(
+        runtime.policy,
+        model=model,
+        env=env,
+        metadata=metadata,
+    )
+    content = sonic_deployment_bundle(
+        graph.SerializeToString(),
+        physics=physics_mjcf(model),
+        clips=tuple(zip(config.reference_clips, paths, strict=True)),
+    )
+    require_repository_commit(git_commit)
+    _publish_policy(output, content)
+    return output
+
+
+def sonic_deployment_bundle(
+    policy: bytes,
+    *,
+    physics: bytes,
+    clips: tuple[tuple[str, Path], ...],
+) -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("policy.onnx", policy)
+        archive.writestr("physics.xml", physics)
+        archive.writestr(
+            "clips.json",
+            json.dumps({"clips": [name for name, _ in clips]}, sort_keys=True),
+        )
+        for name, path in clips:
+            archive.writestr(f"clips/{name}.npz", path.read_bytes())
+    return buffer.getvalue()
 
 
 def physics_mjcf(model) -> bytes:

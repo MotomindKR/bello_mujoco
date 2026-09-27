@@ -80,6 +80,7 @@ class PPOConfig:
     update_epochs: int = _validated(5, _positive_integer)
     num_minibatches: int = _validated(4, _positive_integer)
     learning_rate: float = _validated(1.0e-3, _positive_finite)
+    critic_learning_rate: float | None = _validated(None, _optional_positive_finite)
     schedule: LearningRateSchedule = _validated(
         "adaptive",
         _one_of(*get_args(LearningRateSchedule)),
@@ -241,3 +242,18 @@ def validate_ppo_config(config: PPOConfig) -> None:
             f"{config.policy.init_log_std} outside "
             f"[{config.policy.min_log_std}, {config.policy.max_log_std}]"
         )
+
+
+def parameter_learning_rate(
+    config: PPOConfig,
+    actor_learning_rate,
+    path,
+):
+    """Resolve the update rate without creating a second PPO implementation."""
+
+    if config.critic_learning_rate is None:
+        return actor_learning_rate
+    first = path[0] if path else None
+    if getattr(first, "name", None) == "critic":
+        return config.critic_learning_rate
+    return actor_learning_rate

@@ -33,8 +33,12 @@ without making that margin a physical stop or a target clamp.
 | `deps/bello-stack/descriptions/` | Canonical geometry and hardware configuration |
 
 Maintained experiments: `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
-`bello_mini_standing`, `motion`. The CLI accepts its public top-level overrides;
-edit the selected recipe for nested reward/physics changes.
+`bello_mini_standing`, `motion`, `bello_mini_motion`, and
+`bello_mini_sonic_transfer`. The CLI accepts its public top-level overrides;
+edit the selected recipe for nested reward/physics changes. SONIC's corpus,
+immutable artifact identity, held-out clip names, pretrained checkpoint, and
+immutable source revision are explicit inputs; its fixed LoRA/PPO recipe lives
+in `configs/profiles/train/bello_mini_sonic_transfer.yaml`.
 
 ```bash
 uv run bello-train --cfg job

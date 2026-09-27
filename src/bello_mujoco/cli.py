@@ -18,10 +18,12 @@ from bello_mujoco.hardware.smplx_grpc import SmplxGrpcConfig
 from bello_mujoco.configuration import (
     ExperimentName,
     is_motion_experiment,
+    is_sonic_transfer_experiment,
     command_config,
     config_path,
     locomotion_training_profile,
     motion_training_profile,
+    sonic_transfer_training_profile,
 )
 
 if TYPE_CHECKING:
@@ -37,6 +39,11 @@ class TrainCommandConfig:
     learning_rate: float | None
     contact_budget_per_env: int | None
     motion_path: Path | None
+    motion_dataset: Path | None
+    motion_dataset_artifact: str | None
+    evaluation_clips: tuple[str, ...]
+    pretrained_checkpoint: Path | None
+    pretrained_revision: str | None
     end_effector_payload_mass_kg: float | None
     resume_path: Path | None
     checkpoint_directory: Path | None
@@ -48,8 +55,10 @@ class TrainCommandConfig:
 
 @dataclass(frozen=True)
 class EvalCommandConfig:
-    task: Literal["locomotion", "motion"]
+    task: Literal["locomotion", "motion", "sonic_transfer"]
     checkpoint_path: Path | None
+    motion_dataset: Path | None
+    evaluation_clips: tuple[str, ...]
     end_effector_payload_mass_kg: float | None
     output_path: Path
     command: tuple[float, float, float]
@@ -65,6 +74,9 @@ class EvalCommandConfig:
 class VastTrainCommandConfig:
     experiment: ExperimentName
     motion_path: Path | None
+    motion_dataset_artifact: str | None
+    pretrained_revision: str | None
+    evaluation_clips: tuple[str, ...]
     total_timesteps: int | None
     learning_rate: float | None
     end_effector_payload_mass_kg: float | None
@@ -123,7 +135,51 @@ def _train_hydra(config: DictConfig) -> None:
         raise ValueError(
             "resume uses the checkpoint's bundled motion; do not set motion_path"
         )
+    if is_sonic_transfer_experiment(command.experiment):
+        dataset = _required_path(command.motion_dataset, "motion_dataset")
+        pretrained = _required_path(
+            command.pretrained_checkpoint, "pretrained_checkpoint"
+        )
+        if command.pretrained_revision is None:
+            raise ValueError("pretrained_revision is required for sonic_transfer")
+        if command.motion_dataset_artifact is None:
+            raise ValueError("motion_dataset_artifact is required for sonic_transfer")
+        from bello_mujoco.training.sonic_transfer import run_training
+
+        run_config = sonic_transfer_training_profile(
+            dataset, pretrained, command.pretrained_revision
+        )
+        run_config = replace(
+            run_config,
+            dataset=replace(
+                run_config.dataset,
+                artifact=command.motion_dataset_artifact,
+                evaluation_clips=command.evaluation_clips,
+            ),
+            config=_ppo_overrides(run_config.config, command),
+            warp=_warp_overrides(run_config.warp, command),
+            checkpoint_config=_checkpoint_overrides(
+                run_config.checkpoint_config, command
+            ),
+            wandb_config=_wandb_overrides(run_config.wandb_config, command),
+        )
+        run_training(run_config)
+        return
     if is_motion_experiment(command.experiment):
+        if any(
+            value is not None
+            for value in (
+                command.motion_dataset,
+                command.motion_dataset_artifact,
+                command.evaluation_clips or None,
+                command.pretrained_checkpoint,
+                command.pretrained_revision,
+            )
+        ):
+            raise ValueError(
+                "motion_dataset, motion_dataset_artifact, pretrained_checkpoint, "
+                "and pretrained_revision are only valid for sonic_transfer"
+            )
         if (
             command.experiment == "bello_mini_motion"
             and command.motion_path is None
@@ -163,15 +219,24 @@ def _train_hydra(config: DictConfig) -> None:
         return
     if (
         command.motion_path is not None
+        or command.motion_dataset is not None
+        or command.motion_dataset_artifact is not None
+        or bool(command.evaluation_clips)
+        or command.pretrained_checkpoint is not None
+        or command.pretrained_revision is not None
         or command.end_effector_payload_mass_kg is not None
     ):
         raise ValueError(
-            "motion_path and end_effector_payload_mass_kg are only valid for "
-            "the motion experiment"
+            "motion and SONIC inputs are only valid for their matching experiments"
         )
     _reject_explicit_fields(
         (
             "motion_path",
+            "motion_dataset",
+            "motion_dataset_artifact",
+            "evaluation_clips",
+            "pretrained_checkpoint",
+            "pretrained_revision",
             "end_effector_payload_mass_kg",
         ),
         context=f"experiment={command.experiment}",
@@ -199,13 +264,13 @@ def eval_entrypoint() -> None:
     from bello_mujoco.evaluation.software import configure_software_rendering
 
     configure_software_rendering()
-    _expand_path_overrides(("checkpoint_path=", "output_path="))
+    _expand_path_overrides(("checkpoint_path=", "motion_dataset=", "output_path="))
     _eval_hydra()
 
 
 def export_entrypoint() -> None:
     os.environ["JAX_PLATFORMS"] = "cpu"
-    _expand_path_overrides(("checkpoint_path=", "output_path="))
+    _expand_path_overrides(("checkpoint_path=", "motion_dataset=", "output_path="))
     _export_hydra()
 
 
@@ -226,6 +291,31 @@ def _export_hydra(config: DictConfig) -> None:
 def _eval_hydra(config: DictConfig) -> None:
     command = command_config(EvalCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
+    if command.task == "sonic_transfer":
+        _reject_explicit_fields(
+            (
+                "command",
+                "torso_command",
+                "stochastic_actions",
+                "action_seed",
+                "gamepad_enabled",
+                "end_effector_payload_mass_kg",
+            ),
+            context="task=sonic_transfer",
+        )
+        dataset = _required_path(command.motion_dataset, "motion_dataset")
+        from bello_mujoco.evaluation.sonic_transfer import render_sonic_checkpoint
+
+        stats = render_sonic_checkpoint(
+            checkpoint,
+            dataset,
+            command.evaluation_clips,
+            command.output_path,
+            steps=command.steps,
+            stop_on_terminal=command.stop_on_done,
+        )
+        print(json.dumps(stats, indent=2, sort_keys=True))
+        return
     if command.task == "motion":
         _reject_explicit_fields(
             (
@@ -234,6 +324,8 @@ def _eval_hydra(config: DictConfig) -> None:
                 "stochastic_actions",
                 "action_seed",
                 "gamepad_enabled",
+                "motion_dataset",
+                "evaluation_clips",
             ),
             context="task=motion",
         )
@@ -249,7 +341,12 @@ def _eval_hydra(config: DictConfig) -> None:
         print(json.dumps(stats, indent=2, sort_keys=True))
         return
     _reject_explicit_fields(
-        ("output_path", "end_effector_payload_mass_kg"),
+        (
+            "output_path",
+            "end_effector_payload_mass_kg",
+            "motion_dataset",
+            "evaluation_clips",
+        ),
         context="task=locomotion",
     )
     if command.gamepad_enabled:
@@ -300,17 +397,34 @@ def _vast_train_hydra(config: DictConfig) -> None:
             raise ValueError(
                 "motion_path must select a local .npz clip for Vast motion training"
             )
+    elif is_sonic_transfer_experiment(command.experiment):
+        if command.motion_dataset_artifact is None:
+            raise ValueError(
+                "motion_dataset_artifact is required for Vast sonic_transfer"
+            )
+        if command.pretrained_revision is None:
+            raise ValueError("pretrained_revision is required for Vast sonic_transfer")
+        if command.motion_path is not None:
+            raise ValueError(
+                "sonic_transfer consumes a dataset artifact, not motion_path"
+            )
     else:
         if (
             command.motion_path is not None
+            or command.motion_dataset_artifact is not None
+            or command.pretrained_revision is not None
             or command.end_effector_payload_mass_kg is not None
         ):
             raise ValueError(
-                "motion_path and end_effector_payload_mass_kg are only valid for "
-                "the motion experiment"
+                "motion and SONIC inputs are only valid for their matching experiments"
             )
         _reject_explicit_fields(
-            ("motion_path", "end_effector_payload_mass_kg"),
+            (
+                "motion_path",
+                "motion_dataset_artifact",
+                "pretrained_revision",
+                "end_effector_payload_mass_kg",
+            ),
             context=f"experiment={command.experiment}",
         )
     from bello_mujoco.models import repo_root
@@ -324,6 +438,9 @@ def _vast_train_hydra(config: DictConfig) -> None:
     internal = VastTrainConfig(
         experiment=command.experiment,
         motion_path=command.motion_path,
+        motion_dataset_artifact=command.motion_dataset_artifact,
+        pretrained_revision=command.pretrained_revision,
+        evaluation_clips=command.evaluation_clips,
         total_timesteps=command.total_timesteps,
         learning_rate=command.learning_rate,
         end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,

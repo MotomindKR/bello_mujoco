@@ -48,11 +48,13 @@ def rust_policy(tmp_path):
 
     source = tmp_path / "source"
     dependency = tmp_path / "dependency"
-    for path in (source, dependency):
+    sonic_dependency = tmp_path / "sonic-dependency"
+    for path in (source, dependency, sonic_dependency):
         path.mkdir()
         git(path, "init")
         git(path, "commit", "--allow-empty", "-m", "Synthetic fixture")
     git(source, "submodule", "add", str(dependency), "deps/bello-stack")
+    git(source, "submodule", "add", str(sonic_dependency), "deps/gear_sonic")
     git(source, "commit", "-am", "Pin synthetic dependency")
     commit = git(source, "rev-parse", "HEAD")
     config = PPOConfig(policy=ActorCriticConfig(hidden_dims=(8,), activation="swish"))
@@ -90,6 +92,7 @@ def rust_policy(tmp_path):
         omit_physics=False,
         telemetry=False,
         hardware_config=None,
+        clip=None,
     ):
         if content is None:
             graph = actor_onnx(
@@ -119,6 +122,7 @@ def rust_policy(tmp_path):
             hardware_args = ["--hardware-config", str(config_path)]
         return subprocess.run(
             [executable, "--policy", str(bundle), "--source", str(source)]
+            + (["--clip", clip] if clip is not None else [])
             + (["--check"] if check else [])
             + (["--telemetry"] if telemetry else [])
             + hardware_args,

@@ -1,5 +1,7 @@
 checkpoint_path: null
 output_path: null
+motion_dataset: null
+reference_clips: []
 
 hydra:
   run:

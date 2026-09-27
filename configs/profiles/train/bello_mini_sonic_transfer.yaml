@@ -1,0 +1,83 @@
+# Any2Any recipe on canonical Bello Mini dynamics. The corpus and NVIDIA
+# checkpoint are explicit command inputs and remain outside Git.
+dataset:
+  directory: motions/local
+  evaluation_clips: []
+  artifact: null
+pretrained:
+  checkpoint: checkpoints/sonic_release/last.pt
+  revision: ""
+config:
+  num_steps: 24
+  update_epochs: 5
+  num_minibatches: 4
+  learning_rate: 0.00005
+  critic_learning_rate: 0.001
+  schedule: adaptive
+  desired_kl: 0.01
+  min_learning_rate: 0.00002
+  max_learning_rate: 0.0002
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_eps: 0.2
+  ent_coef: 0.01
+  vf_coef: 1.0
+  max_grad_norm: 0.1
+  normalize_value: false
+  normalize_observations: false
+  normalize_critic_observations: true
+  policy:
+    hidden_dims: [2048, 2048, 1024, 1024, 512, 512]
+    activation: swish
+    init_log_std: -0.5108256238
+    min_log_std: -6.9077552790
+    max_log_std: -0.5108256238
+    obs_stack_size: 10
+    action_distribution: gaussian
+    action_limit: 100.0
+env_config:
+  observation_mode: proprioceptive
+  formulation: beyondmimic
+  action_clip: 100.0
+  decimation: 4
+  anchor_body_name: pelvis_link
+  simulation_physics:
+    timestep: 0.005
+  observation_low_pass_filter:
+    enabled: true
+    cutoff_hz: 10.0
+    noise_before_filter: true
+    residual_noise_scale: 0.1
+  observation_latency:
+    enabled: true
+    delay_steps: [0, 2]
+  reward:
+    root_position_weight: 0.5
+    root_orientation_weight: 0.5
+    body_position_weight: 1.0
+    body_orientation_weight: 1.0
+    body_linear_velocity_weight: 1.0
+    body_angular_velocity_weight: 1.0
+    action_rate_weight: -0.1
+    joint_limit_weight: -10.0
+    torque_l1_weight: 0.0
+    torque_peak_weight: 0.0
+    undesired_contact_weight: -0.1
+    local_five_point_weight: 2.0
+    anti_shake_weight: -0.005
+    foot_acceleration_weight: -0.0000025
+    root_position_sigma: 0.3
+    root_orientation_sigma: 0.4
+    body_position_sigma: 0.3
+    body_orientation_sigma: 0.4
+    body_linear_velocity_sigma: 1.0
+    body_angular_velocity_sigma: 3.141592653589793
+    local_five_point_sigma: 0.1
+    anti_shake_threshold: 1.5
+checkpoint_config:
+  name: bello_mini_sonic_transfer_seed${config.seed}
+  every_updates: 100
+wandb_config:
+  group: bello-mini-sonic-transfer
+  run_name: bello_mini_sonic_transfer_seed${config.seed}
+  tags: [bello-mini, sonic, any2any, lora]

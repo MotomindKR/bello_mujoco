@@ -25,6 +25,8 @@ training dependency group, checks GPU training and software rendering, runs a sh
 starts the selected profile with W&B enabled.
 Motion preflight also restores the saved policy, renders a short CPU evaluation,
 and exports its deployment bundle before the full run can start.
+SONIC preflight performs the same restore/render/export gate after downloading
+the versioned W&B corpus artifact and the exact Hugging Face checkpoint revision.
 
 - Completion, setup/training failure, or a disappearing job process triggers
   automatic destruction.
@@ -88,6 +90,21 @@ The transfer checksum is not a checkpoint compatibility contract. Training
 checkpoints and deployment bundles already contain their exact motion copy.
 Other local datasets and historical checkpoint bundles are not uploaded or
 migrated by the launcher.
+
+SONIC jobs use immutable remote inputs instead of SSH-uploaded motion files:
+
+```bash
+uv run bello-vast-train experiment=bello_mini_sonic_transfer \
+  branch=feat/sonic-transfer max_price=0.60 duration_hours=40 \
+  motion_dataset_artifact=ENTITY/PROJECT/mini-sonic:v0 \
+  pretrained_revision=6733128a3d8a523b1418b06bca3cdf61c8b0987f \
+  evaluation_clips='[held_out_walk,held_out_dance]'
+```
+
+The host initializes the pinned `deps/gear_sonic` inspection submodule only for
+this experiment. It downloads the artifact and NVIDIA files outside Git, then
+records their resolved artifact version and checkpoint SHA-256 in every saved
+checkpoint.
 
 Non-dry execution reads:
 

@@ -21,6 +21,7 @@ import keyring
 from bello_mujoco.configuration import (
     ExperimentName,
     is_motion_experiment,
+    is_sonic_transfer_experiment,
     profile_config_relative_path,
 )
 from bello_mujoco.training.vast_provider import (
@@ -64,6 +65,9 @@ class VastTrainConfig:
 
     experiment: ExperimentName = "bello_locomotion"
     motion_path: Path | None = None
+    motion_dataset_artifact: str | None = None
+    pretrained_revision: str | None = None
+    evaluation_clips: tuple[str, ...] = ()
     total_timesteps: int | None = None
     learning_rate: float | None = None
     end_effector_payload_mass_kg: float | None = None
@@ -113,6 +117,11 @@ def credential(env_name: str, service: str, username: str, *, required: bool) ->
 def validate_config(config: VastTrainConfig) -> None:
     if config.experiment not in get_args(ExperimentName):
         raise ValueError("--experiment is invalid")
+    if len(set(config.evaluation_clips)) != len(config.evaluation_clips) or any(
+        not name or Path(name).name != name or Path(name).suffix
+        for name in config.evaluation_clips
+    ):
+        raise ValueError("evaluation_clips must be unique clip stems")
     if is_motion_experiment(config.experiment):
         if config.motion_path is None:
             raise ValueError("--motion-path is required for the motion experiment")
@@ -128,13 +137,35 @@ def validate_config(config: VastTrainConfig) -> None:
             raise ValueError(
                 "--end-effector-payload-mass-kg must be finite and nonnegative"
             )
+    elif is_sonic_transfer_experiment(config.experiment):
+        if (
+            not config.motion_dataset_artifact
+            or re.fullmatch(
+                r".+:(?:v[0-9]+|[0-9a-f]{32,})", config.motion_dataset_artifact
+            )
+            is None
+        ):
+            raise ValueError(
+                "--motion-dataset-artifact must include an immutable version or digest"
+            )
+        if (
+            config.pretrained_revision is None
+            or re.fullmatch(r"[0-9a-f]{40}", config.pretrained_revision) is None
+        ):
+            raise ValueError(
+                "--pretrained-revision must be a 40-character lowercase commit"
+            )
+        if config.motion_path is not None:
+            raise ValueError("SONIC uses a dataset artifact, not --motion-path")
     elif (
         config.motion_path is not None
+        or config.motion_dataset_artifact is not None
+        or config.pretrained_revision is not None
+        or config.evaluation_clips
         or config.end_effector_payload_mass_kg is not None
     ):
         raise ValueError(
-            "--motion-path and --end-effector-payload-mass-kg are only valid "
-            "for the motion experiment"
+            "motion and SONIC inputs are only valid for their matching experiments"
         )
     if config.total_timesteps is not None and config.total_timesteps <= 0:
         raise ValueError("--total-timesteps must be positive")
@@ -243,16 +274,21 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
             run_git(repo_root, "cat-file", "-e", f"{commit}:{path}")
         except subprocess.CalledProcessError as exc:
             raise ValueError(f"{path!r} does not exist on origin/{branch}") from exc
-    submodule_path = "deps/bello-stack"
-    submodule_entry = run_git(
-        repo_root, "ls-tree", commit, "--", submodule_path
-    ).split()
-    if (
-        len(submodule_entry) != 4
-        or submodule_entry[:2] != ["160000", "commit"]
-        or submodule_entry[3] != submodule_path
-    ):
-        raise ValueError(f"{submodule_path!r} is not a submodule on origin/{branch}")
+    submodule_paths = ["deps/bello-stack"]
+    if is_sonic_transfer_experiment(config.experiment):
+        submodule_paths.append("deps/gear_sonic")
+    for submodule_path in submodule_paths:
+        submodule_entry = run_git(
+            repo_root, "ls-tree", commit, "--", submodule_path
+        ).split()
+        if (
+            len(submodule_entry) != 4
+            or submodule_entry[:2] != ["160000", "commit"]
+            or submodule_entry[3] != submodule_path
+        ):
+            raise ValueError(
+                f"{submodule_path!r} is not a submodule on origin/{branch}"
+            )
     repo_url = normalized_repo_url(run_git(repo_root, "remote", "get-url", "origin"))
     return GitSelection(
         branch=branch,
@@ -263,6 +299,8 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
 
 
 def _task_name(config: VastTrainConfig) -> str:
+    if is_sonic_transfer_experiment(config.experiment):
+        return "sonic-transfer"
     if is_motion_experiment(config.experiment):
         return "motion-tracking"
     return "locomotion"

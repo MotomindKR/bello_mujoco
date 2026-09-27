@@ -5,6 +5,11 @@ num_envs: null
 learning_rate: null
 contact_budget_per_env: null
 motion_path: null
+motion_dataset: null
+motion_dataset_artifact: null
+evaluation_clips: []
+pretrained_checkpoint: null
+pretrained_revision: null
 end_effector_payload_mass_kg: null
 resume_path: null
 checkpoint_directory: null

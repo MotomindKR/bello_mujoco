@@ -54,6 +54,24 @@ Output contains the stacked observation, raw/clipped action, and motor target.
 No action low-pass filter is applied. Quaternion/vector operations use `glam`;
 `npyz` reads the bundled NumPy arrays without a Python process.
 
+SONIC bundles contain only the clips selected at export and require one to be
+chosen before history initialization:
+
+```bash
+cargo run --locked -p bello-policy -- --policy /path/to/sonic.zip \
+  --source /path/to/bello_mujoco --clip walk --check
+cargo run --locked -p bello-policy -- --policy /path/to/sonic.zip \
+  --source /path/to/bello_mujoco --clip walk --telemetry
+cargo run --locked -p bello-policy -- --policy /path/to/sonic.zip \
+  --source /path/to/bello_mujoco --clip walk \
+  --hardware-config rust/bello-policy/config/hardware.yaml
+```
+
+SONIC telemetry accepts `motor_position`, `motor_velocity`,
+`orientation_xyzw`, `angular_velocity_local`, `reference_time`, and
+`initialize`. Physical arming is intentionally rejected until trained-policy
+commissioning is approved.
+
 Read-only hardware preflight:
 
 ```bash

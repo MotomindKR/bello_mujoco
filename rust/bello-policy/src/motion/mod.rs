@@ -1,7 +1,7 @@
 //! BeyondMimic observations from motor telemetry and full-state or IMU feedback.
 //! The bundled physics model is used only for kinematics, never as an emulator.
 
-mod clip;
+pub(crate) mod clip;
 pub mod live;
 mod pose;
 mod rotation;

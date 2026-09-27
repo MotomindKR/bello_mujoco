@@ -5,6 +5,7 @@
 - [Training and evaluation](training_and_evaluation.md)
 - [Robot descriptions](robot_assets.md)
 - [BeyondMimic tracking](motion_tracking.md)
+- [SONIC LoRA transfer](sonic_transfer.md)
 - [Hardware](hardware.md), [emulator](emulator.md), and [Lima](macos_vcan.md)
 - [PICO tracking and hand-control startup](pico_startup.md)
 - [Two-host systemd workflow](systemd.md)

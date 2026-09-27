@@ -10,3 +10,6 @@
 [submodule "deps/pico-smplx-bridge"]
 	path = deps/pico-smplx-bridge
 	url = https://github.com/MotomindKR/pico-smplx-bridge.git
+[submodule "deps/gear_sonic"]
+	path = deps/gear_sonic
+	url = https://github.com/Ming827/any2any_sonic2Oli.git

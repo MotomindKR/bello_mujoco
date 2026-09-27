@@ -11,7 +11,7 @@ use glam::DVec3;
 use serde::Deserialize;
 
 use crate::PolicyMetadata;
-use crate::locomotion::{Feedback, Locomotion, projected_gravity};
+use crate::locomotion::{Feedback, projected_gravity};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,7 +118,12 @@ impl Hardware {
         Ok(limits)
     }
 
-    pub async fn connect(config: Config, runtime: &Locomotion) -> Result<Self> {
+    pub async fn connect(
+        config: Config,
+        metadata: &PolicyMetadata,
+        policy_target_limits: &crate::target_limits::TargetLimits,
+        imu_frame: &str,
+    ) -> Result<Self> {
         config.validate()?;
         let duration = Duration::from_secs_f64(config.connection_timeout_seconds);
         let robot = tokio::time::timeout(
@@ -132,7 +137,6 @@ impl Hardware {
             .iter()
             .map(|name| robot.group(name))
             .collect::<Result<_, _>>()?;
-        let metadata = &runtime.policy.metadata;
         let mut by_coordinate = BTreeMap::new();
         for group in &groups {
             ensure!(
@@ -174,11 +178,11 @@ impl Hardware {
             "IMU is not online"
         );
         ensure!(
-            imu.output_frame() == runtime.imu_frame(),
+            imu.output_frame() == imu_frame,
             "hardware/policy IMU frame mismatch"
         );
         let mut motors = Vec::new();
-        let mut target_limits = runtime.policy.target_limits.clone();
+        let mut target_limits = policy_target_limits.clone();
         for (i, coordinate) in metadata.coordinates.iter().enumerate() {
             let motor = by_coordinate[coordinate.as_str()];
             let limits = motor.limits();

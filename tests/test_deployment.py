@@ -156,6 +156,29 @@ def test_bundle_contains_policy_and_only_required_reference(with_motion):
                 assert float(clip["fps"]) == motion.fps
 
 
+def test_sonic_bundle_contains_only_selected_named_clips(tmp_path):
+    walk = tmp_path / "walk.npz"
+    dance = tmp_path / "dance.npz"
+    walk.write_bytes(b"walk")
+    dance.write_bytes(b"dance")
+
+    content = deployment.sonic_deployment_bundle(
+        b"actor",
+        physics=b"physics",
+        clips=(("walk", walk), ("dance", dance)),
+    )
+
+    with ZipFile(BytesIO(content)) as archive:
+        assert archive.namelist() == [
+            "policy.onnx",
+            "physics.xml",
+            "clips.json",
+            "clips/walk.npz",
+            "clips/dance.npz",
+        ]
+        assert archive.read("clips.json") == b'{"clips": ["walk", "dance"]}'
+
+
 @pytest.mark.parametrize("rough_terrain", [False, True])
 def test_physics_snapshot_preserves_runtime_dynamics_and_needs_no_source(
     tmp_path, rough_terrain
