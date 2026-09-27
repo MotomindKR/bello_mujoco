@@ -11,7 +11,7 @@ import numpy as np
 
 from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.sim import load_model
-from bello_mujoco.sonic.checkpoint import import_sonic_checkpoint
+from bello_mujoco.sonic.checkpoint import import_sonic_checkpoint, load_source_checkpoint
 from bello_mujoco.sonic.embodiment import MiniEmbodimentAdapter
 from bello_mujoco.sonic.model import finite_scalar_quantize
 
@@ -53,7 +53,7 @@ def validate(
         adapter=adapter,
         key=jax.random.PRNGKey(seed),
     )
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    checkpoint = load_source_checkpoint(checkpoint_path)
     policy_state = checkpoint["policy_state_dict"]
     value_state = checkpoint["value_state_dict"]
     rng = np.random.default_rng(seed)

@@ -27,6 +27,58 @@ SONIC_CONFIG_FILE = "sonic_release/config.yaml"
 _REVISION_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 
 
+class _CheckpointMetadata:
+    """Inert replacement for release-only trainer metadata, never executed."""
+
+    def __init__(self, *values):
+        self.values = values
+
+
+def _metadata_deque(iterable=(), maxlen=None):
+    # Restricted PyTorch unpickling only permits APPENDS on plain lists.
+    del maxlen
+    return list(iterable)
+
+
+def load_source_checkpoint(path: Path) -> Mapping:
+    """Load tensors without importing or executing the source training stack."""
+
+    try:
+        import torch
+    except ImportError as error:
+        raise RuntimeError(
+            "SONIC checkpoint import requires the optional reference-validation "
+            "dependency group"
+        ) from error
+    metadata_types = (
+        "trl.trainer.utils.OnlineTrainerState",
+        "trl.trainer.ppo_config.PPOConfig",
+        "transformers.trainer_pt_utils.AcceleratorConfig",
+        "transformers.trainer_utils.SchedulerType",
+        "transformers.trainer_utils.SaveStrategy",
+        "transformers.trainer_utils.HubStrategy",
+        "transformers.trainer_utils.IntervalStrategy",
+        "transformers.training_args.OptimizerNames",
+        "accelerate.state.PartialState",
+        "accelerate.utils.dataclasses.DistributedType",
+    )
+    try:
+        with torch.serialization.safe_globals(
+            [
+                (_metadata_deque, "collections.deque"),
+                *((_CheckpointMetadata, name) for name in metadata_types),
+            ]
+        ):
+            checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    except Exception as error:
+        raise RuntimeError(
+            f"could not safely load SONIC checkpoint {path}: {error}"
+        ) from error
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError("SONIC checkpoint root must be a mapping")
+    return checkpoint
+
+
 @dataclass(frozen=True)
 class ImportedSonicCheckpoint:
     policy: SonicActorCritic
@@ -49,21 +101,7 @@ def import_sonic_checkpoint(
         raise ValueError(
             "pretrained revision must be a 40-character lowercase Hugging Face commit"
         )
-    try:
-        import torch
-    except ImportError as error:
-        raise RuntimeError(
-            "SONIC checkpoint import requires the optional reference-validation "
-            "dependency group"
-        ) from error
-    try:
-        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-    except Exception as error:
-        raise RuntimeError(
-            f"could not safely load SONIC checkpoint {path}: {error}"
-        ) from error
-    if not isinstance(checkpoint, Mapping):
-        raise ValueError("SONIC checkpoint root must be a mapping")
+    checkpoint = load_source_checkpoint(path)
     policy_state = _required_mapping(checkpoint, "policy_state_dict")
     value_state = _required_mapping(checkpoint, "value_state_dict")
 
