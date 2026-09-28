@@ -180,7 +180,9 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
 
     def advance_reference_time(self, time: jax.Array) -> jax.Array:
         # Frame units make control increments exact even after hours of data.
-        return time + self.reference_bank.fps * self.control_timestep
+        return self.reference_bank.advance_global_frame(
+            time, self.reference_bank.fps * self.control_timestep
+        )
 
     def reference_time_seconds(self, time: jax.Array) -> jax.Array:
         return time / self.reference_bank.fps

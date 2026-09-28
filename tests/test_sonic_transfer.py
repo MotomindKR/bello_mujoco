@@ -335,9 +335,9 @@ def test_reference_time_separator_never_interpolates_into_next_clip() -> None:
 
 @pytest.mark.parametrize("fps", [25.0, 50.0, 100.0])
 def test_sonic_frame_clock_does_not_accumulate_hours_offset_error(fps):
-    env = SimpleNamespace(
-        reference_bank=SimpleNamespace(fps=fps), control_timestep=0.02
-    )
+    bank = ReferenceBank.from_clips((("train", synthetic_clip(0), "train"),))
+    bank = replace(bank, fps=fps, lengths=jnp.asarray([2_000_000]))
+    env = SimpleNamespace(reference_bank=bank, control_timestep=0.02)
     start = jnp.asarray(1_500_000.125, dtype=jnp.float32)
     end = jax.jit(
         lambda value: jax.lax.fori_loop(
@@ -351,6 +351,18 @@ def test_sonic_frame_clock_does_not_accumulate_hours_offset_error(fps):
     assert float(
         BelloMotionTrackingEnv.advance_reference_time(env, jnp.asarray(0.0))
     ) == pytest.approx(0.02)
+
+
+@pytest.mark.parametrize("fps", [25.0, 50.0, 100.0])
+def test_reference_clock_step_cannot_cross_into_next_clip(fps):
+    bank = ReferenceBank.from_clips(
+        (("a", synthetic_clip(0), "train"), ("b", synthetic_clip(100), "evaluation"))
+    )
+    advanced = jax.jit(lambda t: bank.advance_global_frame(t, fps * 0.02))(
+        jnp.asarray(2.75)
+    )
+    assert float(advanced) == 3.0
+    assert float(bank.sample_global_frame(advanced).qpos[0]) == 3.0
 
 
 def test_large_frame_offset_keeps_clip_boundaries_and_fractional_phase():

@@ -158,6 +158,16 @@ class ReferenceBank:
         local = global_frame - self.time_offsets[clip_id]
         return self.sample_local_frame(clip_id, local)
 
+    def advance_global_frame(self, global_frame: jax.Array, step: float) -> jax.Array:
+        """Advance within the current clip, even when a step skips the separator."""
+        clip_id = jnp.clip(
+            jnp.searchsorted(self.time_offsets, global_frame, side="right") - 1,
+            0,
+            self.num_clips - 1,
+        )
+        end = self.time_offsets[clip_id] + self.lengths[clip_id] - 1
+        return jnp.minimum(global_frame + step, end)
+
     def sample_local_frame(
         self, clip_id: jax.Array, local_frame: jax.Array
     ) -> MotionSample:
