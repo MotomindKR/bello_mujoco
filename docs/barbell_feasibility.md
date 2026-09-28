@@ -281,8 +281,10 @@ finger grasp, friction capacity or slip limit. Reproduction scripts, optimized
 knots, diagnostics and resolved configuration accompany the new reference.
 
 Loaded training rejects unintended bar contacts above 1 N immediately (a
-conservative rule that also rejects sustained support). Motion also terminates
-on a grip gap above 15 mm or an axis error above 0.1 rad. Native hold diagnostics
+conservative rule that also rejects sustained support). Motion reports this as
+`done/barbell_contact`. Grip separation and shaft-axis errors are diagnostics
+only and never terminate motion training or policy evaluation. PPO logs means
+and maxima of all `barbell/` metrics. Native hold diagnostics
 expose `max_grip_axis_error_rad` (default 0.1 rad) and reject misaligned starts.
 Diagnostics expose grip errors, resultant constraint forces, transverse grip
 torque, shaft-axis error and unintended contact force alongside existing fall, foot-slip, tracking and

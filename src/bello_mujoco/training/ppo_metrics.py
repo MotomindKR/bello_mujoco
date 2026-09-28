@@ -198,6 +198,9 @@ def environment_metric_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]
             key = name
         elif group == "command":
             key = f"{name}_fraction"
+        elif group == "barbell":
+            metrics[f"max_{name}"] = value.astype(jnp.float32).max()
+            key = f"mean_{name}"
         else:
             continue
         metrics[key] = value.astype(jnp.float32).mean()

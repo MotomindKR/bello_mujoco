@@ -415,3 +415,33 @@ def test_motion_asset_validation_checks_contract_not_default_config(
     config.actuator_config = ActuatorConfig(joints={"hinge": JointActuatorConfig()})
     with pytest.raises(ValueError, match="all actuators in policy mode"):
         _validate_motion_asset(config)
+
+
+def test_grip_errors_are_diagnostics_and_contact_still_terminates(env, monkeypatch):
+    from bello_mujoco.envs import motion_tracking as module
+
+    monkeypatch.setattr(
+        BelloMotionTrackingEnv, "end_effector_names", property(lambda _: ("anchor",))
+    )
+    data = mujoco.MjData(env.model.mj_model)
+    state, _ = reset_native_motion_rollout(env, data)
+    # Use a synthetic marker for the object branch without changing kinematics.
+    object.__setattr__(env, "motion", replace(env.motion, free_joint_qpos=(0, 0)))
+    monkeypatch.setattr(
+        module,
+        "bar_metrics",
+        lambda model, data, world_id: {
+            "barbell/grip_error_m": jnp.asarray(0.2),
+            "barbell/grip_axis_error_rad": jnp.asarray(0.8),
+            "barbell/unintended_contact_force_n": jnp.asarray(world_id) * 2.0,
+        },
+    )
+    flags = jax.jit(jax.vmap(lambda world: env.termination_flags(state, world)))(
+        jnp.arange(2)
+    )
+    np.testing.assert_array_equal(flags["done/terminal"], [False, True])
+    np.testing.assert_array_equal(flags["done/barbell_contact"], [False, True])
+    np.testing.assert_array_equal(flags["done/any"], [False, True])
+    assert "done/barbell" not in flags
+    np.testing.assert_allclose(flags["barbell/grip_error_m"], 0.2)
+    np.testing.assert_allclose(flags["barbell/grip_axis_error_rad"], 0.8)

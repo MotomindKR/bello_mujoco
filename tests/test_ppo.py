@@ -823,3 +823,15 @@ def test_ppo_validation_rejects_invalid_contracts(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         validate_ppo_config(config)
+
+
+def test_barbell_metrics_preserve_constraint_means_and_peaks():
+    metrics = jax.jit(environment_metric_means)(
+        {
+            "barbell/grip_error_m": jnp.array([[0.0, 0.02], [0.01, 0.05]]),
+            "done/barbell_contact": jnp.array([[False, False], [True, False]]),
+        }
+    )
+    assert metrics["mean_barbell/grip_error_m"] == pytest.approx(0.02)
+    assert metrics["max_barbell/grip_error_m"] == pytest.approx(0.05)
+    assert metrics["mean_done/barbell_contact"] == pytest.approx(0.25)

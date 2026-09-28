@@ -1042,13 +1042,9 @@ class BelloMotionTrackingEnv:
         flags = self._finish_termination_flags(state, height, orientation, end_effector)
         if len(self.motion.free_joint_qpos) > 1:
             metrics = bar_metrics(self.model, state.data, world_id)
-            invalid = (
-                (metrics["barbell/grip_axis_error_rad"] > 0.1)
-                | (metrics["barbell/grip_error_m"] > 0.015)
-                | (metrics["barbell/unintended_contact_force_n"] > 1.0)
-            )
+            invalid = metrics["barbell/unintended_contact_force_n"] > 1.0
             flags.update(metrics)
-            flags["done/barbell"] = invalid
+            flags["done/barbell_contact"] = invalid
             flags["done/terminal"] |= invalid
             flags["done/any"] |= invalid
         return flags

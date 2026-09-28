@@ -163,3 +163,10 @@ length. Robot-only reference archives retain their existing representation.
 
 The current candidate is rejected by its nominal-hold torque screen. Review
 its video and diagnostics before revising the stance or starting training.
+
+For barbell motion, grip-position and shaft-axis residuals are diagnostics only;
+they do not terminate an episode. `done/barbell_contact` reports unintended bar
+contact above 1 N, independently of the ordinary tracking/fall conditions. PPO
+logs `mean_barbell/*` and `max_barbell/*` for grip errors, constraint forces,
+transverse moments, and unintended contact force. These measure numerical ideal
+attachments, not finger strength or slip.
