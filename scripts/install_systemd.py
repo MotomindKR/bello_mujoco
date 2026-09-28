@@ -2,9 +2,11 @@
 """Install boot-enabled daemon targets; never start or restart motor IO now."""
 
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 
 
 HEADER = "# Managed by bello_mujoco/scripts/install_systemd.py\n"
@@ -32,6 +34,52 @@ def require_file(path: Path) -> Path:
     if not path.is_file():
         raise ValueError(f"not a file: {path}")
     return path
+
+
+def robot_system_files(checkout: Path, uid: int) -> dict[Path, str]:
+    deployment = Path(__file__).resolve().parents[1] / "deploy/systemd"
+    template = require_file(deployment / "onboard-can.service.in").read_text()
+    can_setup = require_file(checkout / "deps/bello-stack/scripts/setup-can.sh")
+    return {
+        Path("/etc/modules-load.d/bello-can.conf"): HEADER
+        + require_file(deployment / "bello-can-modules.conf").read_text(),
+        Path("/etc/systemd/system/onboard-can.service"): HEADER
+        + template.format(
+            checkout=quote(checkout), can_setup=quote(can_setup, executable=True)
+        ),
+        Path(f"/etc/systemd/system/user@{uid}.service.d/50-bello-can.conf"): HEADER
+        + require_file(deployment / "user-can-ordering.conf").read_text(),
+    }
+
+
+def install_system_files(files: dict[Path, str]) -> None:
+    with TemporaryDirectory(prefix="bello-systemd-") as temporary:
+        staged = Path(temporary)
+        for destination, content in files.items():
+            (staged / destination.name).write_text(content)
+        subprocess.run(
+            ["systemd-analyze", "verify", str(staged / "onboard-can.service")],
+            check=True,
+        )
+        for destination in files:
+            subprocess.run(
+                [
+                    "sudo",
+                    "install",
+                    "-D",
+                    "-o",
+                    "root",
+                    "-g",
+                    "root",
+                    "-m",
+                    "644",
+                    str(staged / destination.name),
+                    str(destination),
+                ],
+                check=True,
+            )
+    subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
+    subprocess.run(["sudo", "systemctl", "enable", "onboard-can.service"], check=True)
 
 
 def service(
@@ -98,8 +146,13 @@ def main() -> None:
     args = parser.parse_args()
     if sys.platform != "linux":
         parser.error("install on the Linux service host, as the operator account")
+    if os.geteuid() == 0:
+        parser.error(
+            "run as the operator account; robot installation uses sudo for CAN setup"
+        )
 
     target = f"bello-{args.role}.target"
+    system_files = {}
     services = ROBOT_SERVICES if args.role == "robot" else TRACKING_SERVICES
     files = {
         target: HEADER
@@ -196,6 +249,7 @@ def main() -> None:
             restart=False,
             preflight=can_check,
         )
+        system_files = robot_system_files(checkout, os.getuid())
 
     unit_dir = Path.home() / ".config/systemd/user"
     for name, content in files.items():
@@ -205,7 +259,11 @@ def main() -> None:
         if args.dry_run:
             print(f"--- {path}\n{content}")
     if args.dry_run:
+        for path, content in system_files.items():
+            print(f"--- {path}\n{content}")
         return
+    if system_files:
+        subprocess.run(["sudo", "-v"], check=True)
     for name, content in files.items():
         path = unit_dir / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -220,6 +278,8 @@ def main() -> None:
         ],
         check=True,
     )
+    if system_files:
+        install_system_files(system_files)
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     # Only the target is boot-enabled. Neither command changes running processes.
     subprocess.run(
@@ -235,6 +295,10 @@ def main() -> None:
     print(
         f"Installed and boot-enabled {target}; no process was started, stopped, or restarted."
     )
+    if system_files:
+        print(
+            "Installed and boot-enabled onboard-can.service for can0/can1 initialization."
+        )
     print("User lingering must be enabled to start at boot without a login.")
     print(
         f"After checking robot safety and stopping unmanaged duplicates: systemctl --user start {target}"

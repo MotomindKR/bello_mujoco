@@ -2,7 +2,7 @@
 Description=Jetson CAN pinmux and canonical Bello CAN setup
 After=systemd-modules-load.service sys-subsystem-net-devices-can0.device sys-subsystem-net-devices-can1.device
 Requires=sys-subsystem-net-devices-can0.device sys-subsystem-net-devices-can1.device
-RequiresMountsFor=/home/nvidia/bello_mujoco
+RequiresMountsFor={checkout}
 Before=network-pre.target
 Wants=network-pre.target
 JobTimeoutSec=40s
@@ -17,7 +17,7 @@ ExecStartPre=/usr/bin/busybox devmem 0x0c303018 w 0xc458
 ExecStartPre=/usr/bin/busybox devmem 0x0c303010 w 0xc400
 ExecStartPre=/usr/bin/busybox devmem 0x0c303008 w 0xc458
 ExecStartPre=/usr/bin/busybox devmem 0x0c303000 w 0xc400
-ExecStart=/usr/bin/bash /home/nvidia/bello_mujoco/deps/bello-stack/scripts/setup-can.sh
+ExecStart=/usr/bin/bash {can_setup}
 RemainAfterExit=yes
 TimeoutStartSec=30s
 

@@ -151,9 +151,9 @@ necessarily restart a failed member; address that member explicitly.
 
 ## Installation and updates
 
-On both deployed hosts, a copy of this guide and the installer is available in
-`~/.local/share/bello/operations/`. The maintained source is this repository's
-`docs/systemd.md` and `scripts/install_systemd.py`.
+The maintained guide and installer are this repository's `docs/systemd.md` and
+`scripts/install_systemd.py`. Run the installer from the repository so its
+`deploy/systemd/` templates are available.
 
 The manual launchers are installed in `~/.local/bin/`. Their maintained sources
 are `scripts/run_jetson_policy.sh` and `scripts/run_ubuntu_visualizer.sh`; the
@@ -163,30 +163,29 @@ host; these are deployment files, not changes to the pinned policy checkout.
 
 ### Jetson CAN setup
 
-`deploy/systemd/` supplies the root-owned Jetson CAN integration:
+The installer's `robot` role also installs and boot-enables the root-owned
+Jetson CAN integration from `deploy/systemd/`. Run it as the operator account;
+it uses `sudo` for system files and the system manager:
 
 - `bello-can-modules.conf`: loads `can`, `can_raw`, and `mttcan` at boot.
-- `onboard-can.service`: waits for both devices, verifies onboard controller
-  identity, restores the existing AGX Orin pinmux, then runs bello-stack's
+- `onboard-can.service.in`: renders `onboard-can.service`, which waits for both
+  devices, verifies onboard controller identity, restores the existing AGX
+  Orin pinmux, then runs bello-stack's
   canonical setup script. CAN bitrate/recovery/queue settings belong to that
   script, not a second local implementation.
-- `user-can-ordering.conf`: orders the `nvidia` user manager after CAN setup.
+- `user-can-ordering.conf`: orders the installing operator's user manager after
+  CAN setup.
   CAN failure does not prevent login for repairs; hardwared/hand startup checks
   reject interfaces that fail the canonical read-only check. The estimator
   remains independent and can reconnect when hardwared becomes available.
 
-The files below are also supplied in `~/.local/share/bello/operations/systemd/`.
-For this Jetson (`nvidia` UID 1000), install without restarting any live bus:
-
-```bash
-cd ~/.local/share/bello/operations/systemd
-sudo install -m 644 bello-can-modules.conf /etc/modules-load.d/bello-can.conf
-sudo install -m 644 onboard-can.service /etc/systemd/system/onboard-can.service
-sudo install -d /etc/systemd/system/user@1000.service.d
-sudo install -m 644 user-can-ordering.conf /etc/systemd/system/user@1000.service.d/50-bello-can.conf
-sudo systemctl daemon-reload
-sudo systemctl enable onboard-can.service
-```
+The installer writes `/etc/modules-load.d/bello-can.conf`,
+`/etc/systemd/system/onboard-can.service`, and
+`/etc/systemd/system/user@<operator-uid>.service.d/50-bello-can.conf`. The CAN
+service uses the selected `--checkout` for its mount dependency and setup
+script. These deployment-owned system files are replaced on subsequent robot
+installations. The script configures only `can0` and `can1`, at 1 Mbps classic
+CAN, with 100 ms bus-off recovery and a 64-frame transmit queue.
 
 The previous `/usr/local/sbin/setup-onboard-can` implementation is no longer
 used. Its migration backup and the old unit are under `/var/backups/bello-can.*`.
@@ -207,7 +206,8 @@ ip -details link show can1
 ### Daemon units
 
 The installer writes user units, verifies them, reloads systemd, and enables
-the target at boot (not each member individually). It **does not start, stop,
+the target at boot (not each member individually). For `robot`, it also verifies,
+installs, and enables the CAN system service. It **does not start, stop,
 or restart processes immediately**. Stop
 unmanaged copies before starting the target: one owner per device/port.
 
@@ -229,7 +229,7 @@ cd /home/nvidia/bello_mujoco
 nix develop .#rust-runtime --command cargo build --locked --release \
   --manifest-path deps/bello-stack/Cargo.toml \
   -p bello-hardwared -p bello-state-estimatord
-python3 /path/to/install_systemd.py robot \
+python3 scripts/install_systemd.py robot \
   --checkout /home/nvidia/bello_mujoco \
   --tracking-endpoint 192.168.0.216:50051 \
   --neutral-model /home/nvidia/SMPLX_NEUTRAL.npz \
@@ -242,7 +242,8 @@ O6 endpoints in `configs/commands/hands.yaml` were physically checked; this
 deployment uses O6 on `can1`. Do not reuse it blindly for another hand model.
 Pass `--hardware-config` / `--estimator-config` for machine-local YAMLs,
 `--runtime-bin` for a different binary directory, or `--dry-run` to inspect
-without installing. Python services use the prepared venv without Nix's
+without installing or invoking sudo; the preview includes the CAN system files.
+Python services use the prepared venv without Nix's
 `LD_LIBRARY_PATH` (avoiding the Jetson glibc conflict); Rust services enter the
 pinned `rust-runtime` Nix shell. Startup does no build or dependency install.
 
