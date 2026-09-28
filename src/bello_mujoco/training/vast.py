@@ -52,6 +52,7 @@ class VastOfferConfig:
     gpu_name: str = "RTX_5090"
     num_gpus: int = 1
     min_cpu_ram_gb: int = 64
+    min_gpu_ram_gb: int = 0
     disk_gb: int = 80
     min_reliability: float = 0.98
     min_cuda: float = 13.0
@@ -69,6 +70,7 @@ class VastTrainConfig:
     pretrained_revision: str | None = None
     evaluation_clips: tuple[str, ...] = ()
     total_timesteps: int | None = None
+    num_envs: int | None = None
     learning_rate: float | None = None
     end_effector_payload_mass_kg: float | None = None
     max_price: float | None = None
@@ -169,6 +171,18 @@ def validate_config(config: VastTrainConfig) -> None:
         )
     if config.total_timesteps is not None and config.total_timesteps <= 0:
         raise ValueError("--total-timesteps must be positive")
+    if config.num_envs is not None and config.num_envs <= 0:
+        raise ValueError("num_envs must be positive")
+    if config.offer.num_gpus != 1:
+        raise ValueError(
+            "training currently supports exactly one GPU, not distributed PPO"
+        )
+    if (
+        config.offer.min_gpu_ram_gb < 0
+        or config.offer.min_cpu_ram_gb <= 0
+        or config.offer.disk_gb <= 0
+    ):
+        raise ValueError("invalid offer RAM or disk constraint")
     if config.learning_rate is not None and (
         not math.isfinite(config.learning_rate) or config.learning_rate <= 0.0
     ):
@@ -328,6 +342,7 @@ def offer_query(config: VastTrainConfig) -> str:
         "direct_port_count>=1",
         f"reliability>={offer.min_reliability}",
         f"cpu_ram>={offer.min_cpu_ram_gb}",
+        f"gpu_ram>={offer.min_gpu_ram_gb}",
         f"disk_space>={offer.disk_gb}",
         f"cuda_max_good>={offer.min_cuda}",
         f"dph_total<={config.max_price}",
@@ -375,6 +390,7 @@ def offer_matches(offer: VastOffer, config: VastTrainConfig) -> bool:
         and offer.num_gpus == desired.num_gpus
         and offer.reliability >= desired.min_reliability
         and offer.cpu_ram_mb >= desired.min_cpu_ram_gb * 1000
+        and offer.gpu_ram_mb >= desired.min_gpu_ram_gb * 1000
         and offer.cuda_max_good >= desired.min_cuda
         and offer.disk_space_gb >= desired.disk_gb
         and offer.direct_port_count >= 1

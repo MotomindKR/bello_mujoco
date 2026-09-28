@@ -253,7 +253,7 @@ uv python install
 uv sync --frozen --group training
 if [ "$experiment" = "bello_mini_sonic_transfer" ]; then
   uv sync --frozen --group training --group reference-validation
-  uv run --group reference-validation python - \
+  uv run --no-sync python - \
     "$motion_dataset_artifact" "$pretrained_revision" "$job_dir" <<'PY'
 import sys
 from pathlib import Path
@@ -267,6 +267,7 @@ if not artifact_ref or not revision:
 root = Path(job_dir)
 artifact = wandb.Api().artifact(artifact_ref, type="dataset")
 artifact.download(root=root / "motion_dataset")
+artifact.verify(root=str(root / "motion_dataset"))
 (root / "dataset_artifact.txt").write_text(
     f"{artifact.entity}/{artifact.project}/{artifact.name}\n"
 )
@@ -278,8 +279,8 @@ snapshot_download(
 )
 PY
 fi
-uv run --group training python -c 'import jax; devices=jax.devices(); print({"backend": jax.default_backend(), "devices": [str(x) for x in devices]}); assert jax.default_backend() == "gpu"'
-uv run --group training python - <<'PY'
+uv run --no-sync python -c 'import jax; devices=jax.devices(); print({"backend": jax.default_backend(), "devices": [str(x) for x in devices]}); assert jax.default_backend() == "gpu"'
+uv run --no-sync python - <<'PY'
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -324,6 +325,9 @@ fi
 if [ -n "$learning_rate" ]; then
   training_overrides+=("learning_rate=$learning_rate")
 fi
+if [ -n "${BELLO_NUM_ENVS:-}" ]; then
+  training_overrides+=("num_envs=$BELLO_NUM_ENVS")
+fi
 if [ "$experiment" = "bello_mini_sonic_transfer" ]; then
   training_overrides+=(
     "motion_dataset=$job_dir/motion_dataset"
@@ -343,11 +347,11 @@ preflight_overrides=(
 preflight_overrides+=(video_enabled=false)
 preflight_overrides+=("checkpoint_directory=checkpoints/vast-preflight-$run_name" checkpoint_name=smoke)
 
-uv run --group training bello-train \
+uv run --no-sync bello-train \
   "${preflight_overrides[@]}"
 
 if [[ -n "$motion_path" ]]; then
-  JAX_PLATFORMS=cpu uv run --group training python - "checkpoints/vast-preflight-$run_name" <<'PY'
+  JAX_PLATFORMS=cpu uv run --no-sync python - "checkpoints/vast-preflight-$run_name" <<'PY'
 import sys
 from pathlib import Path
 
@@ -390,7 +394,7 @@ PY
 fi
 
 if [ "$experiment" = "bello_mini_sonic_transfer" ]; then
-  JAX_PLATFORMS=cpu uv run --group training python - \
+  JAX_PLATFORMS=cpu uv run --no-sync python - \
     "checkpoints/vast-preflight-$run_name" "$job_dir/motion_dataset" <<'PY'
 import json
 import sys
@@ -445,7 +449,7 @@ PY
 fi
 
 if [[ -z "$motion_path" && "$experiment" == bello_* && "$experiment" != "bello_mini_sonic_transfer" ]]; then
-  uv run --group training python - "checkpoints/vast-preflight-$run_name" <<'PY'
+  uv run --no-sync python - "checkpoints/vast-preflight-$run_name" <<'PY'
 import sys
 from pathlib import Path
 
@@ -488,7 +492,7 @@ print({"preflight_checkpoint_restored": str(checkpoint), "policy_video": str(vid
 PY
 fi
 
-uv run --group training bello-train \
+uv run --no-sync bello-train \
   "${training_overrides[@]}" \
   wandb_enabled=true \
   run_name="$run_name" \
@@ -521,6 +525,7 @@ def run_remote_training(
             "environment": {
                 "WANDB_API_KEY": wandb_key,
                 "GITHUB_TOKEN": github_token,
+                "BELLO_NUM_ENVS": str(config.num_envs or ""),
             },
             "sonic_transfer": {
                 "motion_dataset_artifact": config.motion_dataset_artifact or "",

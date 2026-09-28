@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -24,8 +25,9 @@ from bello_mujoco.repository import (
 )
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.sonic.checkpoint import import_sonic_checkpoint
+from bello_mujoco.sonic.corpus import MANIFEST, file_sha256, verify_artifact
 from bello_mujoco.training.checkpoint import CheckpointConfig, checkpoint_path
-from bello_mujoco.training.ppo import init_runner_state_with_policy
+from bello_mujoco.training.ppo import init_runner_state_with_policy, update_runner_state
 from bello_mujoco.training.ppo_config import PPOConfig, validate_ppo_config
 from bello_mujoco.training.runtime import training_updates
 from bello_mujoco.training.tracking import (
@@ -45,6 +47,7 @@ class SonicDatasetConfig:
     directory: Path
     evaluation_clips: tuple[str, ...] = ()
     artifact: str | None = None
+    max_array_bytes: int = 4 * 1024**3
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,17 @@ class SonicTransferTrainingRunConfig:
     checkpoint_config: CheckpointConfig = CheckpointConfig()
     wandb_config: WandbConfig = WandbConfig()
     warp: WarpConfig = WarpConfig()
+
+
+def compile_sonic_update(env, config, static_policy, optimizer):
+    """Pass corpus buffers as device arguments, never multi-GB HLO constants."""
+
+    @jax.jit
+    def update(state, bank):
+        dynamic_env = replace(env, reference_bank=bank)
+        return update_runner_state(state, static_policy, optimizer, dynamic_env, config)
+
+    return partial(update, bank=env.reference_bank)
 
 
 def run_training(run_config: SonicTransferTrainingRunConfig) -> None:
@@ -95,6 +109,25 @@ def run_training(run_config: SonicTransferTrainingRunConfig) -> None:
     succeeded = False
     try:
         run = create_wandb_run(run_config.wandb_config)
+        dataset_digest = verify_artifact(
+            run_config.dataset.directory,
+            run_config.dataset.artifact,
+            run_config.dataset.evaluation_clips,
+            run=run,
+        )
+        corpus_bytes = sum(
+            entry["array_bytes"]
+            for entry in json.loads(
+                (run_config.dataset.directory / MANIFEST).read_text()
+            )["clips"]
+        )
+        if (
+            run_config.dataset.max_array_bytes <= 0
+            or corpus_bytes > run_config.dataset.max_array_bytes
+        ):
+            raise ValueError(
+                f"corpus arrays need {corpus_bytes} bytes, exceeding dataset.max_array_bytes={run_config.dataset.max_array_bytes}; curate a smaller corpus or explicitly budget more device memory"
+            )
         env = BelloSonicTransferEnv.load_corpus(
             run_config.asset_config,
             run_config.env_config,
@@ -117,6 +150,7 @@ def run_training(run_config: SonicTransferTrainingRunConfig) -> None:
                 "git_commit": git_commit,
                 "pretrained_sha256": imported.sha256,
                 "dataset_artifact": run_config.dataset.artifact,
+                "dataset_manifest_sha256": dataset_digest,
                 "clips": env.reference_bank.clip_names,
             },
         )
@@ -134,9 +168,15 @@ def run_training(run_config: SonicTransferTrainingRunConfig) -> None:
                 git_commit=git_commit,
                 pretrained_sha256=imported.sha256,
                 clip_names=env.reference_bank.clip_names,
+                dataset_digest=dataset_digest,
             )
         runner_state = initialized[0]
-        for update in training_updates(env, run_config.config, initialized, run):
+        update_fn = compile_sonic_update(
+            env, run_config.config, initialized[1], initialized[2]
+        )
+        for update in training_updates(
+            env, run_config.config, initialized, run, update_fn=update_fn
+        ):
             runner_state, metrics, _ = update
             update_number = int(jax.device_get(runner_state.update))
             if (
@@ -154,6 +194,7 @@ def run_training(run_config: SonicTransferTrainingRunConfig) -> None:
                     git_commit=git_commit,
                     pretrained_sha256=imported.sha256,
                     clip_names=env.reference_bank.clip_names,
+                    dataset_digest=dataset_digest,
                 )
                 _upload_checkpoint(run, scheduled, checkpoint_config)
         root = checkpoint_root / "final"
@@ -165,6 +206,7 @@ def run_training(run_config: SonicTransferTrainingRunConfig) -> None:
             git_commit=git_commit,
             pretrained_sha256=imported.sha256,
             clip_names=env.reference_bank.clip_names,
+            dataset_digest=dataset_digest,
         )
         _upload_checkpoint(run, root, checkpoint_config)
         print(metrics)
@@ -186,6 +228,7 @@ def _save_checkpoint(
     git_commit: str,
     pretrained_sha256: str,
     clip_names: tuple[str, ...],
+    dataset_digest: str | None = None,
 ) -> None:
     if path.exists():
         raise FileExistsError(path)
@@ -198,10 +241,16 @@ def _save_checkpoint(
         "pretrained_revision": run_config.pretrained.revision,
         "pretrained_sha256": pretrained_sha256,
         "dataset_artifact": run_config.dataset.artifact,
+        "dataset_manifest_sha256": dataset_digest,
         "clips": clip_names,
         "resolved_config": to_builtin(run_config),
     }
     try:
+        if dataset_digest is not None:
+            source_manifest = run_config.dataset.directory / MANIFEST
+            if file_sha256(source_manifest) != dataset_digest:
+                raise ValueError("corpus manifest changed during training")
+            shutil.copyfile(source_manifest, staging / MANIFEST)
         state_path = staging / "state.eqx"
         eqx.tree_serialise_leaves(state_path, runner_state)
         policy_path = staging / "policy.eqx"
@@ -214,7 +263,7 @@ def _save_checkpoint(
             json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
         )
-        for file_path in (state_path, policy_path, metadata_path):
+        for file_path in staging.iterdir():
             with file_path.open("rb") as stream:
                 os.fsync(stream.fileno())
         descriptor = os.open(staging, os.O_RDONLY)
@@ -242,6 +291,7 @@ def _restore_checkpoint(
     git_commit: str,
     pretrained_sha256: str,
     clip_names: tuple[str, ...],
+    dataset_digest: str | None = None,
 ):
     path = Path(path).expanduser().resolve()
     try:
@@ -254,6 +304,7 @@ def _restore_checkpoint(
         "pretrained_revision": run_config.pretrained.revision,
         "pretrained_sha256": pretrained_sha256,
         "dataset_artifact": run_config.dataset.artifact,
+        "dataset_manifest_sha256": dataset_digest,
         "clips": list(clip_names),
     }
     mismatches = sorted(
@@ -282,7 +333,7 @@ def _restore_checkpoint(
         raise ValueError(
             "SONIC resume update must be inside the requested unfinished budget"
         )
-    return restored, static_policy, optimizer
+    return jax.device_put(restored), static_policy, optimizer
 
 
 def _resume_contract(value) -> dict:

@@ -611,6 +611,7 @@ def test_remote_runner_does_not_put_secrets_in_command(monkeypatch) -> None:
     assert environment == {
         "WANDB_API_KEY": "wandb-secret",
         "GITHUB_TOKEN": "github-secret",
+        "BELLO_NUM_ENVS": "",
     }
     assert "start_new_session=True" in calls[0][0][-1]
 
@@ -676,10 +677,7 @@ def test_remote_command_uses_canonical_trainer_for_both_profiles(tmp_path) -> No
 
     assert shlex.split(command)[-3] == "motion-test"
     assert float(shlex.split(command)[-4]) == pytest.approx(4.5359237)
-    assert (
-        vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run --group training bello-train")
-        == 2
-    )
+    assert vast_remote.REMOTE_TRAIN_SCRIPT.count("uv run --no-sync bello-train") == 2
     assert "git clone --single-branch" in vast_remote.REMOTE_TRAIN_SCRIPT
     assert (
         "submodule update --init --recursive -- deps/bello-stack"
@@ -730,7 +728,7 @@ def test_remote_command_preflights_software_rendering() -> None:
         checkpoint_render.index("import jax")
     )
     assert script.index("preflight_checkpoint_restored") < script.rindex(
-        "uv run --group training bello-train"
+        "uv run --no-sync bello-train"
     )
 
 
@@ -750,7 +748,7 @@ def test_motion_preflight_exports_and_restores_before_training() -> None:
     assert "render_motion_policy(" in block
     assert "export_checkpoint(ExportConfig(" in block
     assert script.index("motion_preflight_checkpoint_restored") < script.rindex(
-        "uv run --group training bello-train"
+        "uv run --no-sync bello-train"
     )
 
 

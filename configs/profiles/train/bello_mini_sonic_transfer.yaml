@@ -4,15 +4,23 @@ dataset:
   directory: motions/local
   evaluation_clips: []
   artifact: null
+  max_array_bytes: 4294967296
 pretrained:
   checkpoint: checkpoints/sonic_release/last.pt
   revision: ""
 config:
+  num_envs: 2048
   num_steps: 24
   update_epochs: 5
   num_minibatches: 4
   learning_rate: 0.00005
-  critic_learning_rate: 0.001
+  # TRL creates one optimizer; its adaptive scheduler changes every param group.
+  critic_learning_rate: null
+  adaptive_lr_interval: minibatch
+  minibatch_sampling: trajectories
+  advantage_std_ddof: 1
+  adam_epsilon: 0.00000001
+  value_loss_scale: 1.0
   schedule: adaptive
   desired_kl: 0.01
   min_learning_rate: 0.00002
@@ -23,9 +31,12 @@ config:
   ent_coef: 0.01
   vf_coef: 1.0
   max_grad_norm: 0.1
+  # Match TRL: clip finite gradients; no extra pre-clipping magnitude rejection.
+  gradient_norm_max: null
   normalize_value: false
   normalize_observations: false
   normalize_critic_observations: true
+  critic_normalization_mode: any2any
   policy:
     hidden_dims: [2048, 2048, 1024, 1024, 512, 512]
     activation: swish

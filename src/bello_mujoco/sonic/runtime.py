@@ -13,6 +13,7 @@ from bello_mujoco.configuration import dataclass_from_dict
 from bello_mujoco.envs.sonic_transfer import BelloSonicTransferEnv
 from bello_mujoco.repository import require_repository_commit
 from bello_mujoco.sonic.model import SonicActorCritic, sonic_policy_template
+from bello_mujoco.sonic.corpus import MANIFEST, file_sha256
 from bello_mujoco.training.sonic_transfer import SonicTransferTrainingRunConfig
 
 
@@ -33,6 +34,22 @@ def load_sonic_policy_runtime(
 ) -> SonicPolicyRuntime:
     checkpoint_path = Path(checkpoint_path).expanduser().resolve()
     metadata = _load_metadata(checkpoint_path)
+    if metadata["dataset_manifest_sha256"] is not None:
+        manifest_path = checkpoint_path / MANIFEST
+        if file_sha256(manifest_path) != metadata["dataset_manifest_sha256"]:
+            raise ValueError("checkpoint corpus manifest checksum differs")
+        entries = {
+            entry["file"]: entry
+            for entry in json.loads(manifest_path.read_text())["clips"]
+        }
+        for path in motion_paths:
+            if (
+                path.name not in entries
+                or file_sha256(path) != entries[path.name]["sha256"]
+            ):
+                raise ValueError(
+                    f"selected reference differs from checkpoint corpus: {path.name}"
+                )
     require_repository_commit(metadata["git_commit"])
     run_config = dataclass_from_dict(
         SonicTransferTrainingRunConfig,
@@ -92,6 +109,7 @@ def _load_metadata(path: Path) -> dict:
         "pretrained_revision",
         "pretrained_sha256",
         "dataset_artifact",
+        "dataset_manifest_sha256",
         "clips",
         "resolved_config",
     }

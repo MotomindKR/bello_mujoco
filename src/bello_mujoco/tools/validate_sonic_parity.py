@@ -11,7 +11,10 @@ import numpy as np
 
 from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.sim import load_model
-from bello_mujoco.sonic.checkpoint import import_sonic_checkpoint, load_source_checkpoint
+from bello_mujoco.sonic.checkpoint import (
+    import_sonic_checkpoint,
+    load_source_checkpoint,
+)
 from bello_mujoco.sonic.embodiment import MiniEmbodimentAdapter
 from bello_mujoco.sonic.model import finite_scalar_quantize
 

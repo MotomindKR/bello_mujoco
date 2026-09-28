@@ -39,6 +39,11 @@ edit the selected recipe for nested reward/physics changes. SONIC's corpus,
 immutable artifact identity, held-out clip names, pretrained checkpoint, and
 immutable source revision are explicit inputs; its fixed LoRA/PPO recipe lives
 in `configs/profiles/train/bello_mini_sonic_transfer.yaml`.
+The SONIC profile opts into trajectory minibatches, per-minibatch adaptive
+learning rate, sample-standard-deviation advantages and the reference critic's
+normalizer. Shared PPO defaults for other profiles are unchanged. Its corpus
+array-size guard and separate actor/critic optimization controls are documented
+in [SONIC transfer](sonic_transfer.md).
 
 ```bash
 uv run bello-train --cfg job

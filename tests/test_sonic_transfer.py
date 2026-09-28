@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 import jax
 import jax.numpy as jnp
@@ -28,11 +28,17 @@ from bello_mujoco.sonic.model import (
 )
 from bello_mujoco.sonic.observations import SonicObservationAssembler
 from bello_mujoco.sonic.reference import ReferenceBank
+from bello_mujoco.envs.sonic_transfer import BelloSonicTransferEnv
+from bello_mujoco.envs.motion_tracking import BelloMotionTrackingEnv
 from bello_mujoco.training.ppo_config import PPOConfig, parameter_learning_rate
 from bello_mujoco.training.normalization import (
     init_observation_norm_state,
     init_value_norm_state,
+    normalize_critic_observation,
+    update_critic_observation_norm_state,
 )
+
+
 from bello_mujoco.training.ppo import make_optimizer, update_ppo
 from bello_mujoco.training.ppo_types import RunnerState
 from bello_mujoco.training.ppo_types import TrainState, Transition
@@ -42,7 +48,29 @@ from bello_mujoco.training.sonic_transfer import (
     SonicTransferTrainingRunConfig,
     _restore_checkpoint,
     _save_checkpoint,
+    compile_sonic_update,
 )
+
+
+def test_any2any_critic_normalizer_updates_after_forward_only_during_optimization():
+    config = PPOConfig(
+        critic_normalization_mode="any2any", normalize_observations=False
+    )
+    state = init_observation_norm_state(2)._replace(count=jnp.asarray(1.0))
+    values = jnp.asarray([[2.0, 4.0], [4.0, 8.0]])
+    np.testing.assert_allclose(
+        normalize_critic_observation(values, state, config),
+        np.clip(np.asarray(values) / np.sqrt(1.0 + 1e-5), -5, 5),
+    )
+    assert update_critic_observation_norm_state(state, values, config) is state
+    updated = update_critic_observation_norm_state(
+        state, values, config, during_optimization=True
+    )
+    np.testing.assert_allclose(updated.mean, [2.0, 4.0])
+    np.testing.assert_allclose(
+        updated.var, [(1 + 2 * 2 + 9 * 2 / 3) / 3, (1 + 8 * 2 + 36 * 2 / 3) / 3]
+    )
+    assert float(updated.count) == 3.0
 
 
 def synthetic_adapter(transform: np.ndarray | None = None) -> MiniEmbodimentAdapter:
@@ -114,6 +142,30 @@ def test_reference_windows_clamp_inside_each_clip() -> None:
         lambda key, failure: bank.sample_clip(key, failure, split="train")
     )(jax.random.PRNGKey(0), jnp.asarray([1.0, 20.0]))
     assert int(selected) == 0
+
+
+def test_compiled_sonic_update_passes_bank_as_dynamic_buffers(monkeypatch):
+    bank = ReferenceBank.from_clips((("train", synthetic_clip(0.0), "train"),))
+
+    @dataclass(frozen=True)
+    class Environment:
+        reference_bank: ReferenceBank
+
+    def fake_update(state, static, optimizer, env, config):
+        return state + env.reference_bank.qpos[0, 0], {}
+
+    monkeypatch.setattr(
+        "bello_mujoco.training.sonic_transfer.update_runner_state", fake_update
+    )
+    step = compile_sonic_update(Environment(bank), None, None, None)
+    assert float(step(jnp.asarray(1.0))[0]) == 1.0
+    shifted = replace(bank, qpos=bank.qpos + 10.0)
+    assert float(step.func(jnp.asarray(1.0), shifted)[0]) == 11.0
+    traced = jax.make_jaxpr(step.func)(jnp.asarray(1.0), bank)
+    assert not traced.consts
+    assert len(jax.tree_util.tree_leaves(bank)) == 11
+    assert bank.max_clip_frames == 4
+    assert bank.clock_end == 4
 
 
 def test_reference_encoder_preserves_release_blockwise_joint_layout() -> None:
@@ -281,6 +333,38 @@ def test_reference_time_separator_never_interpolates_into_next_clip() -> None:
     assert next_start.qpos[0] == pytest.approx(100.0)
 
 
+@pytest.mark.parametrize("fps", [25.0, 50.0, 100.0])
+def test_sonic_frame_clock_does_not_accumulate_hours_offset_error(fps):
+    env = SimpleNamespace(
+        reference_bank=SimpleNamespace(fps=fps), control_timestep=0.02
+    )
+    start = jnp.asarray(1_500_000.125, dtype=jnp.float32)
+    end = jax.jit(
+        lambda value: jax.lax.fori_loop(
+            0,
+            500,
+            lambda _, clock: BelloSonicTransferEnv.advance_reference_time(env, clock),
+            value,
+        )
+    )(start)
+    assert float(end - start) == 10 * fps
+    assert float(
+        BelloMotionTrackingEnv.advance_reference_time(env, jnp.asarray(0.0))
+    ) == pytest.approx(0.02)
+
+
+def test_large_frame_offset_keeps_clip_boundaries_and_fractional_phase():
+    bank = ReferenceBank.from_clips(
+        (("a", synthetic_clip(0), "train"), ("b", synthetic_clip(100), "evaluation"))
+    )
+    bank = replace(bank, time_offsets=jnp.asarray([0, 1_500_000], dtype=jnp.int32))
+    for fraction in (0.0, 0.125, 0.5, 1.0):
+        sample = jax.jit(bank.sample_global_frame)(
+            jnp.asarray(1_500_000 + fraction, dtype=jnp.float32)
+        )
+        assert float(sample.qpos[0]) == pytest.approx(100 + fraction)
+
+
 def test_sonic_trainable_filter_excludes_pretrained_backbones() -> None:
     adapter = synthetic_adapter()
     key = jax.random.PRNGKey(7)
@@ -320,7 +404,7 @@ def test_sonic_trainable_filter_excludes_pretrained_backbones() -> None:
     assert frozen.actor.decoder.layers[0].weight is not None
     assert trainable.actor.decoder.layers[0].lora_a is not None
     assert trainable.actor.encoder.layers[0].lora_a is None
-    assert trainable.log_std is not None
+    assert trainable.std is not None
 
 
 def test_shared_ppo_update_preserves_sonic_frozen_backbone(tmp_path) -> None:
@@ -403,7 +487,7 @@ def test_shared_ppo_update_preserves_sonic_frozen_backbone(tmp_path) -> None:
         update=jnp.asarray(0, dtype=jnp.int32),
     )
 
-    updated, _ = update_ppo(
+    updated, metrics = update_ppo(
         state,
         optimizer,
         transitions,
@@ -412,6 +496,10 @@ def test_shared_ppo_update_preserves_sonic_frozen_backbone(tmp_path) -> None:
         jax.random.PRNGKey(33),
         config,
     )
+
+    assert float(updated.critic_norm.count) == 3.0
+    assert "analytic_kl" in metrics
+    assert updated.policy.std.shape == (adapter.target_size,)
 
     np.testing.assert_array_equal(
         updated.policy.actor.encoder.layers[0].weight,
@@ -500,8 +588,11 @@ def test_sonic_profile_keeps_any2any_lora_and_ppo_recipe(tmp_path) -> None:
     assert profile.config.update_epochs == 5
     assert profile.config.num_minibatches == 4
     assert profile.config.learning_rate == pytest.approx(5.0e-5)
-    assert profile.config.critic_learning_rate == pytest.approx(1.0e-3)
+    assert profile.config.critic_learning_rate is None
+    assert profile.config.adaptive_lr_interval == "minibatch"
+    assert profile.config.value_loss_scale == 1.0
     assert profile.config.max_grad_norm == pytest.approx(0.1)
+    assert profile.config.gradient_norm_max is None
     assert profile.config.policy.obs_stack_size == 10
     assert profile.config.policy.action_distribution == "gaussian"
     assert profile.env_config.simulation_physics.timestep == pytest.approx(0.005)

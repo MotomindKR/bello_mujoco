@@ -8,7 +8,6 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.geometry import quat_rotate_inverse
@@ -54,8 +53,18 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
                 "SONIC release critic requires the canonical 14-body tracking "
                 f"order; got {self.reference_bank.body_names}"
             )
-        if not np.any(np.asarray(self.reference_bank.split_mask("train"))):
+        if self.reference_bank.split_counts[0] == 0:
             raise ValueError("SONIC reference bank requires at least one training clip")
+        step_frames = self.reference_bank.fps * self.control_timestep
+        if not math.log2(step_frames).is_integer():
+            raise ValueError(
+                "SONIC clips must be resampled to a power-of-two multiple of the control rate"
+            )
+        clock_end = self.reference_bank.clock_end
+        if clock_end >= 2**24 * min(1.0, step_frames):
+            raise ValueError(
+                "SONIC reference bank exceeds exact float32 frame-clock capacity"
+            )
 
     @classmethod
     def load_corpus(
@@ -121,7 +130,7 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
         return max(
             1,
             math.ceil(
-                (int(np.max(np.asarray(self.reference_bank.lengths))) - 1)
+                (self.reference_bank.max_clip_frames - 1)
                 / self.reference_bank.fps
                 / self.control_timestep
             ),
@@ -167,10 +176,17 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
         return ActionLayout(tuple(self.model.actuator_joint_names))
 
     def unaligned_reference(self, time: jax.Array) -> MotionSample:
-        return self.reference_bank.sample_time(time)
+        return self.reference_bank.sample_global_frame(time)
+
+    def advance_reference_time(self, time: jax.Array) -> jax.Array:
+        # Frame units make control increments exact even after hours of data.
+        return time + self.reference_bank.fps * self.control_timestep
+
+    def reference_time_seconds(self, time: jax.Array) -> jax.Array:
+        return time / self.reference_bank.fps
 
     def bounded_reference_time(self, time: jax.Array) -> jax.Array:
-        global_frame = jnp.maximum(jnp.asarray(time) * self.reference_bank.fps, 0.0)
+        global_frame = jnp.maximum(jnp.asarray(time), 0.0)
         clip_id = jnp.clip(
             jnp.searchsorted(
                 self.reference_bank.time_offsets, global_frame, side="right"
@@ -184,12 +200,10 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
             0.0,
             self.reference_bank.lengths[clip_id] - 1,
         )
-        return (
-            self.reference_bank.time_offsets[clip_id] + local_frame
-        ) / self.reference_bank.fps
+        return self.reference_bank.time_offsets[clip_id] + local_frame
 
     def _reference_time_to_sampling_bin(self, reference_time: jax.Array) -> jax.Array:
-        frame = jnp.maximum(reference_time * self.reference_bank.fps, 0.0)
+        frame = jnp.maximum(reference_time, 0.0)
         return jnp.clip(
             jnp.searchsorted(self.reference_bank.time_offsets, frame, side="right") - 1,
             0,
@@ -215,9 +229,7 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
         )
         max_frame = jnp.maximum(self.reference_bank.lengths[selected] - 1, 1)
         local_frame = jax.random.uniform(frame_key, (), maxval=max_frame)
-        return (
-            self.reference_bank.time_offsets[selected] + local_frame
-        ) / self.reference_bank.fps
+        return self.reference_bank.time_offsets[selected] + local_frame
 
     def observation(
         self,
@@ -229,9 +241,8 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
         if _feedback is None:
             _feedback = self._delayed_actor_feedback(state)
         qpos, qvel, _, anchor_quat = self._unpack_actor_feedback(_feedback)
-        global_frame = (
-            self.bounded_reference_time(state.reference_time + self.control_timestep)
-            * self.reference_bank.fps
+        global_frame = self.bounded_reference_time(
+            self.advance_reference_time(state.reference_time)
         )
         clip_id = jnp.clip(
             jnp.searchsorted(
@@ -335,9 +346,7 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
         flags = super()._finish_termination_flags(
             state, height, orientation, end_effector
         )
-        global_frame = jnp.floor(state.reference_time * self.reference_bank.fps).astype(
-            jnp.int32
-        )
+        global_frame = jnp.floor(state.reference_time).astype(jnp.int32)
         clip_id = jnp.clip(
             jnp.searchsorted(
                 self.reference_bank.time_offsets, global_frame, side="right"

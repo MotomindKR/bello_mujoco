@@ -736,6 +736,26 @@ def test_implausible_target_and_gradient_norm_are_skipped() -> None:
     assert target_metrics["ppo_update_fraction"] == 0
 
 
+def test_optional_raw_gradient_cutoff_preserves_clipping_and_finite_checks() -> None:
+    config = small_config(gradient_norm_max=None, max_grad_norm=0.1)
+    train_state, optimizer = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
+    batch = transitions(config, train_state.policy)
+    targets = jnp.ones((config.num_steps, config.num_envs)) * 100
+    _, metrics = update_ppo(
+        train_state,
+        optimizer,
+        batch,
+        jnp.arange(config.batch_size, dtype=jnp.float32).reshape(targets.shape),
+        targets,
+        jax.random.PRNGKey(1),
+        config,
+    )
+    assert metrics["gradient_norm"] > config.max_grad_norm
+    assert metrics["invalid/gradient_norm"] == 0
+    assert metrics["nonfinite/gradients"] == 0
+    assert metrics["ppo_update_fraction"] > 0
+
+
 def test_action_diagnostics_use_each_worlds_joint_angle_offset() -> None:
     config = small_config(num_steps=1, total_timesteps=4)
     train_state, _ = init_train_state(jax.random.PRNGKey(0), 3, 1, config)

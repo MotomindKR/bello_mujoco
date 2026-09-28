@@ -9,6 +9,23 @@ import jax.numpy as jnp
 import numpy as np
 
 
+def validate_named_joint_axes(names: tuple[str, ...], axes: np.ndarray) -> None:
+    """Mini's zero-pose axes must match the declared logical positive directions."""
+    expected = []
+    for name in names:
+        component = "pitch" if "knee" in name else name.split("_")[-2]
+        if component not in {"roll", "pitch", "yaw"}:
+            raise ValueError(f"no declared SONIC axis for {name}")
+        expected.append(np.eye(3)[{"roll": 0, "pitch": 1, "yaw": 2}[component]])
+    axes = np.asarray(axes)
+    if axes.shape != (len(names), 3) or not np.allclose(
+        axes, expected, atol=1e-4, rtol=0
+    ):
+        raise ValueError(
+            "Mini joint axes differ from the SONIC mapping; review signs and geometry"
+        )
+
+
 # The released checkpoint is trained in this Isaac Lab articulation order.
 # Keep it local rather than importing the reference implementation at runtime.
 G1_JOINT_NAMES = (
@@ -113,7 +130,19 @@ class MiniEmbodimentAdapter:
 
     @classmethod
     def from_model(cls, model) -> MiniEmbodimentAdapter:
+        import mujoco
+
         target_names = tuple(model.actuator_joint_names)
+        data = mujoco.MjData(model.mj_model)
+        data.qpos[:] = 0.0
+        data.qpos[3] = 1.0
+        mujoco.mj_forward(model.mj_model, data)
+        validate_named_joint_axes(
+            target_names,
+            np.asarray(
+                [data.xaxis[model.mj_model.joint(name).id] for name in target_names]
+            ),
+        )
         source_names = tuple(_source_name(name) for name in target_names)
         unknown = sorted(set(source_names) - set(G1_JOINT_NAMES))
         missing = sorted(set(G1_JOINT_NAMES) - set(source_names))

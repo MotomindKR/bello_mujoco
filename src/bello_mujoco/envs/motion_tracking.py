@@ -64,7 +64,7 @@ class MotionTrackingState:
     last_action: jax.Array
     actor_feedback_history: jax.Array
     actor_feedback_delay_steps: jax.Array
-    reference_time: jax.Array
+    reference_time: jax.Array  # Task clock; convert with reference_time_seconds.
     alignment_xy: jax.Array
     alignment_yaw: jax.Array
     joint_default_offset: jax.Array
@@ -680,7 +680,7 @@ class BelloMotionTrackingEnv:
             actor_feedback_history=self._advance_actor_feedback_history(
                 state.actor_feedback_history, data
             ),
-            reference_time=state.reference_time + self.control_timestep,
+            reference_time=self.advance_reference_time(state.reference_time),
             step_count=state.step_count + 1,
             episode_length=state.episode_length + 1,
         )
@@ -746,7 +746,7 @@ class BelloMotionTrackingEnv:
                 if feedback_rng is not None
                 else None,
             ),
-            reference_time=state.reference_time + self.control_timestep,
+            reference_time=self.advance_reference_time(state.reference_time),
             step_count=state.step_count + 1,
             episode_length=state.episode_length + 1,
             next_push_step=next_push_step,
@@ -812,7 +812,9 @@ class BelloMotionTrackingEnv:
     ) -> tuple[jax.Array, ...]:
         qpos, qvel, anchor_position, anchor_quat = self._unpack_actor_feedback(feedback)
         reference = self.aligned_reference(
-            self.bounded_reference_time(state.reference_time + self.control_timestep),
+            self.bounded_reference_time(
+                self.advance_reference_time(state.reference_time)
+            ),
             state.alignment_xy,
             state.alignment_yaw,
         )
@@ -1121,7 +1123,7 @@ class BelloMotionTrackingEnv:
             "episode_return": jnp.where(done, state.episode_return, 0.0),
             "episode_length": jnp.where(done, state.episode_length, 0),
             "returned_episode": done,
-            "reference/time": state.reference_time,
+            "reference/time": self.reference_time_seconds(state.reference_time),
             "latency/observation_steps": state.actor_feedback_delay_steps.astype(
                 jnp.float32
             ),
@@ -1186,6 +1188,12 @@ class BelloMotionTrackingEnv:
 
     def unaligned_reference(self, time: jax.Array) -> MotionSample:
         return sample_motion(self.motion, time)
+
+    def advance_reference_time(self, time: jax.Array) -> jax.Array:
+        return time + self.control_timestep
+
+    def reference_time_seconds(self, time: jax.Array) -> jax.Array:
+        return time
 
     def bounded_reference_time(self, time: jax.Array) -> jax.Array:
         return jnp.minimum(time, self.motion.duration)

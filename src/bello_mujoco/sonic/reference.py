@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Literal
 
@@ -20,17 +20,20 @@ from bello_mujoco.motion.clip import (
 SplitName = Literal["train", "evaluation"]
 
 
+@jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class ReferenceBank:
-    fps: float
-    joint_names: tuple[str, ...]
-    body_names: tuple[str, ...]
-    clip_names: tuple[str, ...]
+    fps: float = field(metadata={"static": True})
+    joint_names: tuple[str, ...] = field(metadata={"static": True})
+    body_names: tuple[str, ...] = field(metadata={"static": True})
+    clip_names: tuple[str, ...] = field(metadata={"static": True})
+    max_clip_frames: int = field(metadata={"static": True})
+    clock_end: int = field(metadata={"static": True})
     offsets: jax.Array
     time_offsets: jax.Array
     lengths: jax.Array
     split_ids: jax.Array
-    split_counts: tuple[int, int]
+    split_counts: tuple[int, int] = field(metadata={"static": True})
     qpos: jax.Array
     qvel: jax.Array
     body_pos: jax.Array
@@ -77,9 +80,11 @@ class ReferenceBank:
         )
 
         def concatenate(field: str) -> jax.Array:
-            return jnp.concatenate(
-                tuple(jnp.asarray(getattr(clip, field)) for _, clip, _ in entries),
-                axis=0,
+            return jnp.asarray(
+                np.concatenate(
+                    tuple(np.asarray(getattr(clip, field)) for _, clip, _ in entries),
+                    axis=0,
+                )
             )
 
         split_lookup = {"train": 0, "evaluation": 1}
@@ -88,6 +93,8 @@ class ReferenceBank:
             joint_names=first.joint_names,
             body_names=first.body_names,
             clip_names=names,
+            max_clip_frames=int(lengths.max()),
+            clock_end=int(time_offsets[-1] + lengths[-1]),
             offsets=jnp.asarray(offsets),
             time_offsets=jnp.asarray(time_offsets),
             lengths=jnp.asarray(lengths),
@@ -138,6 +145,11 @@ class ReferenceBank:
         """Interpolate a corpus-global time without crossing a clip boundary."""
 
         global_frame = jnp.maximum(jnp.asarray(time) * self.fps, 0.0)
+        return self.sample_global_frame(global_frame)
+
+    def sample_global_frame(self, global_frame: jax.Array) -> MotionSample:
+        """Sample a frame clock without a lossy frame/seconds round trip."""
+        global_frame = jnp.maximum(jnp.asarray(global_frame), 0.0)
         clip_id = jnp.clip(
             jnp.searchsorted(self.time_offsets, global_frame, side="right") - 1,
             0,
@@ -236,9 +248,10 @@ def load_reference_bank(
     paths = tuple(Path(path).expanduser().resolve() for path in paths)
     evaluation = frozenset(evaluation_names)
     clips = []
+    # Validate/load on the host, then transfer each concatenated field once.
     for path in paths:
         split: SplitName = "evaluation" if path.stem in evaluation else "train"
-        clips.append((path.stem, load_motion_clip(path, model), split))
+        clips.append((path.stem, load_motion_clip(path, model, as_numpy=True), split))
     unknown = sorted(evaluation - {path.stem for path in paths})
     if unknown:
         raise ValueError(f"evaluation clips were not found in the corpus: {unknown}")

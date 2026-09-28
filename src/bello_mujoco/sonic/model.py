@@ -319,7 +319,7 @@ class SonicCritic(eqx.Module):
 class SonicActorCritic(eqx.Module):
     actor: SonicActor
     critic: SonicCritic
-    log_std: jax.Array
+    std: jax.Array
     min_log_std: float = eqx.field(static=True)
     max_log_std: float = eqx.field(static=True)
     action_distribution: str = eqx.field(static=True)
@@ -338,11 +338,20 @@ class SonicActorCritic(eqx.Module):
             )
         self.actor = actor
         self.critic = critic
-        self.log_std = actor.adapter.source_scale_to_target(source_log_std)
+        self.std = actor.adapter.source_scale_to_target(jnp.exp(source_log_std))
         self.min_log_std = math.log(0.001)
         self.max_log_std = math.log(0.6)
         self.action_distribution = "gaussian"
         self.action_limit = 100.0
+
+    @property
+    def log_std(self) -> jax.Array:
+        return jnp.log(jnp.clip(self.std, 0.001, 0.6))
+
+    def clamp_exploration(self):
+        return eqx.tree_at(
+            lambda model: model.std, self, jnp.clip(self.std, 0.001, 0.6)
+        )
 
     def __call__(
         self, actor_observation: jax.Array, critic_observation: jax.Array | None = None
@@ -367,7 +376,7 @@ class SonicActorCritic(eqx.Module):
                 for entry in path
                 if getattr(entry, "name", None) is not None
             )
-            return names == ("log_std",) or (
+            return names == ("std",) or (
                 value.size > 0
                 and names[-1:]
                 in {

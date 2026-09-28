@@ -14,6 +14,7 @@ import hydra
 from omegaconf import DictConfig
 
 from bello_mujoco.hardware.smplx_grpc import SmplxGrpcConfig
+from bello_mujoco.training.vast import VastOfferConfig
 
 from bello_mujoco.configuration import (
     ExperimentName,
@@ -78,6 +79,8 @@ class VastTrainCommandConfig:
     pretrained_revision: str | None
     evaluation_clips: tuple[str, ...]
     total_timesteps: int | None
+    num_envs: int | None
+    offer: VastOfferConfig
     learning_rate: float | None
     end_effector_payload_mass_kg: float | None
     max_price: float | None
@@ -442,6 +445,8 @@ def _vast_train_hydra(config: DictConfig) -> None:
         pretrained_revision=command.pretrained_revision,
         evaluation_clips=command.evaluation_clips,
         total_timesteps=command.total_timesteps,
+        num_envs=command.num_envs,
+        offer=command.offer,
         learning_rate=command.learning_rate,
         end_effector_payload_mass_kg=command.end_effector_payload_mass_kg,
         max_price=command.max_price,

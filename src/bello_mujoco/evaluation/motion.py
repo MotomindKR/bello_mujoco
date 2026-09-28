@@ -278,7 +278,7 @@ def make_native_motion_step(env: BelloMotionTrackingEnv):
             env,
             mj_data,
             last_action=np.asarray(action, dtype=np.float32),
-            reference_time=state.reference_time + env.control_timestep,
+            reference_time=env.advance_reference_time(state.reference_time),
             alignment_xy=state.alignment_xy,
             alignment_yaw=state.alignment_yaw,
             joint_default_offset=state.joint_default_offset,
