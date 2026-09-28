@@ -611,6 +611,9 @@ def test_sonic_profile_keeps_any2any_lora_and_ppo_recipe(tmp_path) -> None:
     )
 
     assert profile.asset_config.asset == "bello_mini"
+    assert profile.config.num_envs == 2048
+    assert profile.config.total_timesteps == 60000 * 2048 * 24
+    assert profile.checkpoint_config.every_updates == 1000
     assert profile.config.num_steps == 24
     assert profile.config.update_epochs == 5
     assert profile.config.num_minibatches == 4

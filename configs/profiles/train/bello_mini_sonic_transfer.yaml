@@ -106,7 +106,7 @@ env_config:
     anti_shake_threshold: 1.5
 checkpoint_config:
   name: bello_mini_sonic_transfer_seed${config.seed}
-  every_updates: 100
+  every_updates: 1000
 wandb_config:
   group: bello-mini-sonic-transfer
   run_name: bello_mini_sonic_transfer_seed${config.seed}

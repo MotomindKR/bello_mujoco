@@ -75,6 +75,15 @@ Resume repeats those explicit corpus and source-checkpoint inputs and adds
 artifact, source hash, clip order, environment, or optimization contract; only
 the total training budget and operational checkpoint/W&B locations may change.
 
+The default full transfer budget is 60,000 PPO updates (2,949,120,000 control
+steps at 2,048 environments and 24 steps per rollout). Checkpoints are saved
+every 1,000 updates and at completion. A 2,048-environment checkpoint is about
+1.4 GB; the interval limits upload volume to about 85 GB over the full run,
+at the cost of losing up to 999 updates if a host fails. Wall-clock rental
+limits must cover dataset/setup time and the measured full-bank update time,
+not the duration of a previous smoke run. A changed corpus requires a fresh
+run from the original NVIDIA weights, not resuming adapters from another bank.
+
 ## Reference and Mini departures
 
 The actor retains the release layout: ten 50 Hz proprio/action samples, ten
