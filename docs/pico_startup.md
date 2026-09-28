@@ -1,42 +1,37 @@
 # PICO tracking and hand-control startup
 
 For the installed Jetson/tracking-PC system, use the
-[two-host systemd workflow](systemd.md). Do not run the foreground daemon
+[systemd workflow](systemd.md). Do not run the foreground daemon
 examples below alongside their managed services. The remaining examples explain
 individual commands and alternative deployments.
 
-The tracking PC runs XRoboToolkit and `pico-smplx-bridge`. Bello's reference
+The tracking host (Jetson or a separate PC) runs XRoboToolkit and `pico-smplx-bridge`. Bello's reference
 producer and hand controller subscribe independently. The Rust policy runner
 consumes the reference producer and hardwared telemetry.
 
 | Process | Endpoint in this same-host example | Purpose |
 | --- | --- | --- |
-| PICO bridge | `127.0.0.1:50051` | Raw XRoboToolkit body and SMPL-X hand poses |
+| PICO bridge | `127.0.0.1:50052` | Native XRoboToolkit body and hand poses |
 | `bello-run-reference` | `127.0.0.1:50056` | GMR joint references |
-| `bello-hardwared` | `127.0.0.1:50055` | Robot telemetry and motor control |
+| `bello-hardwared` | `127.0.0.1:50051` | Robot telemetry and motor control |
 | Bello visualizer | `127.0.0.1:50054` | Remote controller intent |
-| PICO viewer | `http://192.168.0.216:8080/` | Human SMPL-X preview |
 
-Hardwared also defaults to port 50051. Use 50055 in its machine-local profile
-when it shares the PICO host, and point its clients at 50055. On a separate
-robot host it can keep 50051; clients must use that host's address. The PICO
-viewer and Bello visualizer serve different purposes.
+The receiver listens on port 63901; its SDK uses local port 60061. The bridge
+uses 50052 so hardwared can retain 50051 on the same host. No viewer is needed.
 
-## Tracking PC
+## Tracking host
 
-The existing `gmmyung-ubuntu` installation has these user services. These names
-describe that deployment; cloning Bello does not install them:
+Install the receiver and pinned bridge with the [systemd installer](systemd.md#tracking-receiver-and-bridge):
 
 ```bash
-ssh gmmyung@gmmyung-ubuntu
-systemctl --user start xrobotoolkit.service pico-smplx.service pico-smplx-viewer.service
-systemctl --user is-active xrobotoolkit.service pico-smplx.service pico-smplx-viewer.service
+systemctl --user start bello-tracking.target
+systemctl --user is-active xrobotoolkit.service pico-smplx.service
 ```
 
-In the headset, open XRoboToolkit, connect **PC Service** to `192.168.0.216`,
-then enable **Head**, **Hand**, **Full Body**, and **Send**. Keep the calibrated
-body trackers awake. Use the index-finger trigger to activate UI buttons. Open
-the PICO viewer URL above to inspect tracking before connecting robot control.
+In the headset, connect XRoboToolkit **PC Service** to `10.42.0.1` when using
+Bello-Jetson, or to the tracking host's LAN address. Enable **Head**, **Hand**,
+**Full Body**, and **Send**. Keep PICO-calibrated body trackers awake and bare
+hands visible. The bridge does not require a separate SMPL-X calibration.
 
 Inspect producer logs with:
 
@@ -44,31 +39,28 @@ Inspect producer logs with:
 journalctl --user -u pico-smplx.service -n 50 --no-pager
 ```
 
-For a different tracking PC, install the bridge using its
-[README](../deps/pico-smplx-bridge/README.md) and substitute its endpoints below.
-The bridge loads the external PICO SDK; Bello uses only its gRPC schema.
+The bridge loads the external PICO SDK. Bello consumers use typed gRPC messages
+from its [pinned protocol](../deps/pico-smplx-bridge/pose_stream.proto).
 
 ## Body references
 
-In each Bello Python terminal on Ubuntu:
+In each Bello Python terminal:
 
 ```bash
-cd /home/gmmyung/bello_mujoco-smplx-grpc
+cd ~/bello_mujoco
 nix develop
-export SMPLX_MODEL=/home/gmmyung/GMR/assets/body_models/smplx/SMPLX_NEUTRAL.npz
 ```
 
-The licensed model stays outside Git. Start the body reference producer in one
-terminal and leave it running:
+Start the body reference producer in one terminal and leave it running:
 
 ```bash
 uv run bello-run-reference asset=bello_mini \
-  xrobot.endpoint=127.0.0.1:50051
+  xrobot.endpoint=127.0.0.1:50052
 ```
 
 Update and restart the tracking bridge before using this command: it must
 publish typed `xrobot_body` data. Body following no longer accepts `smplx.*`
-arguments and does not need `SMPLX_MODEL`; keep that model for the hand command.
+arguments. Hand control also uses native tracking, with no SMPL-X model.
 On the Jetson, run Python commands with `env -u LD_LIBRARY_PATH uv run ...`
 if the Nix library path conflicts with the system glibc. Do not apply this
 workaround to the Rust runtime shell.
@@ -83,8 +75,7 @@ In a second Bello Python terminal, first validate tracking:
 
 ```bash
 uv run bello-run-hands \
-  smplx.endpoint=127.0.0.1:50051 \
-  smplx.neutral_model_path="$SMPLX_MODEL" \
+  xrobot.endpoint=127.0.0.1:50052 \
   duration_seconds=10
 ```
 
@@ -98,8 +89,7 @@ For a confirmed O6 setup on `can1`, the command is:
 
 ```bash
 uv run bello-run-hands \
-  smplx.endpoint=127.0.0.1:50051 \
-  smplx.neutral_model_path="$SMPLX_MODEL" \
+  xrobot.endpoint=127.0.0.1:50052 \
   protocol=linker_o6 can_interface=can1 \
   arm=true calibration_confirmed=true
 ```
@@ -121,18 +111,9 @@ Start the configured emulator or robot hardware stack first. Use the
 Physical buses, serial devices, and calibration require a machine-specific
 hardwared profile; the checked-in Mini profile is provisional.
 
-If hardwared shares the tracking PC, set its local profile to:
-
-```yaml
-grpc:
-  listen:
-    type: tcp
-    address: 127.0.0.1:50055
-```
-
-Preserve the rest of the profile. If copying it into `outputs/`, resolve its
-`description` path relative to the original profile, then use the absolute path
-in the copy. From the Bello checkout, start that profile with:
+Use a machine-local hardware profile with port 50051. If copying it into
+`outputs/`, resolve its `description` path relative to the original profile.
+From the Bello checkout, start that profile with:
 
 ```bash
 nix develop .#rust-runtime --command cargo run --locked \
@@ -142,7 +123,7 @@ nix develop .#rust-runtime --command cargo run --locked \
 
 Start the [Bello visualizer](../deps/bello-stack/components/bello-visualizer/README.md)
 with its machine-local profile and a connected gamepad. For the same-host
-example, pass `--hardware-endpoint http://127.0.0.1:50055`; its remote service
+example, pass `--hardware-endpoint http://127.0.0.1:50051`; its remote service
 listens on 50054. The Mini example also expects the state estimator on 50053.
 Keep the visualizer's **Commanding** toggle off while the policy owns motors.
 It may start after the policy runner: absent/stale gamepad commands request
@@ -159,7 +140,7 @@ cp rust/bello-policy/config/hardware.yaml outputs/pico/policy-hardware.yaml
 Set these fields, retaining the other defaults:
 
 ```yaml
-endpoint: http://127.0.0.1:50055
+endpoint: http://127.0.0.1:50051
 control:
   following:
     enabled: true
@@ -188,6 +169,6 @@ following applies to checkpoint-held upper-body coordinates; motion-bundle
 mode requires following to be disabled. Physical policy commissioning remains
 pending as described in the deployment guide.
 
-The installed two-host workflow also manages the reference producer, hands,
+The systemd workflow also manages the reference producer, hands,
 hardwared, and estimator with systemd. Only the policy runner and Bello
 visualizer remain manual; see the [daemon guide](systemd.md).

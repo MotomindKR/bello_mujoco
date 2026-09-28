@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from pathlib import Path
 import queue
 import time
 
@@ -9,18 +8,28 @@ import numpy as np
 import pytest
 
 from bello_mujoco.hardware import _smplx_pb2 as pb
+from bello_mujoco.hardware.pico_grpc import PicoGrpcConfig
 from bello_mujoco.hardware.reference import ReferenceDiscontinuity, ReferenceUnavailable
-from bello_mujoco.hardware.smplx_grpc import (
-    SmplxGrpcConfig,
-    SmplxGrpcStream,
+from bello_mujoco.hardware.xrobot_hand_stream import (
+    HAND_NAMES,
+    XRobotHandsGrpcStream,
     parse_frame,
 )
 
 
 def config(**overrides):
-    return replace(
-        SmplxGrpcConfig("localhost:1", neutral_model_path=Path("unused.npz")),
-        **overrides,
+    return replace(PicoGrpcConfig("localhost:1"), **overrides)
+
+
+def hand():
+    return pb.XRobotHand(
+        joint_names=HAND_NAMES,
+        positions=np.arange(78) / 1000,
+        orientations=np.tile([1, 0, 0, 0], 26),
+        position_valid=[True] * 26,
+        orientation_valid=[True] * 26,
+        frame="pico_native_y_up",
+        active=True,
     )
 
 
@@ -29,56 +38,83 @@ def packet(sequence=1, **overrides):
         sequence=sequence,
         source_timestamp_ns=sequence * 33_333_333,
         device_id="headset",
-        calibration_id="calibration",
         upstream_connected=True,
-        global_orient=[0.1, 0.2, 0.3],
-        body_pose=[0.4] * 63,
-        left_hand_pose=[0.5] * 45,
-        right_hand_pose=[0.6] * 45,
-        root_translation=[1, 2, 3],
-        body_valid=True,
-        body_calibrated=True,
-        left_hand_joint_valid=[True] * 15,
-        right_hand_joint_valid=[True] * 15,
-        left_hand_calibrated=True,
-        right_hand_calibrated=True,
+        xrobot_left_hand=hand(),
+        xrobot_right_hand=hand(),
     )
     values.update(overrides)
     return pb.PoseFrame(**values)
 
 
-def test_pose_order_age_and_independent_validity():
-    frame = parse_frame(packet(packet_age_seconds=0.02), config())
-    assert frame.source_age_ms == 30
-    assert frame.rotations.shape == (55, 3)
-    np.testing.assert_allclose(frame.rotations[0], [0.1, 0.2, 0.3])
-    np.testing.assert_allclose(frame.rotations[1:22], 0.4)
-    np.testing.assert_array_equal(frame.rotations[22:25], 0)
-    np.testing.assert_allclose(frame.rotations[25:40], 0.5)
-    np.testing.assert_allclose(frame.rotations[40:55], 0.6)
-    assert not frame.rotations.flags.writeable
-    frame = parse_frame(packet(body_valid=False, left_hand_calibrated=False), config())
-    assert not frame.body_valid and not frame.left_valid and frame.right_valid
-    np.testing.assert_array_equal(frame.rotations[:40], 0)
-    np.testing.assert_array_equal(frame.root_translation, 0)
-    np.testing.assert_allclose(frame.rotations[40:], 0.6)
+def test_direct_hands_need_no_smplx_model_or_calibration_or_body():
+    message = packet(packet_age_seconds=0.02)
+    result = parse_frame(message, config())
+    assert not message.calibration_id and not message.body_valid
+    assert result.left is not None and result.right is not None
+    assert result.source_age_ms == 30
+    np.testing.assert_array_equal(
+        result.left.positions, np.arange(78).reshape(26, 3) / 1000
+    )
+    assert not result.left.positions.flags.writeable
+
+
+def test_position_validity_is_independent_from_orientation_and_other_hand():
+    message = packet()
+    message.xrobot_left_hand.position_valid[7] = False
+    message.xrobot_right_hand.orientation_valid[:] = [False] * 26
+    result = parse_frame(message, config())
+    assert result.left is None and result.right is not None
+
+
+def test_frozen_hand_does_not_become_fresh_from_body_packets():
+    message = packet()
+    message.xrobot_left_hand.age_seconds = 0.6
+    result = parse_frame(message, config())
+    assert result.left is None and result.right is not None
+    message.xrobot_right_hand.age_seconds = 0.6
+    with pytest.raises(ReferenceUnavailable):
+        parse_frame(message, config())
+
+
+def test_hand_joint_order_is_explicit_and_reordered_by_name():
+    message = packet()
+    message.xrobot_left_hand.joint_names.reverse()
+    message.xrobot_left_hand.positions[:] = (
+        np.arange(78).reshape(26, 3)[::-1].ravel() / 1000
+    )
+    np.testing.assert_array_equal(
+        parse_frame(message, config()).left.positions,
+        np.arange(78).reshape(26, 3) / 1000,
+    )
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    "field,value",
     [
-        {"global_orient": [0, 0]},
-        {"body_pose": [0] * 66},
-        {"left_hand_pose": [float("nan")] * 45},
-        {"right_hand_joint_valid": [True] * 14},
-        {"root_translation": [float("inf"), 0, 0]},
-        {"packet_age_seconds": -1},
-        {"packet_age_seconds": float("nan")},
+        ("positions", [0] * 77),
+        ("positions", [float("nan")] * 78),
+        ("joint_names", ["wrist"] * 26),
+        ("position_valid", [True] * 25),
+        ("frame", "unity"),
+        ("age_seconds", float("nan")),
+        ("age_seconds", -1),
     ],
 )
-def test_malformed_packet_fails_closed(overrides):
+def test_malformed_hand_fails_closed(field, value):
+    message = packet()
+    if isinstance(value, list):
+        getattr(message.xrobot_left_hand, field)[:] = value
+    else:
+        setattr(message.xrobot_left_hand, field, value)
     with pytest.raises(ValueError):
-        parse_frame(packet(**overrides), config())
+        parse_frame(message, config())
+
+
+def test_missing_typed_hands_requires_upgrade_no_smplx_fallback():
+    message = packet()
+    message.ClearField("xrobot_left_hand")
+    with pytest.raises(ValueError, match="upgrade"):
+        parse_frame(message, config())
 
 
 @pytest.mark.parametrize(
@@ -86,13 +122,25 @@ def test_malformed_packet_fails_closed(overrides):
     [
         {"upstream_connected": False},
         {"sequence": 0},
-        {"source_timestamp_ns": -1},
-        {"calibration_id": ""},
         {"packet_age_seconds": 1},
     ],
 )
 def test_unavailable_tracking_is_recoverable(overrides):
     with pytest.raises(ReferenceUnavailable):
+        parse_frame(packet(**overrides), config())
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"source_timestamp_ns": 0},
+        {"device_id": ""},
+        {"packet_age_seconds": -1},
+        {"packet_age_seconds": float("nan")},
+    ],
+)
+def test_valid_tracking_requires_identity_timestamp_and_age(overrides):
+    with pytest.raises(ValueError):
         parse_frame(packet(**overrides), config())
 
 
@@ -193,11 +241,11 @@ def test_direct_body_uses_shared_outage_barriers_without_smplx_calibration(serve
 
 
 def test_local_grpc_single_delivery_and_missing_body_does_not_spin(server):
-    with SmplxGrpcStream(config(endpoint=f"127.0.0.1:{server.port}")) as stream:
+    with XRobotHandsGrpcStream(config(endpoint=f"127.0.0.1:{server.port}")) as stream:
         assert server.subscriptions.get(timeout=2).max_rate_hz == 60
-        server.packets.put(packet(body_valid=False))
+        server.packets.put(packet())
         first = read(stream)
-        assert first is not None and not first.body_valid
+        assert first is not None and first.left is not None
         assert read(stream, timeout=0.03) is None
         server.packets.put(packet())  # Same observation is not new data.
         assert read(stream, timeout=0.03) is None
@@ -211,14 +259,13 @@ def test_local_grpc_single_delivery_and_missing_body_does_not_spin(server):
     "changed",
     [
         packet(1),
-        packet(11, calibration_id="new"),
         packet(11, device_id="new"),
         packet(11, source_timestamp_ns=1),
         packet(11, source_timestamp_ns=2_000_000_000),
     ],
 )
 def test_epoch_and_clock_discontinuities_precede_new_frame(server, changed):
-    with SmplxGrpcStream(config(endpoint=f"127.0.0.1:{server.port}")) as stream:
+    with XRobotHandsGrpcStream(config(endpoint=f"127.0.0.1:{server.port}")) as stream:
         server.packets.put(packet(10))
         assert read(stream).sequence == 10
         server.packets.put(changed)
@@ -228,7 +275,7 @@ def test_epoch_and_clock_discontinuities_precede_new_frame(server, changed):
 
 
 def test_duplicates_do_not_refresh_age_and_stale_error_is_delivered_once(server):
-    with SmplxGrpcStream(
+    with XRobotHandsGrpcStream(
         config(endpoint=f"127.0.0.1:{server.port}", max_source_age_ms=100)
     ) as stream:
         server.packets.put(packet())
@@ -241,7 +288,7 @@ def test_duplicates_do_not_refresh_age_and_stale_error_is_delivered_once(server)
 
 
 def test_rpc_outage_resets_sequence_and_recovers(server):
-    with SmplxGrpcStream(config(endpoint=f"127.0.0.1:{server.port}")) as stream:
+    with XRobotHandsGrpcStream(config(endpoint=f"127.0.0.1:{server.port}")) as stream:
         server.packets.put(packet(20))
         assert read(stream).sequence == 20
         server.subscriptions.get(timeout=1)
@@ -253,12 +300,12 @@ def test_rpc_outage_resets_sequence_and_recovers(server):
         assert read(stream).sequence == 1
 
 
-def test_slow_consumer_gets_latest_frame_after_latched_calibration_barrier(server):
-    with SmplxGrpcStream(config(endpoint=f"127.0.0.1:{server.port}")) as stream:
+def test_slow_consumer_gets_latest_frame_after_latched_identity_barrier(server):
+    with XRobotHandsGrpcStream(config(endpoint=f"127.0.0.1:{server.port}")) as stream:
         server.packets.put(packet(1))
         assert read(stream).sequence == 1
         for sequence in range(2, 21):
-            server.packets.put(packet(sequence, calibration_id="new"))
+            server.packets.put(packet(sequence, device_id="new"))
         with stream._condition:
             assert stream._condition.wait_for(
                 lambda: stream._latest is not None and stream._latest.sequence == 20,
@@ -277,14 +324,14 @@ def test_close_cancels_waiting_for_a_connection():
     with socket.socket() as socket_:
         socket_.bind(("127.0.0.1", 0))
         port = socket_.getsockname()[1]
-        stream = SmplxGrpcStream(config(endpoint=f"127.0.0.1:{port}"))
+        stream = XRobotHandsGrpcStream(config(endpoint=f"127.0.0.1:{port}"))
         with stream:
             assert read(stream, timeout=0.03) is None
         assert not stream._thread.is_alive()
 
 
 def test_watchdog_reconnects_a_silent_stream(server):
-    with SmplxGrpcStream(
+    with XRobotHandsGrpcStream(
         config(endpoint=f"127.0.0.1:{server.port}", rpc_timeout_seconds=0.2)
     ) as stream:
         server.subscriptions.get(timeout=1)
@@ -307,9 +354,15 @@ def test_watchdog_reconnects_a_silent_stream(server):
             pytest.fail("stream did not recover after watchdog cancellation")
 
 
-@pytest.mark.parametrize("value", [packet(body_pose=[]), grpc.StatusCode.UNIMPLEMENTED])
+@pytest.mark.parametrize(
+    "value",
+    [
+        packet(xrobot_left_hand=pb.XRobotHand(active=True, frame="pico_native_y_up")),
+        grpc.StatusCode.UNIMPLEMENTED,
+    ],
+)
 def test_malformed_data_and_protocol_failure_are_terminal(server, value):
-    with SmplxGrpcStream(config(endpoint=f"127.0.0.1:{server.port}")) as stream:
+    with XRobotHandsGrpcStream(config(endpoint=f"127.0.0.1:{server.port}")) as stream:
         server.packets.put(value)
         with pytest.raises(RuntimeError, match="stream failed"):
             read(stream)

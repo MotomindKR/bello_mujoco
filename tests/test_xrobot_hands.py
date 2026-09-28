@@ -3,7 +3,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import replace
 import math
-from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -13,21 +12,55 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from bello_mujoco.hardware.smplx_grpc import SmplxGrpcConfig
-from bello_mujoco.hardware.smplx_contract import SMPLX_JOINT_NAMES
-from bello_mujoco.hardware import smplx_hands
-from bello_mujoco.hardware.smplx_hands import (
-    SMPLX_FINGER_TIP_NAMES,
+from bello_mujoco.hardware.pico_grpc import PicoGrpcConfig
+from bello_mujoco.hardware.xrobot_hand_stream import HandLandmarks
+from bello_mujoco.hardware import xrobot_hands
+from bello_mujoco.hardware.xrobot_hands import (
     HandRawCalibration,
-    SmplxHandCommandFilter,
-    SmplxHandLandmarkMapper,
-    SmplxHandTarget,
-    SmplxHandsConfig,
-    SmplxHandsDiscontinuity,
-    SmplxHandsFrame,
-    SmplxHandsUnavailable,
-    run_smplx_hands,
+    XRobotHandCommandFilter,
+    XRobotHandLandmarkMapper,
+    XRobotHandTarget,
+    XRobotHandsConfig,
+    XRobotHandsDiscontinuity,
+    XRobotHandsFrame,
+    XRobotHandsUnavailable,
+    run_xrobot_hands,
 )
+
+
+FIXTURE_JOINT_NAMES = tuple(
+    name
+    for side in ("left", "right")
+    for name in (f"{side}_wrist",)
+    + tuple(
+        f"{side}_{finger}{joint}"
+        for finger in ("thumb", "index", "middle", "ring", "pinky")
+        for joint in (1, 2, 3)
+    )
+)
+FIXTURE_TIP_NAMES = tuple(
+    f"{side}_{finger}_tip"
+    for side in ("left", "right")
+    for finger in ("thumb", "index", "middle", "ring", "pinky")
+)
+
+
+def native_positions(side, joints, tips):
+    positions = np.zeros((26, 3))
+    positions[1] = joints[FIXTURE_JOINT_NAMES.index(f"{side}_wrist")]
+    for finger, start in (
+        ("thumb", 2),
+        ("index", 7),
+        ("middle", 12),
+        ("ring", 17),
+        ("pinky", 22),
+    ):
+        for joint in (1, 2, 3):
+            positions[start + joint - 1] = joints[
+                FIXTURE_JOINT_NAMES.index(f"{side}_{finger}{joint}")
+            ]
+        positions[start + 3] = tips[FIXTURE_TIP_NAMES.index(f"{side}_{finger}_tip")]
+    return positions
 
 
 def test_importing_hand_runner_does_not_load_policy_or_simulation_stacks() -> None:
@@ -35,7 +68,7 @@ def test_importing_hand_runner_does_not_load_policy_or_simulation_stacks() -> No
         [
             sys.executable,
             "-c",
-            "import sys; import bello_mujoco.hardware.smplx_hands; assert 'jax' not in sys.modules; assert 'mujoco' not in sys.modules; assert 'torch' not in sys.modules",
+            "import sys; import bello_mujoco.hardware.xrobot_hands; assert 'jax' not in sys.modules; assert 'mujoco' not in sys.modules; assert 'torch' not in sys.modules",
         ],
         check=False,
         capture_output=True,
@@ -44,24 +77,22 @@ def test_importing_hand_runner_does_not_load_policy_or_simulation_stacks() -> No
     assert result.returncode == 0, result.stderr
 
 
-def hands_config(**overrides: object) -> SmplxHandsConfig:
+def hands_config(**overrides: object) -> XRobotHandsConfig:
     values: dict[str, object] = {
-        "smplx": SmplxGrpcConfig(
-            endpoint="127.0.0.1:50051", neutral_model_path=Path("unused.npz")
-        ),
+        "xrobot": PicoGrpcConfig(endpoint="127.0.0.1:50052"),
         "max_reference_age_ms": 1000,
         "smoothing_time_constant_ms": 500.0,
         "max_raw_rate_per_second": 255.0,
     }
     values.update(overrides)
-    return SmplxHandsConfig(**values)
+    return XRobotHandsConfig(**values)
 
 
 def neutral_landmarks() -> tuple[np.ndarray, np.ndarray]:
-    joints = np.zeros((len(SMPLX_JOINT_NAMES), 3), dtype=np.float64)
-    tips = np.zeros((len(SMPLX_FINGER_TIP_NAMES), 3), dtype=np.float64)
-    joint_index = {name: index for index, name in enumerate(SMPLX_JOINT_NAMES)}
-    tip_index = {name: index for index, name in enumerate(SMPLX_FINGER_TIP_NAMES)}
+    joints = np.zeros((len(FIXTURE_JOINT_NAMES), 3), dtype=np.float64)
+    tips = np.zeros((len(FIXTURE_TIP_NAMES), 3), dtype=np.float64)
+    joint_index = {name: index for index, name in enumerate(FIXTURE_JOINT_NAMES)}
+    tip_index = {name: index for index, name in enumerate(FIXTURE_TIP_NAMES)}
     lateral = {"index": 0.03, "middle": 0.01, "ring": -0.01, "pinky": -0.03}
     for side, mirror, offset in (("right", 1.0, 0.2), ("left", -1.0, -0.2)):
         wrist = np.asarray((offset, 0.0, 0.0))
@@ -83,8 +114,8 @@ def neutral_landmarks() -> tuple[np.ndarray, np.ndarray]:
 
 def curled_landmarks() -> tuple[np.ndarray, np.ndarray]:
     joints, tips = neutral_landmarks()
-    joint_index = {name: index for index, name in enumerate(SMPLX_JOINT_NAMES)}
-    tip_index = {name: index for index, name in enumerate(SMPLX_FINGER_TIP_NAMES)}
+    joint_index = {name: index for index, name in enumerate(FIXTURE_JOINT_NAMES)}
+    tip_index = {name: index for index, name in enumerate(FIXTURE_TIP_NAMES)}
     for side, mirror in (("right", 1.0), ("left", -1.0)):
         for finger in ("index", "middle", "ring", "pinky"):
             base = joints[joint_index[f"{side}_{finger}1"]]
@@ -115,13 +146,13 @@ def curled_landmarks() -> tuple[np.ndarray, np.ndarray]:
 
 
 def map_landmarks(
-    mapper: SmplxHandLandmarkMapper, side: str, joints: np.ndarray, tips: np.ndarray
-) -> SmplxHandTarget:
-    return mapper.map_side(side, joints, tips)
+    mapper: XRobotHandLandmarkMapper, side: str, joints: np.ndarray, tips: np.ndarray
+) -> XRobotHandTarget:
+    return mapper.map_side(side, native_positions(side, joints, tips))
 
 
 def test_neutral_and_curled_hands_are_mirrored_consistently() -> None:
-    mapper = SmplxHandLandmarkMapper(hands_config())
+    mapper = XRobotHandLandmarkMapper(hands_config())
     neutral_joints, neutral_tips = neutral_landmarks()
     curled_joints, curled_tips = curled_landmarks()
     neutral_left = map_landmarks(mapper, "left", neutral_joints, neutral_tips)
@@ -144,28 +175,22 @@ def test_neutral_and_curled_hands_are_mirrored_consistently() -> None:
 def test_stream_maps_each_hand_independently_without_body_tracking(monkeypatch, valid):
     joints, tips = neutral_landmarks()
     packet = SimpleNamespace(
-        body_valid=False,
-        left_valid=valid[0],
-        right_valid=valid[1],
-        rotations=np.zeros((55, 3)),
-        root_translation=np.zeros(3),
+        left=HandLandmarks(native_positions("left", joints, tips), 20)
+        if valid[0]
+        else None,
+        right=HandLandmarks(native_positions("right", joints, tips), 20)
+        if valid[1]
+        else None,
         sequence=3,
         source_timestamp_ns=1,
         source_age_ms=20,
         received_at=time.monotonic(),
         track_id="calibrated",
     )
-    monkeypatch.setattr(
-        smplx_hands,
-        "SmplxKinematics",
-        lambda path: SimpleNamespace(
-            forward=lambda *args: SimpleNamespace(positions=joints, tips=tips)
-        ),
-    )
-    stream = smplx_hands.SmplxHandsStream(hands_config())
+    stream = xrobot_hands.XRobotHandsStream(hands_config())
     stream._transport = SimpleNamespace(wait_next=lambda **kwargs: packet)
     if not any(valid):
-        with pytest.raises(SmplxHandsUnavailable):
+        with pytest.raises(XRobotHandsUnavailable):
             stream.wait_next(after_sequence=None, timeout_seconds=1)
         return
     frame = stream.wait_next(after_sequence=None, timeout_seconds=1)
@@ -174,7 +199,7 @@ def test_stream_maps_each_hand_independently_without_body_tracking(monkeypatch, 
 
 
 def test_mapping_is_invariant_to_world_rigid_transform() -> None:
-    mapper = SmplxHandLandmarkMapper(hands_config())
+    mapper = XRobotHandLandmarkMapper(hands_config())
     joints, tips = curled_landmarks()
     expected = map_landmarks(mapper, "right", joints, tips)
     angle = 0.7
@@ -198,10 +223,10 @@ def test_mapping_is_invariant_to_world_rigid_transform() -> None:
 
 
 def test_thumb_adduction_is_palm_local_and_side_correct() -> None:
-    mapper = SmplxHandLandmarkMapper(hands_config())
+    mapper = XRobotHandLandmarkMapper(hands_config())
     joints, tips = neutral_landmarks()
-    joint_index = {name: index for index, name in enumerate(SMPLX_JOINT_NAMES)}
-    tip_index = {name: index for index, name in enumerate(SMPLX_FINGER_TIP_NAMES)}
+    joint_index = {name: index for index, name in enumerate(FIXTURE_JOINT_NAMES)}
+    tip_index = {name: index for index, name in enumerate(FIXTURE_TIP_NAMES)}
     for side, mirror in (("right", 1.0), ("left", -1.0)):
         thumb1 = joints[joint_index[f"{side}_thumb1"]]
         direction = np.asarray((mirror * 0.5, math.sqrt(3.0) / 2.0, 0.0))
@@ -223,9 +248,9 @@ def test_command_filter_limits_all_axes_with_inverted_calibration() -> None:
             closed_positions=(0, 255, 255, 255, 255, 255),
         ),
     )
-    command_filter = SmplxHandCommandFilter(config)
-    opened = SmplxHandTarget("left", (0.0,) * 6)
-    closed = SmplxHandTarget("left", (1.0,) * 6)
+    command_filter = XRobotHandCommandFilter(config)
+    opened = XRobotHandTarget("left", (0.0,) * 6)
+    closed = XRobotHandTarget("left", (1.0,) * 6)
     assert command_filter.update(opened, now=1.0) == (200, 0, 0, 0, 0, 0)
     assert command_filter.update(closed, now=1.1) == (190, 10, 10, 10, 10, 10)
 
@@ -234,9 +259,9 @@ def test_command_filter_applies_lpf_to_all_axes() -> None:
     config = hands_config(
         smoothing_time_constant_ms=500.0, max_raw_rate_per_second=10000.0
     )
-    command_filter = SmplxHandCommandFilter(config)
-    opened = SmplxHandTarget("right", (0.0,) * 6)
-    closed = SmplxHandTarget("right", (1.0,) * 6)
+    command_filter = XRobotHandCommandFilter(config)
+    opened = XRobotHandTarget("right", (0.0,) * 6)
+    closed = XRobotHandTarget("right", (1.0,) * 6)
     command_filter.update(opened, now=1.0)
     actual = command_filter.update(closed, now=1.5)
     expected = math.floor(255.0 * math.exp(-1.0) + 0.5)
@@ -249,10 +274,10 @@ def test_command_filter_limits_first_recovered_step_on_all_axes() -> None:
         smoothing_time_constant_ms=0.0,
         max_raw_rate_per_second=100.0,
     )
-    command_filter = SmplxHandCommandFilter(config)
+    command_filter = XRobotHandCommandFilter(config)
     command_filter.seed("right", (200,) * 6, now=1.0)
     command_filter.resume("right", now=20.0)
-    actual = command_filter.update(SmplxHandTarget("right", (1.0,) * 6), now=20.0)
+    actual = command_filter.update(XRobotHandTarget("right", (1.0,) * 6), now=20.0)
     assert actual == (190,) * 6
 
 
@@ -261,15 +286,15 @@ def test_command_filter_follows_partial_flexion_without_latching() -> None:
         smoothing_time_constant_ms=0.0,
         max_raw_rate_per_second=10000.0,
     )
-    command_filter = SmplxHandCommandFilter(config)
+    command_filter = XRobotHandCommandFilter(config)
     first = command_filter.update(
-        SmplxHandTarget("left", (0.7, 0.0, 0.7, 0.2, 0.8, 0.4)), now=1.0
+        XRobotHandTarget("left", (0.7, 0.0, 0.7, 0.2, 0.8, 0.4)), now=1.0
     )
     halfway = command_filter.update(
-        SmplxHandTarget("left", (0.5, 0.0, 0.5, 0.5, 0.5, 0.5)), now=1.1
+        XRobotHandTarget("left", (0.5, 0.0, 0.5, 0.5, 0.5, 0.5)), now=1.1
     )
     opened = command_filter.update(
-        SmplxHandTarget("left", (0.3, 0.0, 0.3, 0.3, 0.3, 0.3)), now=1.2
+        XRobotHandTarget("left", (0.3, 0.0, 0.3, 0.3, 0.3, 0.3)), now=1.2
     )
     assert first == (77, 255, 77, 204, 51, 153)
     assert halfway == (128, 255, 128, 128, 128, 128)
@@ -278,9 +303,9 @@ def test_command_filter_follows_partial_flexion_without_latching() -> None:
 
 def test_command_filter_reseed_uses_measured_positions_for_every_axis() -> None:
     config = hands_config(smoothing_time_constant_ms=0.0, max_raw_rate_per_second=100.0)
-    command_filter = SmplxHandCommandFilter(config)
-    closed = SmplxHandTarget("right", (1.0,) * 6)
-    halfway = SmplxHandTarget("right", (0.5,) * 6)
+    command_filter = XRobotHandCommandFilter(config)
+    closed = XRobotHandTarget("right", (1.0,) * 6)
+    halfway = XRobotHandTarget("right", (0.5,) * 6)
     assert command_filter.update(closed, now=1.0) == (0,) * 6
     command_filter.seed("right", (255, 200, 180, 50, 80, 90), now=1.1)
     command_filter.resume("right", now=1.2)
@@ -299,7 +324,7 @@ def test_proportional_targets_interpolate_each_calibrated_range(side) -> None:
         open_positions=(200, 0, 250, 10, 90, 120),
         closed_positions=(0, 200, 50, 210, 190, 120),
     )
-    command_filter = SmplxHandCommandFilter(
+    command_filter = XRobotHandCommandFilter(
         hands_config(
             smoothing_time_constant_ms=0,
             max_raw_rate_per_second=10000,
@@ -314,15 +339,15 @@ def test_proportional_targets_interpolate_each_calibrated_range(side) -> None:
         (5.0, 1.0, (0, 200, 50, 210, 190, 120)),
     ):
         assert (
-            command_filter.update(SmplxHandTarget(side, (amount,) * 6), now=now)
+            command_filter.update(XRobotHandTarget(side, (amount,) * 6), now=now)
             == expected
         )
 
 
-def target_frame(*, received_at: float | None = None) -> SmplxHandsFrame:
-    left = SmplxHandTarget("left", (0.1,) * 6)
-    right = SmplxHandTarget("right", (0.2,) * 6)
-    return SmplxHandsFrame(
+def target_frame(*, received_at: float | None = None) -> XRobotHandsFrame:
+    left = XRobotHandTarget("left", (0.1,) * 6)
+    right = XRobotHandTarget("right", (0.2,) * 6)
+    return XRobotHandsFrame(
         sequence=1,
         source_timestamp_ns=1,
         source_age_ms=10,
@@ -343,14 +368,14 @@ def test_unarmed_run_receives_without_constructing_transport() -> None:
         def __exit__(self, *_error: object) -> bool:
             return False
 
-        def wait_next(self, **_arguments: object) -> SmplxHandsFrame:
+        def wait_next(self, **_arguments: object) -> XRobotHandsFrame:
             stop.set()
             return target_frame()
 
-    def forbidden_transport(_config: SmplxHandsConfig):
+    def forbidden_transport(_config: XRobotHandsConfig):
         raise AssertionError("unarmed validation must not touch CAN transport")
 
-    run_smplx_hands(
+    run_xrobot_hands(
         hands_config(arm=False),
         forbidden_transport,
         stop_event=stop,
@@ -371,7 +396,7 @@ def test_unarmed_duration_expiry_is_not_reported_as_success() -> None:
             return None
 
     with pytest.raises(TimeoutError, match="before an acceptable hand frame"):
-        run_smplx_hands(
+        run_xrobot_hands(
             hands_config(max_duration_seconds=0.002),
             lambda _config: (_ for _ in ()).throw(
                 AssertionError("unarmed preflight must not construct CAN transport")
@@ -415,10 +440,10 @@ def test_armed_run_sends_nothing_before_first_smplx_target() -> None:
             return self.initial_positions[side]
 
     @contextmanager
-    def transport(_config: SmplxHandsConfig):
+    def transport(_config: XRobotHandsConfig):
         yield FakeTransport()
 
-    run_smplx_hands(
+    run_xrobot_hands(
         hands_config(arm=True, calibration_confirmed=True),
         transport,
         stop_event=stop,
@@ -442,14 +467,14 @@ def test_outage_during_recovery_probe_prevents_obsolete_write() -> None:
         def __exit__(self, *_error: object) -> bool:
             return False
 
-        def wait_next(self, **_arguments: object) -> SmplxHandsFrame | None:
+        def wait_next(self, **_arguments: object) -> XRobotHandsFrame | None:
             nonlocal calls
             calls += 1
             if calls == 1:
                 return frame
             if outage_pending:
                 stop.set()
-                raise SmplxHandsDiscontinuity("outage published during probe")
+                raise XRobotHandsDiscontinuity("outage published during probe")
             raise AssertionError("the recovery probe must publish an outage")
 
     class FakeTransport:
@@ -464,10 +489,10 @@ def test_outage_during_recovery_probe_prevents_obsolete_write() -> None:
             commands.append(positions)
 
     @contextmanager
-    def transport(_config: SmplxHandsConfig):
+    def transport(_config: XRobotHandsConfig):
         yield FakeTransport()
 
-    run_smplx_hands(
+    run_xrobot_hands(
         hands_config(arm=True, calibration_confirmed=True, right_enabled=False),
         transport,
         stop_event=stop,
@@ -487,10 +512,10 @@ def test_armed_run_follows_proportional_target_with_bounded_recovery(
     commands: list[tuple[int, ...]] = []
     calls = 0
     now = 100.0
-    monkeypatch.setattr(smplx_hands, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(xrobot_hands, "time", SimpleNamespace(monotonic=lambda: now))
     target = replace(
         target_frame(received_at=now),
-        left=SmplxHandTarget("left", (0.8, 0.5, 0.8, 0.8, 0.8, 0.8)),
+        left=XRobotHandTarget("left", (0.8, 0.5, 0.8, 0.8, 0.8, 0.8)),
         right=None,
     )
 
@@ -523,10 +548,10 @@ def test_armed_run_follows_proportional_target_with_bounded_recovery(
             stop.set()
 
     @contextmanager
-    def transport(_config: SmplxHandsConfig):
+    def transport(_config: XRobotHandsConfig):
         yield FakeTransport()
 
-    run_smplx_hands(
+    run_xrobot_hands(
         hands_config(
             arm=True,
             calibration_confirmed=True,
@@ -553,7 +578,7 @@ def test_target_expiring_during_recovery_probe_sends_no_positions(
     def monotonic() -> float:
         return now
 
-    monkeypatch.setattr(smplx_hands, "time", SimpleNamespace(monotonic=monotonic))
+    monkeypatch.setattr(xrobot_hands, "time", SimpleNamespace(monotonic=monotonic))
 
     class FakeStream:
         def __enter__(self) -> FakeStream:
@@ -562,7 +587,7 @@ def test_target_expiring_during_recovery_probe_sends_no_positions(
         def __exit__(self, *_error: object) -> bool:
             return False
 
-        def wait_next(self, **_arguments: object) -> SmplxHandsFrame | None:
+        def wait_next(self, **_arguments: object) -> XRobotHandsFrame | None:
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -582,10 +607,10 @@ def test_target_expiring_during_recovery_probe_sends_no_positions(
             commands.append(positions)
 
     @contextmanager
-    def transport(_config: SmplxHandsConfig):
+    def transport(_config: XRobotHandsConfig):
         yield FakeTransport()
 
-    run_smplx_hands(
+    run_xrobot_hands(
         hands_config(arm=True, calibration_confirmed=True, right_enabled=False),
         transport,
         stop_event=stop,
@@ -608,7 +633,7 @@ def test_smplx_outage_suspends_writes_and_recovery_refreshes_and_reseeds(
             self.now += seconds
 
     time = Clock()
-    monkeypatch.setattr(smplx_hands, "time", time)
+    monkeypatch.setattr(xrobot_hands, "time", time)
     stop = threading.Event()
     commands: list[tuple[int, ...]] = []
     refreshes: list[tuple[int, ...]] = []
@@ -616,7 +641,7 @@ def test_smplx_outage_suspends_writes_and_recovery_refreshes_and_reseeds(
     closed = replace(
         target_frame(),
         received_at=time.monotonic(),
-        left=SmplxHandTarget("left", (1.0,) * 6),
+        left=XRobotHandTarget("left", (1.0,) * 6),
         right=None,
     )
 
@@ -639,7 +664,7 @@ def test_smplx_outage_suspends_writes_and_recovery_refreshes_and_reseeds(
                 return None
             if calls == 4:
                 time.sleep(timeout_seconds)
-                raise SmplxHandsUnavailable("test outage")
+                raise XRobotHandsUnavailable("test outage")
             if calls == 5:
                 return replace(closed, sequence=3, received_at=time.monotonic())
             if calls == 6:
@@ -669,10 +694,10 @@ def test_smplx_outage_suspends_writes_and_recovery_refreshes_and_reseeds(
                 stop.set()
 
     @contextmanager
-    def transport(_config: SmplxHandsConfig):
+    def transport(_config: XRobotHandsConfig):
         yield FakeTransport()
 
-    run_smplx_hands(
+    run_xrobot_hands(
         hands_config(
             arm=True,
             calibration_confirmed=True,
@@ -714,10 +739,10 @@ def test_missing_smplx_frames_send_no_positions() -> None:
             raise AssertionError("missing SMPL-X data must not probe a hand")
 
     @contextmanager
-    def transport(_config: SmplxHandsConfig):
+    def transport(_config: XRobotHandsConfig):
         yield FakeTransport()
 
-    run_smplx_hands(
+    run_xrobot_hands(
         hands_config(arm=True, calibration_confirmed=True, right_enabled=False),
         transport,
         stop_event=stop,
@@ -731,7 +756,7 @@ def test_stale_smplx_target_sends_no_positions() -> None:
     commands: list[tuple[int, ...]] = []
     stale = replace(
         target_frame(received_at=time.monotonic() - 2.0),
-        left=SmplxHandTarget("left", (1.0,) * 6),
+        left=XRobotHandTarget("left", (1.0,) * 6),
         right=None,
     )
 
@@ -742,7 +767,7 @@ def test_stale_smplx_target_sends_no_positions() -> None:
         def __exit__(self, *_error: object) -> bool:
             return False
 
-        def wait_next(self, **_arguments: object) -> SmplxHandsFrame:
+        def wait_next(self, **_arguments: object) -> XRobotHandsFrame:
             stop.set()
             return stale
 
@@ -756,10 +781,10 @@ def test_stale_smplx_target_sends_no_positions() -> None:
             raise AssertionError("a stale target must not probe a hand")
 
     @contextmanager
-    def transport(_config: SmplxHandsConfig):
+    def transport(_config: XRobotHandsConfig):
         yield FakeTransport()
 
-    run_smplx_hands(
+    run_xrobot_hands(
         hands_config(arm=True, calibration_confirmed=True, right_enabled=False),
         transport,
         stop_event=stop,
@@ -780,17 +805,17 @@ def test_side_missing_then_valid_before_tick_requires_probe_and_newer_frame(
     def monotonic() -> float:
         return now
 
-    def frame(sequence: int, *, right_available: bool = True) -> SmplxHandsFrame:
+    def frame(sequence: int, *, right_available: bool = True) -> XRobotHandsFrame:
         result = replace(
             target_frame(received_at=now),
             sequence=sequence,
-            left=SmplxHandTarget("left", (1.0,) * 6),
+            left=XRobotHandTarget("left", (1.0,) * 6),
         )
         if right_available:
             return result
         return replace(result, right=None, right_unavailable_reason="invalid tracking")
 
-    monkeypatch.setattr(smplx_hands, "time", SimpleNamespace(monotonic=monotonic))
+    monkeypatch.setattr(xrobot_hands, "time", SimpleNamespace(monotonic=monotonic))
 
     class FakeStream:
         def __enter__(self) -> FakeStream:
@@ -841,10 +866,10 @@ def test_side_missing_then_valid_before_tick_requires_probe_and_newer_frame(
                 stop.set()
 
     @contextmanager
-    def transport(_config: SmplxHandsConfig):
+    def transport(_config: XRobotHandsConfig):
         yield FakeTransport()
 
-    run_smplx_hands(
+    run_xrobot_hands(
         hands_config(
             arm=True,
             calibration_confirmed=True,

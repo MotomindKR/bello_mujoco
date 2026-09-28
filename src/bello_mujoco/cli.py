@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Literal
 import hydra
 from omegaconf import DictConfig
 
-from bello_mujoco.hardware.smplx_grpc import SmplxGrpcConfig
+from bello_mujoco.hardware.pico_grpc import PicoGrpcConfig
 
 from bello_mujoco.configuration import (
     ExperimentName,
@@ -88,7 +88,7 @@ class HandsCommandConfig:
     can_feedback_poll_interval_seconds: float
     can_feedback_timeout_seconds: float
     can_tx_spacing_seconds: float
-    smplx: SmplxGrpcConfig
+    xrobot: PicoGrpcConfig
     max_reference_age_ms: int
     control_rate_hz: float
     smoothing_time_constant_ms: float
@@ -352,9 +352,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
 
 def reference_entrypoint() -> None:
     os.environ["JAX_PLATFORMS"] = "cpu"
-    _expand_path_overrides(
-        ("smplx.neutral_model_path=", "smplx.tls_root_certificate_path=")
-    )
+    _expand_path_overrides(("xrobot.tls_root_certificate_path=",))
     _reference_hydra()
 
 
@@ -370,9 +368,7 @@ def _reference_hydra(config: DictConfig) -> None:
 def hands_entrypoint() -> None:
     os.environ["JAX_PLATFORMS"] = "cpu"
     os.environ["JAX_PLATFORM_NAME"] = "cpu"
-    _expand_path_overrides(
-        ("smplx.neutral_model_path=", "smplx.tls_root_certificate_path=")
-    )
+    _expand_path_overrides(("xrobot.tls_root_certificate_path=",))
     _hands_hydra()
 
 
@@ -387,11 +383,11 @@ def _hands_hydra(config: DictConfig) -> None:
         LinkerHandsCanConfig,
         LinkerHandsCanTransport,
     )
-    from bello_mujoco.hardware.smplx_hands import (
+    from bello_mujoco.hardware.xrobot_hands import (
         HandGeometryConfig,
         HandRawCalibration,
-        SmplxHandsConfig,
-        run_smplx_hands,
+        XRobotHandsConfig,
+        run_xrobot_hands,
     )
 
     can_config = LinkerHandsCanConfig(
@@ -404,8 +400,8 @@ def _hands_hydra(config: DictConfig) -> None:
         feedback_timeout_seconds=command.can_feedback_timeout_seconds,
         tx_spacing_seconds=command.can_tx_spacing_seconds,
     )
-    hands_config = SmplxHandsConfig(
-        smplx=command.smplx,
+    hands_config = XRobotHandsConfig(
+        xrobot=command.xrobot,
         max_reference_age_ms=command.max_reference_age_ms,
         control_rate_hz=command.control_rate_hz,
         smoothing_time_constant_ms=command.smoothing_time_constant_ms,
@@ -431,13 +427,13 @@ def _hands_hydra(config: DictConfig) -> None:
         ),
     )
 
-    def transport_factory(_config: SmplxHandsConfig) -> LinkerHandsCanTransport:
+    def transport_factory(_config: XRobotHandsConfig) -> LinkerHandsCanTransport:
         return LinkerHandsCanTransport(can_config)
 
-    run_smplx_hands(hands_config, transport_factory)
+    run_xrobot_hands(hands_config, transport_factory)
     if not command.arm:
         print(
-            "SMPL-X hand preflight passed; SocketCAN was not opened and no hand "
+            "XRoboToolkit hand preflight passed; SocketCAN was not opened and no hand "
             "command was sent."
         )
 

@@ -1,6 +1,8 @@
 """Deployment installer behavior, independent of robot configuration values."""
 
 import importlib.util
+import hashlib
+import io
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -14,6 +16,7 @@ def installer(monkeypatch, tmp_path):
         "install_systemd", Path(__file__).parents[1] / "scripts/install_systemd.py"
     )
     module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
     calls = []
     monkeypatch.setattr(
@@ -41,7 +44,6 @@ def robot_checkout(monkeypatch, tmp_path):
         ".venv/bin/bello-run-hands",
         "runtime/bello-hardwared",
         "runtime/bello-state-estimatord",
-        "neutral.npz",
         "nix",
     ):
         path = checkout / relative
@@ -58,8 +60,6 @@ def robot_checkout(monkeypatch, tmp_path):
             str(checkout / "runtime"),
             "--nix",
             str(checkout / "nix"),
-            "--neutral-model",
-            str(checkout / "neutral.npz"),
             "--tracking-endpoint",
             "tracking.example:50051",
             "--human-height",
@@ -71,10 +71,10 @@ def robot_checkout(monkeypatch, tmp_path):
 
 
 def test_tracking_install_never_starts_or_stops_processes(
-    installer, monkeypatch, tmp_path
+    installer, tracking_checkout, monkeypatch, tmp_path
 ):
     module, calls = installer
-    monkeypatch.setattr("sys.argv", ["install_systemd.py", "tracking"])
+    monkeypatch.setattr(module.TrackingSetup, "provision", lambda self: None)
     module.main()
     assert not any(
         action in call
@@ -91,25 +91,28 @@ def test_tracking_install_never_starts_or_stops_processes(
     assert "[Install]\nWantedBy=default.target\n" in target
 
 
-def test_dry_run_does_not_write_or_reload(installer, monkeypatch, tmp_path):
+def test_dry_run_does_not_write_or_reload(
+    installer, tracking_checkout, monkeypatch, tmp_path
+):
     module, calls = installer
-    monkeypatch.setattr("sys.argv", ["install_systemd.py", "tracking", "--dry-run"])
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--dry-run"])
     module.main()
     assert not (tmp_path / ".config").exists()
-    assert all("cat" in call for call in calls)
+    assert calls == []
 
 
-def test_install_refuses_unmanaged_overwrite(installer, monkeypatch, tmp_path):
+def test_install_refuses_unmanaged_overwrite(
+    installer, tracking_checkout, monkeypatch, tmp_path
+):
     module, calls = installer
     target = tmp_path / ".config/systemd/user/bello-tracking.target"
     target.parent.mkdir(parents=True)
     target.write_text("user-owned unit\n")
-    monkeypatch.setattr("sys.argv", ["install_systemd.py", "tracking"])
     with pytest.raises(RuntimeError, match="unmanaged"):
         module.main()
     assert target.read_text() == "user-owned unit\n"
     assert not list(target.parent.glob("*.service.d"))
-    assert all("cat" in call for call in calls)
+    assert calls == []
 
 
 def test_unit_encoding_and_explicit_restart(installer):
@@ -251,3 +254,161 @@ def test_root_invocation_is_rejected(installer, robot_checkout, monkeypatch, tmp
         module.main()
     assert calls == []
     assert not (tmp_path / ".config").exists()
+
+
+@pytest.fixture
+def tracking_checkout(installer, monkeypatch, tmp_path):
+    module, calls = installer
+    checkout = tmp_path / "checkout"
+    bridge = checkout / "deps/pico-smplx-bridge"
+    bridge.mkdir(parents=True)
+    (bridge / "server.py").touch()
+    (bridge / "requirements.lock").write_text("grpcio==1.84.0\n")
+    uv = tmp_path / "uv"
+    uv.touch()
+    monkeypatch.setattr(module.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(
+        module.platform,
+        "freedesktop_os_release",
+        lambda: {"ID": "ubuntu", "VERSION_ID": "22.04"},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "install_systemd.py",
+            "tracking",
+            "--checkout",
+            str(checkout),
+            "--uv",
+            str(uv),
+        ],
+    )
+    return checkout
+
+
+def test_tracking_units_use_direct_sdk_and_separate_local_port(
+    installer, tracking_checkout, monkeypatch, tmp_path
+):
+    module, calls = installer
+    monkeypatch.setattr(module.TrackingSetup, "provision", lambda self: None)
+    module.main()
+    units = tmp_path / ".config/systemd/user"
+    receiver = (units / "xrobotoolkit.service").read_text()
+    bridge = (units / "pico-smplx.service").read_text()
+    target = (units / "bello-tracking.target").read_text()
+    assert "viewer" not in target
+    assert "RoboticsServiceProcess" in receiver
+    assert "SDK/arm64/libPXREARobotSDK.so" in bridge
+    assert '"--listen" "127.0.0.1:50052"' in bridge
+    assert "After=xrobotoolkit.service" in bridge
+    assert "Wants=xrobotoolkit.service" in bridge
+    assert "UnsetEnvironment=LD_LIBRARY_PATH" not in receiver + bridge
+    assert "calibration" not in bridge
+    assert "uv " not in receiver + bridge
+    assert "nix " not in receiver + bridge
+
+
+@pytest.mark.parametrize(
+    "machine,version,sdk",
+    [
+        ("aarch64", "22.04", "arm64"),
+        ("x86_64", "22.04", "x64"),
+        ("x86_64", "24.04", "x64"),
+    ],
+)
+def test_native_release_selection(installer, monkeypatch, machine, version, sdk):
+    module, _ = installer
+    monkeypatch.setattr(module.platform, "machine", lambda: machine)
+    monkeypatch.setattr(
+        module.platform,
+        "freedesktop_os_release",
+        lambda: {"ID": "ubuntu", "VERSION_ID": version},
+    )
+    release = module.xrobot_release()
+    assert release.sdk_arch == sdk
+    assert len(release.sha256) == 64
+
+
+def test_tracking_rejects_unknown_platform_before_writing(
+    installer, tracking_checkout, monkeypatch, tmp_path
+):
+    module, calls = installer
+    monkeypatch.setattr(module.platform, "machine", lambda: "riscv64")
+    with pytest.raises(ValueError, match="architecture"):
+        module.main()
+    assert calls == []
+    assert not (tmp_path / ".config").exists()
+
+
+def test_tracking_missing_source_prevents_provision(
+    installer, tracking_checkout, monkeypatch, tmp_path
+):
+    module, calls = installer
+    (tracking_checkout / "deps/pico-smplx-bridge/server.py").unlink()
+    with pytest.raises(ValueError, match="not a file"):
+        module.main()
+    assert calls == []
+    assert not (tmp_path / ".config").exists()
+
+
+def test_tracking_download_checksum_failure_never_extracts_or_installs(
+    installer, tracking_checkout, monkeypatch, tmp_path
+):
+    module, calls = installer
+    setup = module.TrackingSetup(
+        tracking_checkout,
+        tmp_path / "tracking",
+        tmp_path / "uv",
+        module.xrobot_release(),
+        ("127.0.0.1:50052",),
+    )
+    monkeypatch.setattr(module, "urlopen", lambda *a, **kw: io.BytesIO(b"corrupted"))
+    with pytest.raises(ValueError, match="SHA256 mismatch"):
+        setup.provision()
+    assert calls == []
+    assert not setup.package.exists()
+    assert not setup.venv.exists()
+
+
+def test_tracking_repeat_provision_reuses_completed_package_and_environment(
+    installer, tracking_checkout, monkeypatch, tmp_path
+):
+    module, calls = installer
+    payload = b"synthetic package"
+    release = module.XRobotRelease(
+        "synthetic.deb", hashlib.sha256(payload).hexdigest(), "arm64"
+    )
+    setup = module.TrackingSetup(
+        tracking_checkout,
+        tmp_path / "tracking",
+        tmp_path / "uv",
+        release,
+        ("127.0.0.1:50052",),
+    )
+    downloads = []
+
+    def download(url, **kwargs):
+        downloads.append(url)
+        return io.BytesIO(payload)
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[:2] == ["dpkg-deb", "--extract"]:
+            app = Path(args[-1]) / "opt/apps/roboticsservice"
+            sdk = app / "SDK/arm64"
+            sdk.mkdir(parents=True)
+            (sdk / "libPXREARobotSDK.so").touch()
+            (app / "RoboticsServiceProcess").touch()
+        elif args[1] == "venv":
+            (setup.venv / "bin").mkdir(parents=True)
+            (setup.venv / "bin/python").touch()
+
+    monkeypatch.setattr(module, "urlopen", download)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    setup.provision()
+    original_calls = list(calls)
+    setup.provision()
+    assert len(downloads) == 1
+    assert calls == original_calls
+    assert len(calls) == 3  # extraction, venv creation, pinned dependency sync

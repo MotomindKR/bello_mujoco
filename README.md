@@ -36,10 +36,11 @@ default `retargeting` dependency group.
 Physical deployment remains gated on [trained-policy commissioning](docs/hardware.md).
 
 Live PICO body following uses direct XRoboToolkit poses through the updated
-tracking bridge: `bello-run-reference asset=bello_mini xrobot.endpoint=HOST:50051`.
-The body command no longer accepts `smplx.*` or needs a neutral SMPL-X model.
-The independent hand command and viewer retain their SMPL-X path. Update the
-bridge before the reference producer; see [PICO startup](docs/pico_startup.md).
+tracking bridge: `bello-run-reference asset=bello_mini xrobot.endpoint=HOST:50052`.
+Body and hand commands both use `xrobot.*` and typed native tracking data.
+Neither needs a neutral SMPL-X model or bridge T-pose calibration. Install the
+receiver and bridge with `scripts/install_systemd.py tracking`; the viewer is
+not installed. Update the bridge before its consumers; see [PICO startup](docs/pico_startup.md).
 
 ## Guides
 

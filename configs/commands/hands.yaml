@@ -6,9 +6,8 @@ can_probe_timeout_seconds: 0.5
 can_feedback_poll_interval_seconds: 0.2
 can_feedback_timeout_seconds: 0.5
 can_tx_spacing_seconds: 0.003
-smplx:
-  endpoint: 127.0.0.1:50051
-  neutral_model_path: ???
+xrobot:
+  endpoint: 127.0.0.1:50052
   tls_root_certificate_path: null
   tls_server_name_override: null
   connect_timeout_seconds: 5.0

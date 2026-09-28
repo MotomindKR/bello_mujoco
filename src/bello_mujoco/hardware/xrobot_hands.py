@@ -1,4 +1,4 @@
-"""SMPL-X hand-landmark mapping and transport-independent hand control."""
+"""XRoboToolkit hand-landmark mapping and transport-independent hand control."""
 
 from __future__ import annotations
 
@@ -13,9 +13,13 @@ from typing import Callable, ContextManager, Literal, Protocol, TypeAlias
 
 import numpy as np
 
-from bello_mujoco.hardware import smplx_contract as _smplx
-from bello_mujoco.hardware.smplx_grpc import SmplxGrpcConfig, SmplxGrpcStream
-from bello_mujoco.hardware.smplx_kinematics import SmplxKinematics
+from bello_mujoco.hardware.pico_grpc import PicoGrpcConfig
+from bello_mujoco.hardware.xrobot_hand_stream import (
+    HAND_NAMES,
+    FINGER_JOINTS,
+    FINGER_TIPS,
+    XRobotHandsGrpcStream,
+)
 from bello_mujoco.hardware.reference import ReferenceUnavailable, ReferenceDiscontinuity
 
 
@@ -23,7 +27,6 @@ HandSide: TypeAlias = Literal["left", "right"]
 NormalizedHandPositions: TypeAlias = tuple[float, float, float, float, float, float]
 RawHandPositions: TypeAlias = tuple[int, int, int, int, int, int]
 
-SMPLX_FINGER_TIP_NAMES = _smplx.SMPLX_FINGER_TIP_NAMES
 HAND_POSITION_ORDER = (
     "thumb_flex",
     "thumb_abduction",
@@ -38,12 +41,12 @@ _FINGERS = ("index", "middle", "ring", "pinky", "thumb")
 _LOGGER = logging.getLogger(__name__)
 
 
-class SmplxHandsUnavailable(RuntimeError):
-    """No hand target may be sent until another accepted SMPLX frame arrives."""
+class XRobotHandsUnavailable(RuntimeError):
+    """No hand target may be sent until another accepted XRoboToolkit frame arrives."""
 
 
-class SmplxHandsDiscontinuity(SmplxHandsUnavailable):
-    """The SMPLX tracking epoch changed and all smoothing state must be reset."""
+class XRobotHandsDiscontinuity(XRobotHandsUnavailable):
+    """The XRoboToolkit tracking epoch changed and all smoothing state must be reset."""
 
 
 class _HandGeometryUnavailable(ValueError):
@@ -112,10 +115,10 @@ class HandGeometryConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class SmplxHandsConfig:
+class XRobotHandsConfig:
     """Connection, observation, filtering, and arming policy for hand control."""
 
-    smplx: SmplxGrpcConfig
+    xrobot: PicoGrpcConfig
     max_reference_age_ms: int = 500
     control_rate_hz: float = 5.0
     smoothing_time_constant_ms: float = 100.0
@@ -138,27 +141,31 @@ class SmplxHandsConfig:
             or self.smoothing_time_constant_ms < 0.0
         ):
             raise ValueError(
-                "SMPLX hands smoothing_time_constant_ms must be finite and nonnegative"
+                "XRoboToolkit hands smoothing_time_constant_ms must be finite and nonnegative"
             )
         if self.max_duration_seconds is not None and (
             not math.isfinite(self.max_duration_seconds)
             or self.max_duration_seconds <= 0.0
         ):
             raise ValueError(
-                "SMPLX hands max_duration_seconds must be positive and finite"
+                "XRoboToolkit hands max_duration_seconds must be positive and finite"
             )
         if isinstance(self.max_reference_age_ms, bool) or not isinstance(
             self.max_reference_age_ms, int
         ):
-            raise TypeError("SMPLX hands max_reference_age_ms must be an integer")
+            raise TypeError(
+                "XRoboToolkit hands max_reference_age_ms must be an integer"
+            )
         if self.max_reference_age_ms <= 0:
-            raise ValueError("SMPLX hands max_reference_age_ms must be positive")
+            raise ValueError("XRoboToolkit hands max_reference_age_ms must be positive")
         if not self.left_enabled and not self.right_enabled:
-            raise ValueError("at least one SMPLX hand must be enabled")
+            raise ValueError("at least one XRoboToolkit hand must be enabled")
         if not isinstance(self.arm, bool):
-            raise TypeError("SMPLX hands arm must be a boolean")
+            raise TypeError("XRoboToolkit hands arm must be a boolean")
         if not isinstance(self.calibration_confirmed, bool):
-            raise TypeError("SMPLX hands calibration_confirmed must be a boolean")
+            raise TypeError(
+                "XRoboToolkit hands calibration_confirmed must be a boolean"
+            )
         if self.arm and not self.calibration_confirmed:
             raise ValueError(
                 "armed hand control requires calibration_confirmed=true after "
@@ -173,24 +180,24 @@ class SmplxHandsConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class SmplxHandTarget:
+class XRobotHandTarget:
     side: HandSide
     normalized_positions: NormalizedHandPositions
 
 
 @dataclass(frozen=True, slots=True)
-class SmplxHandsFrame:
+class XRobotHandsFrame:
     sequence: int
     source_timestamp_ns: int
     source_age_ms: int
     received_at: float
     track_id: str
-    left: SmplxHandTarget | None
-    right: SmplxHandTarget | None
+    left: XRobotHandTarget | None
+    right: XRobotHandTarget | None
     left_unavailable_reason: str | None = None
     right_unavailable_reason: str | None = None
 
-    def target(self, side: HandSide) -> SmplxHandTarget | None:
+    def target(self, side: HandSide) -> XRobotHandTarget | None:
         return self.left if side == "left" else self.right
 
     def unavailable_reason(self, side: HandSide) -> str | None:
@@ -213,49 +220,31 @@ class HandPositionTransport(Protocol):
 
 
 HandTransportFactory: TypeAlias = Callable[
-    [SmplxHandsConfig], ContextManager[HandPositionTransport]
+    [XRobotHandsConfig], ContextManager[HandPositionTransport]
 ]
 
 
-class SmplxHandLandmarkMapper:
-    """Convert global SMPL-X hand landmarks into palm-local actuator targets."""
+class XRobotHandLandmarkMapper:
+    """Convert global XRoboToolkit hand landmarks into palm-local actuator targets."""
 
-    def __init__(self, config: SmplxHandsConfig) -> None:
+    def __init__(self, config: XRobotHandsConfig) -> None:
         self.config = config
-        self._joint_index = {
-            name: index for index, name in enumerate(_smplx.SMPLX_JOINT_NAMES)
-        }
-        self._tip_index = {
-            name: index for index, name in enumerate(SMPLX_FINGER_TIP_NAMES)
-        }
+        self._joint_index = {name: index for index, name in enumerate(HAND_NAMES)}
 
-    def map_side(
-        self,
-        side: HandSide,
-        joint_positions: np.ndarray,
-        tip_positions: np.ndarray,
-    ) -> SmplxHandTarget:
-        joint_names = (f"{side}_wrist",) + tuple(
-            f"{side}_{finger}{joint}" for finger in _FINGERS for joint in (1, 2, 3)
-        )
-        tip_names = tuple(f"{side}_{finger}_tip" for finger in _FINGERS)
-        joint_indices = np.asarray([self._joint_index[name] for name in joint_names])
-        tip_indices = np.asarray([self._tip_index[name] for name in tip_names])
-        side_joint_positions = joint_positions[joint_indices]
-        side_tip_positions = tip_positions[tip_indices]
-        if not np.all(np.isfinite(side_joint_positions)):
-            raise _HandGeometryUnavailable("joint positions contain non-finite values")
-        if not np.all(np.isfinite(side_tip_positions)):
+    def map_side(self, side: HandSide, joint_positions: np.ndarray) -> XRobotHandTarget:
+        if joint_positions.shape != (26, 3) or not np.isfinite(joint_positions).all():
             raise _HandGeometryUnavailable(
-                "finger-tip positions contain non-finite values"
+                "hand landmarks must contain 26 finite XYZ positions"
             )
-        positions = {
-            name: joint_positions[index]
-            for name, index in zip(joint_names, joint_indices, strict=True)
-        }
+        positions = {f"{side}_wrist": joint_positions[self._joint_index["wrist"]]}
+        for finger, names in FINGER_JOINTS.items():
+            for number, name in enumerate(names, 1):
+                positions[f"{side}_{finger}{number}"] = joint_positions[
+                    self._joint_index[name]
+                ]
         tips = {
-            name: tip_positions[index]
-            for name, index in zip(tip_names, tip_indices, strict=True)
+            f"{side}_{finger}_tip": joint_positions[self._joint_index[name]]
+            for finger, name in FINGER_TIPS.items()
         }
         radial, distal, palmar = self._palm_basis(side, positions)
         finger_flex = {
@@ -285,7 +274,7 @@ class SmplxHandLandmarkMapper:
             finger_flex["ring"],
             finger_flex["pinky"],
         )
-        return SmplxHandTarget(
+        return XRobotHandTarget(
             side=side,
             normalized_positions=normalized,
         )
@@ -397,10 +386,10 @@ class SmplxHandLandmarkMapper:
         return vector / norm
 
 
-class SmplxHandCommandFilter:
+class XRobotHandCommandFilter:
     """Proportional control with smoothing and slew limits on all six axes."""
 
-    def __init__(self, config: SmplxHandsConfig) -> None:
+    def __init__(self, config: XRobotHandsConfig) -> None:
         self.config = config
         self._state: dict[HandSide, np.ndarray] = {}
         self._updated_at: dict[HandSide, float] = {}
@@ -440,7 +429,7 @@ class SmplxHandCommandFilter:
 
     def update(
         self,
-        target: SmplxHandTarget,
+        target: XRobotHandTarget,
         *,
         now: float,
     ) -> RawHandPositions:
@@ -470,14 +459,13 @@ class SmplxHandCommandFilter:
         return tuple(int(value) for value in rounded)  # type: ignore[return-value]
 
 
-class SmplxHandsStream:
+class XRobotHandsStream:
     """Map each valid optical hand independently of body tracking."""
 
-    def __init__(self, config: SmplxHandsConfig):
+    def __init__(self, config: XRobotHandsConfig):
         self.config = config
-        self._mapper = SmplxHandLandmarkMapper(config)
-        self._kinematics = SmplxKinematics(config.smplx.neutral_model_path)
-        self._transport = SmplxGrpcStream(config.smplx)
+        self._mapper = XRobotHandLandmarkMapper(config)
+        self._transport = XRobotHandsGrpcStream(config.xrobot)
 
     def __enter__(self):
         self._transport.__enter__()
@@ -492,12 +480,11 @@ class SmplxHandsStream:
                 after_sequence=after_sequence, timeout_seconds=timeout_seconds
             )
         except ReferenceDiscontinuity as error:
-            raise SmplxHandsDiscontinuity(str(error)) from error
+            raise XRobotHandsDiscontinuity(str(error)) from error
         except ReferenceUnavailable as error:
-            raise SmplxHandsUnavailable(str(error)) from error
+            raise XRobotHandsUnavailable(str(error)) from error
         if frame is None:
             return None
-        pose = self._kinematics.forward(frame.rotations, frame.root_translation)
         targets = {}
         reasons = {}
         for side in _SIDES:
@@ -505,20 +492,20 @@ class SmplxHandsStream:
             reasons[side] = None
             if not self.config.enabled(side):
                 continue
-            if not getattr(frame, side + "_valid"):
-                reasons[side] = "Hand tracking is invalid or uncalibrated"
+            hand = getattr(frame, side)
+            if hand is None:
+                reasons[side] = "Hand tracking is invalid or stale"
                 continue
             try:
                 targets[side] = self._mapper.map_side(
                     side,
-                    pose.positions,
-                    pose.tips,
+                    hand.positions,
                 )
             except _HandGeometryUnavailable as error:
                 reasons[side] = str(error)
         if not any(targets.values()):
-            raise SmplxHandsUnavailable("No enabled hand has a valid target")
-        return SmplxHandsFrame(
+            raise XRobotHandsUnavailable("No enabled hand has a valid target")
+        return XRobotHandsFrame(
             frame.sequence,
             frame.source_timestamp_ns,
             int(frame.source_age_ms),
@@ -531,31 +518,31 @@ class SmplxHandsStream:
         )
 
 
-def run_smplx_hands(
-    config: SmplxHandsConfig,
+def run_xrobot_hands(
+    config: XRobotHandsConfig,
     transport_factory: HandTransportFactory,
     *,
     stop_event: threading.Event | None = None,
-    stream_factory: Callable[[SmplxHandsConfig], ContextManager[SmplxHandsStream]] = (
-        SmplxHandsStream
+    stream_factory: Callable[[XRobotHandsConfig], ContextManager[XRobotHandsStream]] = (
+        XRobotHandsStream
     ),
 ) -> None:
-    """Follow the latest fresh SMPLX hand pose until stopped.
+    """Follow the latest fresh XRoboToolkit hand pose until stopped.
 
-    Missing, stale, or disconnected SMPLX input suspends position writes for the
+    Missing, stale, or disconnected XRoboToolkit input suspends position writes for the
     affected side. All six axes follow proportional targets with the configured
     low-pass and slew limits.
     """
 
     stop = stop_event if stop_event is not None else threading.Event()
-    position_filter = SmplxHandCommandFilter(config)
+    position_filter = XRobotHandCommandFilter(config)
     transport_context: ContextManager[HandPositionTransport | None]
     if config.arm:
         transport_context = transport_factory(config)
     else:
         transport_context = nullcontext(None)
     period = 1.0 / config.control_rate_hz
-    latest: SmplxHandsFrame | None = None
+    latest: XRobotHandsFrame | None = None
     last_sequence: int | None = None
     active_track_id: str | None = None
     side_active = {side: False for side in _SIDES}
@@ -592,7 +579,7 @@ def run_smplx_hands(
             if deadline is not None and now >= deadline:
                 if not config.arm:
                     raise TimeoutError(
-                        "SMPLX hand preflight duration expired before an acceptable "
+                        "XRoboToolkit hand preflight duration expired before an acceptable "
                         "hand frame arrived"
                     )
                 return
@@ -603,9 +590,9 @@ def run_smplx_hands(
                     after_sequence=last_sequence,
                     timeout_seconds=timeout,
                 )
-            except SmplxHandsUnavailable as error:
+            except XRobotHandsUnavailable as error:
                 if not stale:
-                    _LOGGER.warning("SMPLX hand target unavailable: %s", error)
+                    _LOGGER.warning("XRoboToolkit hand target unavailable: %s", error)
                 latest = None
                 last_sequence = None
                 active_track_id = None
@@ -640,7 +627,7 @@ def run_smplx_hands(
             if age_ms > config.max_reference_age_ms:
                 if not stale:
                     _LOGGER.warning(
-                        "SMPLX hand target became stale: %.1f ms > %d ms",
+                        "XRoboToolkit hand target became stale: %.1f ms > %d ms",
                         age_ms,
                         config.max_reference_age_ms,
                     )
@@ -708,24 +695,25 @@ def run_smplx_hands(
                 now = time.monotonic()
 
     if not config.arm:
-        raise RuntimeError("SMPLX hand preflight stopped before an acceptable frame")
+        raise RuntimeError(
+            "XRoboToolkit hand preflight stopped before an acceptable frame"
+        )
 
 
 __all__ = (
     "HAND_POSITION_ORDER",
-    "SMPLX_FINGER_TIP_NAMES",
     "HandGeometryConfig",
     "HandPositionTransport",
     "HandRawCalibration",
     "HandSide",
     "RawHandPositions",
-    "SmplxHandCommandFilter",
-    "SmplxHandLandmarkMapper",
-    "SmplxHandTarget",
-    "SmplxHandsConfig",
-    "SmplxHandsDiscontinuity",
-    "SmplxHandsFrame",
-    "SmplxHandsStream",
-    "SmplxHandsUnavailable",
-    "run_smplx_hands",
+    "XRobotHandCommandFilter",
+    "XRobotHandLandmarkMapper",
+    "XRobotHandTarget",
+    "XRobotHandsConfig",
+    "XRobotHandsDiscontinuity",
+    "XRobotHandsFrame",
+    "XRobotHandsStream",
+    "XRobotHandsUnavailable",
+    "run_xrobot_hands",
 )

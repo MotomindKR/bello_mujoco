@@ -129,7 +129,7 @@ commands, local port assignments, and proportional hand control.
 The live path consists of three processes:
 
 ```text
-PICO -> pico-smplx-bridge :50051 -> bello-run-reference (GMR) :50056 -> Rust policy runner
+PICO -> pico-smplx-bridge :50052 -> bello-run-reference (GMR) :50056 -> Rust policy runner
                               -> bello-run-hands -> Linker CAN
 ```
 
@@ -153,17 +153,23 @@ messages or terminal producer errors stop control. The producer and runner must
 be updated together; available references require all three torso angles.
 
 Start the updated tracking bridge first, then use
-`bello-run-reference asset=bello_mini xrobot.endpoint=HOST:50051`.
+`bello-run-reference asset=bello_mini xrobot.endpoint=HOST:50052`.
 The old `smplx.*` body-command fields are removed; there is no legacy fallback.
 A bridge without the typed body field fails explicitly. PICO's own body-tracker
 calibration is still required; the bridge's SMPL-X T-pose calibration is not.
 
 Both consumers use `pico.smplx.v1.PoseStream/StreamPoses` from pinned
 `deps/pico-smplx-bridge/pose_stream.proto`. Bello imports only generated
-protobufs, not the bridge's SDK or server. Existing SMPL-X fields remain for the
-viewer and independent finger control. Hands still use `smplx.endpoint` and
-`smplx.neutral_model_path`, require calibrated valid finger rotations, and do not
-require valid body tracking. Licensed model files remain external.
+protobufs, not the bridge's SDK or server. Hands use `xrobot.endpoint` and
+consume typed `xrobot_left_hand` / `xrobot_right_hand`: 26 named native PICO
+landmarks per side, position validity flags and independent sample age. The
+mapper derives palm-local finger flexion and thumb adduction directly, retaining
+six-axis actuator calibration, smoothing, slew limits and recovery reseeding.
+No SMPL-X rotations, neutral model or reconstructed skeleton are used. Missing
+body tracking does not invalidate hands; a stale or invalid hand suspends only
+that side. Missing typed fields require a bridge upgrade, with no legacy fallback.
+The bridge no longer generates SMPL-X pose fields; update producer and consumers
+together. `smplx.*` is no longer accepted by the hand command.
 
 For body tracking, freshness uses the larger of body-sample and packet age,
 plus `xrobot.transport_latency_budget_ms` and local monotonic elapsed time.
@@ -175,7 +181,10 @@ body timestamps, it conservatively uses pose changes to detect freezing.
 `rpc_timeout_seconds` reconnects silent streams, and
 `connect_timeout_seconds` bounds first-message waits.
 `max_rate_hz` and optional `tls_root_certificate_path` /
-`tls_server_name_override` remain under `xrobot` (under `smplx` for hands).
+`tls_server_name_override` are under `xrobot` for both commands.
+Hand freshness similarly uses the larger of packet and hand-sample age. The
+current headset client has no hand timestamps, so unchanged samples conservatively
+expire even if body packets continue; a perfectly static hand can also expire.
 Both paths retain latest-only bounded delivery and discontinuity barriers.
 
 The live profile is `xrobot_to_bello_mini.json`; the SMPL-X profile remains

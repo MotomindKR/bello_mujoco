@@ -7,7 +7,7 @@
 - [BeyondMimic tracking](motion_tracking.md)
 - [Hardware](hardware.md), [emulator](emulator.md), and [Lima](macos_vcan.md)
 - [PICO tracking and hand-control startup](pico_startup.md)
-- [Two-host systemd workflow](systemd.md)
+- [Robot and tracking systemd workflow](systemd.md)
 - [Vast.ai](vast_ai.md)
 
 ## Code map

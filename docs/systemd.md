@@ -1,14 +1,15 @@
-# Two-host daemon workflow
+# Robot and tracking daemon workflow
 
 Use the same operator account for installation and `systemctl --user` commands.
 These targets **start automatically at boot**, without login, using user
 lingering. They survive SSH logout. The policy runner and **Bello visualizer
-stay manual**; the PICO human preview is a separate tracking service.
+stay manual**. No PICO viewer is installed. Both targets can run on the Jetson;
+a separate tracking PC remains an explicit deployment option.
 
 | Host | Target | Services |
 | --- | --- | --- |
-| `gmmyung@192.168.0.216` | `bello-tracking.target` | `xrobotoolkit`, `pico-smplx`, `pico-smplx-viewer` |
-| `nvidia@192.168.0.61` | `bello-robot.target` | `bello-hardwared`, `bello-state-estimatord`, `bello-reference`, **`bello-hands`** |
+| Jetson (or a separate tracking PC) | `bello-tracking.target` | `xrobotoolkit`, `pico-smplx` |
+| `nvidia@192.168.0.229` | `bello-robot.target` | `bello-hardwared`, `bello-state-estimatord`, `bello-reference`, **`bello-hands`** |
 
 Starting the robot target starts **armed hand control**, independently of the
 body policy, including after reboot. Keep hands clear of people and objects
@@ -21,17 +22,18 @@ writes; it does **not** open or release the fingers.
 The targets start on boot. The `start` commands below also work after an
 operator stops a target; they do not restart services already running.
 
-On the tracking PC:
+On the tracking host:
 
 ```bash
 systemctl --user start bello-tracking.target
-systemctl --user is-active xrobotoolkit pico-smplx pico-smplx-viewer
+systemctl --user is-active xrobotoolkit pico-smplx
 ```
 
-In the headset, open XRoboToolkit, connect **PC Service** to `192.168.0.216`,
-then enable **Head**, **Hand**, **Full Body**, and **Send**. Keep the calibrated
-trackers awake. Inspect human tracking at `http://192.168.0.216:8080/` before
-connecting robot control.
+In the headset, open XRoboToolkit and connect **PC Service** to the tracking
+host. When connected to Bello-Jetson, use `10.42.0.1`; its router-side address is
+`192.168.0.229`. Enable **Head**, **Hand**, **Full Body**, and **Send**. Keep the
+calibrated body trackers awake. Inspect bridge status and run unarmed hand
+preflight before robot control; see [PICO startup](pico_startup.md).
 
 On the Jetson, check physical buses/devices, clear the hands, then start:
 
@@ -53,17 +55,16 @@ before starting; user services never reconfigure buses or require root.
 
 | Endpoint | Owner |
 | --- | --- |
-| Tracking PC `:63901` | XRoboToolkit PC Service |
-| Tracking PC `:50051` | Typed body and SMPL-X hand bridge |
-| Tracking PC `:8080` | Human preview |
+| Tracking host `:63901` | XRoboToolkit PC Service |
+| Tracking host `127.0.0.1:50052` | Typed native body and hand bridge |
 | Jetson `:50051` | Hardwared |
 | Jetson `:50053` | State estimator |
 | Jetson `127.0.0.1:50056` | GMR joint references (`bello-reference`) |
 | Visualizer host `:50054` | Manual gamepad command service |
 
 Installed units and their referenced configs are authoritative. Keep these
-unauthenticated services on the trusted robot LAN. Body GMR does not need the
-licensed SMPL-X model; hands and the human preview do. `bello-reference` is the
+unauthenticated services on the trusted robot LAN. Body GMR and hand control do not need a
+licensed SMPL-X model or bridge reference-pose calibration. `bello-reference` is the
 GMR server, not an additional process to launch.
 
 ## Manual visualizer and policy
@@ -113,8 +114,8 @@ sequence. Verify it has released body control. Then, with hands clear:
 # Jetson
 systemctl --user stop bello-robot.target \
   bello-hardwared bello-state-estimatord bello-reference bello-hands
-# Tracking PC
-systemctl --user stop bello-tracking.target xrobotoolkit pico-smplx pico-smplx-viewer
+# Tracking host
+systemctl --user stop bello-tracking.target xrobotoolkit pico-smplx
 ```
 
 Stopping a target stops all members; listing them explicitly also waits for
@@ -127,8 +128,8 @@ journalctl _UID="$(id -u)" _SYSTEMD_USER_UNIT=bello-hands.service -n 80 --no-pag
 journalctl _UID="$(id -u)" _SYSTEMD_USER_UNIT=bello-hardwared.service \
   _SYSTEMD_USER_UNIT=bello-state-estimatord.service \
   _SYSTEMD_USER_UNIT=bello-reference.service -f
-# Tracking PC:
-journalctl --user -u xrobotoolkit -u pico-smplx -u pico-smplx-viewer -f
+# Tracking host:
+journalctl --user -u xrobotoolkit -u pico-smplx -f
 ```
 
 The Jetson uses a volatile system journal, so `journalctl --user` can report no
@@ -211,15 +212,48 @@ installs, and enables the CAN system service. It **does not start, stop,
 or restart processes immediately**. Stop
 unmanaged copies before starting the target: one owner per device/port.
 
-On the tracking PC, first install the bridge and SDK using its
-[README](../deps/pico-smplx-bridge/README.md). The installer preserves existing
-`xrobotoolkit`, `pico-smplx`, and `pico-smplx-viewer` commands and model paths,
-adding lifecycle drop-ins:
+### Tracking receiver and bridge
+
+Initialize the pinned submodules and enter the Nix environment. On Ubuntu
+22.04 or 24.04, the tracking role selects the native ARM64 or x86-64 XRoboToolkit
+v1.0.0 distribution and verifies its pinned SHA256. ARM64 uses the headless
+package; x86-64 uses only the headless service executable from its Ubuntu package.
+It extracts the distribution under `~/.local/share/bello/tracking/` without
+running vendor desktop installation scripts or requiring sudo. An isolated
+uv-managed Python 3.12 environment installs the submodule's hashed `requirements.lock`.
+Neither dependency installation nor builds happen when services start.
 
 ```bash
-python3 /path/to/install_systemd.py tracking
+nix develop
+python scripts/install_systemd.py tracking --checkout "$PWD" --dry-run
+python scripts/install_systemd.py tracking --checkout "$PWD"
 sudo loginctl enable-linger "$USER"
+systemctl --user start bello-tracking.target
 ```
+
+This generates `xrobotoolkit.service` and `pico-smplx.service`, including the
+architecture-specific SDK path and receiver-before-bridge ordering. The viewer
+is not installed. Missing tracking is allowed at startup; the bridge reports
+it explicitly. `--dry-run` prints units, download URL, checksum and environment
+paths without downloading, changing systemd or writing files. Repeated installs
+reuse the verified distribution and matching dependency environment.
+
+The default bridge listener is `127.0.0.1:50052`, leaving hardwared's `50051`
+free. For a separate tracking PC, pass `--bridge-listen HOST_IP:50052` and give
+that address to the robot installer's `--tracking-endpoint`. Repeat
+`--bridge-listen` to also bind loopback. `--device-id` selects a particular
+headset; `--tracking-dir` sets the installation directory; `--uv` selects the
+setup-time uv executable. Unsupported distributions/architectures fail explicitly.
+
+The installer refuses to overwrite unmanaged service units. To migrate the old
+Ubuntu installation, stop the tracking target and its services, back up the
+old units and lifecycle drop-ins, remove those old definitions, and rerun the
+installer. Remove any old `pico-smplx-viewer.service` and its autostart links.
+The new target contains only receiver and bridge. Old SMPL-X consumers must be
+updated with the bridge: live frames now carry native body and hand poses,
+without generating the old SMPL-X rotation fields.
+
+### Robot daemons
 
 On the Jetson, prepare Python dependencies with `nix develop` and build native
 daemons once (not on each service start):
@@ -231,8 +265,7 @@ nix develop .#rust-runtime --command cargo build --locked --release \
   -p bello-hardwared -p bello-state-estimatord
 python3 scripts/install_systemd.py robot \
   --checkout /home/nvidia/bello_mujoco \
-  --tracking-endpoint 192.168.0.216:50051 \
-  --neutral-model /home/nvidia/SMPLX_NEUTRAL.npz \
+  --tracking-endpoint 127.0.0.1:50052 \
   --human-height 1.73 --confirm-hand-calibration
 sudo loginctl enable-linger "$USER"
 ```
@@ -250,7 +283,7 @@ pinned `rust-runtime` Nix shell. Startup does no build or dependency install.
 Lingering starts the user manager at boot and keeps it alive after logout.
 Both targets are enabled in its `default.target`; existing CAN device setup
 remains enabled. Check with `systemctl --user is-enabled bello-robot.target`
-on the Jetson and `systemctl --user is-enabled bello-tracking.target` on the PC.
+and `systemctl --user is-enabled bello-tracking.target` on their service hosts.
 To prevent startup on the next boot, disable the relevant target with
 `systemctl --user disable TARGET`. That does not stop running services; use the
 safe shutdown sequence above if needed. Re-running the installer re-enables

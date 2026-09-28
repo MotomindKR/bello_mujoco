@@ -9,7 +9,7 @@
 - Initialize dependencies with `git submodule update --init --recursive`.
 - Change canonical robot or hardware descriptions in `bello-stack`; update the
   `deps/bello-stack` gitlink here only after that stack commit is available.
-- Change the live SMPL-X pose producer or protobuf contract in
+- Change the live XRoboToolkit pose producer or protobuf contract in
   `pico-smplx-bridge`; update the `deps/pico-smplx-bridge` gitlink and Bello
   consumer validation together only after that producer commit is available.
 
@@ -37,9 +37,11 @@ advancing the pinned revision to a version that changes either protocol:
 uv run bash scripts/protobuf.sh generate
 ```
 
-The same script generates the private SMPL-X bindings from
+The same script generates the private PICO tracking bindings from
 `deps/pico-smplx-bridge/pose_stream.proto`. This submodule supplies the wire
-contract; Bello does not install or import the bridge's server or device SDK.
+contract and tracking server. The systemd tracking installer provisions its
+standalone environment and native SDK; Bello consumers only import generated
+protobufs.
 CI checks out the private bridge using the `PICO_SMPLX_DEPLOY_KEY` repository
 secret, paired with a read-only deploy key on `pico-smplx-bridge`.
 

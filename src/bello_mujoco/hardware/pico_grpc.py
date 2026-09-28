@@ -1,4 +1,4 @@
-"""Latest-only PICO gRPC transport shared by raw body and calibrated hands."""
+"""Latest-only PICO gRPC transport shared by native body and hand tracking."""
 
 from collections.abc import Callable
 from dataclasses import dataclass

@@ -2,21 +2,209 @@
 """Install boot-enabled daemon targets; never start or restart motor IO now."""
 
 import argparse
+from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
+import platform
+import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from urllib.request import urlopen
 
 
 HEADER = "# Managed by bello_mujoco/scripts/install_systemd.py\n"
-TRACKING_SERVICES = ("xrobotoolkit", "pico-smplx", "pico-smplx-viewer")
+TRACKING_SERVICES = ("xrobotoolkit", "pico-smplx")
 ROBOT_SERVICES = (
     "bello-hardwared",
     "bello-state-estimatord",
     "bello-reference",
     "bello-hands",
 )
+
+XROBOT_RELEASE_URL = (
+    "https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases/download/v1.0.0"
+)
+
+
+@dataclass(frozen=True)
+class XRobotRelease:
+    filename: str
+    sha256: str
+    sdk_arch: str
+
+
+def xrobot_release() -> XRobotRelease:
+    distro = platform.freedesktop_os_release()
+    version = distro.get("VERSION_ID")
+    if distro.get("ID") != "ubuntu" or version not in ("22.04", "24.04"):
+        raise ValueError("XRoboToolkit packages support Ubuntu 22.04 and 24.04")
+    machine = platform.machine()
+    if machine == "aarch64":
+        return XRobotRelease(
+            "XRoboToolkit-PC-Service-headless_1.0.0.0_arm64.deb",
+            "532c605dfa1a02b05b7c285b856c91771c78623cded30ef5b16ea371de49ed5f",
+            "arm64",
+        )
+    if machine == "x86_64":
+        digest = {
+            "22.04": "61961067eb4b41f81ed7cae35f4690dbb0ddfefb329a12b24e0b90ebc46ada91",
+            "24.04": "bce661f0be0b8a246ceecb2e5f1675a81c26b834648dc7fdf23f8c0bfe2a5d19",
+        }[version]
+        return XRobotRelease(
+            f"XRoboToolkit_PC_Service_1.0.0_ubuntu_{version}_amd64.deb",
+            digest,
+            "x64",
+        )
+    raise ValueError(f"unsupported XRoboToolkit architecture: {machine}")
+
+
+@dataclass(frozen=True)
+class TrackingSetup:
+    checkout: Path
+    directory: Path
+    uv: Path
+    release: XRobotRelease
+    listen: tuple[str, ...]
+    device_id: str | None = None
+
+    @property
+    def bridge(self) -> Path:
+        return self.checkout / "deps/pico-smplx-bridge"
+
+    @property
+    def package(self) -> Path:
+        return self.directory / "xrobotoolkit" / self.release.sha256
+
+    @property
+    def app(self) -> Path:
+        return self.package / "opt/apps/roboticsservice"
+
+    @property
+    def sdk(self) -> Path:
+        return self.app / "SDK" / self.release.sdk_arch / "libPXREARobotSDK.so"
+
+    @property
+    def requirements(self) -> Path:
+        return require_file(self.bridge / "requirements.lock")
+
+    @property
+    def venv(self) -> Path:
+        digest = hashlib.sha256(self.requirements.read_bytes()).hexdigest()
+        return self.directory / "venvs" / f"py312-{digest}"
+
+    def files(self, target: str) -> dict[str, str]:
+        environment = {
+            "LD_LIBRARY_PATH": ":".join(
+                str(path) for path in (self.app, self.app / "lib", self.sdk.parent)
+            ),
+            "QT_PLUGIN_PATH": str(self.app / "plugins"),
+        }
+        command: list[str | Path] = [
+            self.venv / "bin/python",
+            require_file(self.bridge / "server.py"),
+            "--library",
+            self.sdk,
+        ]
+        for address in self.listen:
+            host, separator, port = address.rpartition(":")
+            if (
+                not host
+                or not separator
+                or not port.isdigit()
+                or not 1 <= int(port) <= 65535
+            ):
+                raise ValueError(f"invalid bridge listener: {address}")
+            command.extend(("--listen", address))
+        if self.device_id:
+            command.extend(("--device-id", self.device_id))
+        return {
+            "xrobotoolkit.service": service(
+                target,
+                "XRoboToolkit headless tracking receiver (no motor IO)",
+                self.app,
+                [self.app / "RoboticsServiceProcess"],
+                environment=environment,
+            ),
+            "pico-smplx.service": service(
+                target,
+                "PICO direct body and hand pose bridge (no motor IO)",
+                self.bridge,
+                command,
+                environment=environment,
+                after=("xrobotoolkit.service",),
+            ),
+        }
+
+    def provision(self) -> None:
+        # Extract the verified distribution without running vendor desktop installers.
+        # Versioned paths keep repeat installs from overwriting running binaries.
+        marker = self.package / ".bello-sha256"
+        if not marker.exists():
+            self.package.parent.mkdir(parents=True, exist_ok=True)
+            with TemporaryDirectory(
+                dir=self.package.parent, prefix="download-"
+            ) as temporary:
+                staging = Path(temporary)
+                archive = staging / self.release.filename
+                digest = hashlib.sha256()
+                with urlopen(
+                    f"{XROBOT_RELEASE_URL}/{self.release.filename}", timeout=60
+                ) as source:
+                    with archive.open("wb") as destination:
+                        while chunk := source.read(1024 * 1024):
+                            digest.update(chunk)
+                            destination.write(chunk)
+                if digest.hexdigest() != self.release.sha256:
+                    raise ValueError("XRoboToolkit download SHA256 mismatch")
+                unpacked = staging / "unpacked"
+                subprocess.run(
+                    ["dpkg-deb", "--extract", str(archive), str(unpacked)], check=True
+                )
+                app = unpacked / "opt/apps/roboticsservice"
+                require_file(app / "RoboticsServiceProcess")
+                require_file(
+                    app / "SDK" / self.release.sdk_arch / "libPXREARobotSDK.so"
+                )
+                (unpacked / marker.name).write_text(self.release.sha256 + "\n")
+                unpacked.rename(self.package)
+        if marker.read_text().strip() != self.release.sha256:
+            raise ValueError(
+                f"XRoboToolkit installation checksum marker mismatch: {marker}"
+            )
+        require_file(self.app / "RoboticsServiceProcess")
+        require_file(self.sdk)
+        ready = self.venv / ".bello-requirements"
+        if not ready.exists():
+            subprocess.run(
+                [
+                    str(self.uv),
+                    "venv",
+                    "--clear",
+                    "--python",
+                    "3.12",
+                    "--managed-python",
+                    str(self.venv),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    str(self.uv),
+                    "pip",
+                    "sync",
+                    "--python",
+                    str(self.venv / "bin/python"),
+                    "--require-hashes",
+                    str(self.requirements),
+                ],
+                check=True,
+            )
+            ready.write_bytes(self.requirements.read_bytes())
+        if ready.read_bytes() != self.requirements.read_bytes():
+            raise ValueError(f"bridge environment requirements mismatch: {ready}")
+        require_file(self.venv / "bin/python")
 
 
 def quote(value: str | Path, *, executable: bool = False) -> str:
@@ -90,6 +278,8 @@ def service(
     *,
     restart: bool = True,
     preflight: list[str | Path] | None = None,
+    environment: dict[str, str] | None = None,
+    after: tuple[str, ...] = (),
 ) -> str:
     before_start = (
         "ExecStartPre="
@@ -98,12 +288,23 @@ def service(
         if preflight
         else ""
     )
+    ordering = (
+        "After=" + " ".join(after) + "\nWants=" + " ".join(after) + "\n"
+        if after
+        else ""
+    )
+    environment = environment or {}
+    environment_lines = "".join(
+        f"Environment={quote(f'{key}={value}')}\n" for key, value in environment.items()
+    )
+    if "LD_LIBRARY_PATH" not in environment:
+        environment_lines += "UnsetEnvironment=LD_LIBRARY_PATH\n"
     return (
         HEADER
         + f"""[Unit]
 Description={description}
 PartOf={target}
-StartLimitIntervalSec=60
+{ordering}StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
@@ -112,8 +313,7 @@ WorkingDirectory={quote(checkout)[1:-1]}
 {before_start}ExecStart={" ".join(quote(arg, executable=True) for arg in command)}
 Environment=PYTHONUNBUFFERED=1
 Environment=JAX_PLATFORMS=cpu
-UnsetEnvironment=LD_LIBRARY_PATH
-Restart={"on-failure" if restart else "no"}
+{environment_lines}Restart={"on-failure" if restart else "no"}
 RestartSec=3
 KillSignal=SIGINT
 KillMode=control-group
@@ -126,23 +326,41 @@ StandardError=journal
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("role", choices=("robot", "tracking"))
-    parser.add_argument("--checkout", type=Path)
-    parser.add_argument(
+    roles = parser.add_subparsers(dest="role", required=True)
+    robot = roles.add_parser("robot", help="install robot daemons and Jetson CAN setup")
+    tracking_parser = roles.add_parser(
+        "tracking", help="install native tracking receiver and bridge"
+    )
+    for role in (robot, tracking_parser):
+        role.add_argument("--checkout", type=Path, required=True)
+        role.add_argument("--dry-run", action="store_true")
+    robot.add_argument(
         "--runtime-bin",
         type=Path,
         default=Path.home() / ".cache/bello-mujoco/rust-runtime/release",
     )
-    parser.add_argument(
+    robot.add_argument(
         "--nix", type=Path, default=Path("/nix/var/nix/profiles/default/bin/nix")
     )
-    parser.add_argument("--tracking-endpoint")
-    parser.add_argument("--neutral-model", type=Path)
-    parser.add_argument("--human-height", type=float)
-    parser.add_argument("--hardware-config", type=Path)
-    parser.add_argument("--estimator-config", type=Path)
-    parser.add_argument("--confirm-hand-calibration", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
+    robot.add_argument("--tracking-endpoint", required=True)
+    robot.add_argument("--human-height", type=float, required=True)
+    robot.add_argument("--hardware-config", type=Path)
+    robot.add_argument("--estimator-config", type=Path)
+    robot.add_argument("--confirm-hand-calibration", action="store_true", required=True)
+    tracking_parser.add_argument(
+        "--uv", type=Path, help="uv executable for setup (default: PATH)"
+    )
+    tracking_parser.add_argument(
+        "--tracking-dir", type=Path, default=Path.home() / ".local/share/bello/tracking"
+    )
+    tracking_parser.add_argument(
+        "--bridge-listen",
+        action="append",
+        help="repeatable listener (default: 127.0.0.1:50052)",
+    )
+    tracking_parser.add_argument(
+        "--device-id", help="track only this headset device ID"
+    )
     args = parser.parse_args()
     if sys.platform != "linux":
         parser.error("install on the Linux service host, as the operator account")
@@ -153,6 +371,7 @@ def main() -> None:
 
     target = f"bello-{args.role}.target"
     system_files = {}
+    tracking = None
     services = ROBOT_SERVICES if args.role == "robot" else TRACKING_SERVICES
     files = {
         target: HEADER
@@ -166,31 +385,27 @@ def main() -> None:
         + "\n\n[Install]\nWantedBy=default.target\n"
     }
     if args.role == "tracking":
-        for name in services:
-            subprocess.run(
-                ["systemctl", "--user", "cat", f"{name}.service"],
-                check=True,
-                stdout=subprocess.DEVNULL,
-            )
-            files[f"{name}.service.d/50-bello-lifecycle.conf"] = (
-                HEADER + f"[Unit]\nPartOf={target}\n" + "\n[Install]\nWantedBy=\n"
-            )
-    else:
-        if not (
-            args.checkout
-            and args.tracking_endpoint
-            and args.neutral_model
-            and args.human_height
-            and args.confirm_hand_calibration
-        ):
+        uv = args.uv or shutil.which("uv")
+        if not uv:
             parser.error(
-                "robot requires --checkout, --tracking-endpoint, --neutral-model, --human-height and --confirm-hand-calibration"
+                "tracking setup requires uv; run inside nix develop or pass --uv"
             )
+        tracking = TrackingSetup(
+            args.checkout.resolve(strict=True),
+            args.tracking_dir.absolute(),
+            require_file(Path(uv)),
+            xrobot_release(),
+            tuple(args.bridge_listen or ("127.0.0.1:50052",)),
+            args.device_id,
+        )
+        # Resolve all source prerequisites before downloading or writing anything.
+        require_file(tracking.requirements)
+        files.update(tracking.files(target))
+    else:
         if not 0.5 <= args.human_height <= 2.5:
             parser.error("human height must be in meters, between 0.5 and 2.5")
         checkout = args.checkout.resolve(strict=True)
         require_file(checkout / "flake.nix")
-        neutral_model = require_file(args.neutral_model)
         nix = require_file(args.nix)
         can_check = [
             "/usr/bin/bash",
@@ -239,8 +454,7 @@ def main() -> None:
             checkout,
             [
                 require_file(checkout / ".venv/bin/bello-run-hands"),
-                f"smplx.neutral_model_path={neutral_model}",
-                f"smplx.endpoint={args.tracking_endpoint}",
+                f"xrobot.endpoint={args.tracking_endpoint}",
                 "protocol=linker_o6",
                 "can_interface=can1",
                 "arm=true",
@@ -259,11 +473,19 @@ def main() -> None:
         if args.dry_run:
             print(f"--- {path}\n{content}")
     if args.dry_run:
+        if tracking:
+            print(f"Download: {XROBOT_RELEASE_URL}/{tracking.release.filename}")
+            print(f"SHA256: {tracking.release.sha256}")
+            print(f"Extract package (no vendor install scripts): {tracking.package}")
+            print(f"Prepare Python 3.12 environment: {tracking.venv}")
+            print(f"Requirements: {tracking.requirements}")
         for path, content in system_files.items():
             print(f"--- {path}\n{content}")
         return
     if system_files:
         subprocess.run(["sudo", "-v"], check=True)
+    if tracking:
+        tracking.provision()
     for name, content in files.items():
         path = unit_dir / name
         path.parent.mkdir(parents=True, exist_ok=True)
