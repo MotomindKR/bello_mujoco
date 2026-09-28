@@ -508,6 +508,9 @@ class BelloMotionTrackingEnv:
             ),
         )
 
+    def initial_sampling_failure_ema(self):
+        return jnp.zeros(self.sampling_bin_count, dtype=jnp.float32)
+
     def reset(
         self,
         rng: jax.Array | None = None,
@@ -529,7 +532,7 @@ class BelloMotionTrackingEnv:
                 latency_key,
             ) = jax.random.split(rng, 7)
         if sampling_failure_ema is None:
-            sampling_failure_ema = jnp.zeros(self.sampling_bin_count, dtype=jnp.float32)
+            sampling_failure_ema = self.initial_sampling_failure_ema()
         if reference_time is None:
             if self.config.reset.random_start and time_key is not None:
                 reference_time = self._sample_reference_time(
@@ -639,7 +642,7 @@ class BelloMotionTrackingEnv:
         if rng is not None:
             reset_rng, obs_rng = jax.random.split(rng)
         if sampling_failure_ema is None:
-            sampling_failure_ema = jnp.zeros(self.sampling_bin_count, dtype=jnp.float32)
+            sampling_failure_ema = self.initial_sampling_failure_ema()
         if rng is None:
             state, _ = jax.vmap(
                 lambda world_id: self.reset(
@@ -1084,7 +1087,7 @@ class BelloMotionTrackingEnv:
             "done/any": terminal | timeout,
         }
 
-    def _info(self, state, observation, reward_info, done_flags):
+    def _sampling_metrics(self, state, observation, done_flags):
         done = done_flags["done/any"]
         failure_ema = (
             state.sampling_failure_ema[0]
@@ -1115,6 +1118,16 @@ class BelloMotionTrackingEnv:
                 done, sampling_failure_max, dtype=jnp.float32
             )
         return {
+            "sampling/entropy": sampling_entropy,
+            "sampling/top_probability": sampling_top_probability,
+            "sampling/top_bin": sampling_top_bin,
+            "sampling/failure_ema_mean": sampling_failure_mean,
+            "sampling/failure_ema_max": sampling_failure_max,
+        }
+
+    def _info(self, state, observation, reward_info, done_flags):
+        done = done_flags["done/any"]
+        return {
             "bootstrap_observation": observation,
             "bootstrap_critic_observation": self.critic_observation_batch(state)
             if observation.ndim == 2
@@ -1126,11 +1139,7 @@ class BelloMotionTrackingEnv:
             "latency/observation_steps": state.actor_feedback_delay_steps.astype(
                 jnp.float32
             ),
-            "sampling/entropy": sampling_entropy,
-            "sampling/top_probability": sampling_top_probability,
-            "sampling/top_bin": sampling_top_bin,
-            "sampling/failure_ema_mean": sampling_failure_mean,
-            "sampling/failure_ema_max": sampling_failure_max,
+            **self._sampling_metrics(state, observation, done_flags),
             **done_flags,
             **reward_info,
         }

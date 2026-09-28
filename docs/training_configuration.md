@@ -2,6 +2,10 @@
 
 Values belong in YAML, not duplicated documentation tables.
 
+SONIC's `sampling_config` controls its temporal-bin, exposure-normalized
+curriculum. `env_config.adaptive_sampling` is the BeyondMimic EMA recipe and
+must stay at inactive defaults for SONIC. See [the sampler contract](sonic_transfer.md#adaptive-motion-sampling).
+
 `config.timeout_bootstrap` selects next-state timeout values by default.
 SONIC explicitly selects `current_state` to reproduce Any2Any TRL's
 `gamma * V(s_t)` reward correction followed by done-masked GAE. This does not

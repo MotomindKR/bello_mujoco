@@ -8,6 +8,12 @@ dataset:
 pretrained:
   checkpoint: checkpoints/sonic_release/last.pt
   revision: ""
+sampling_config:
+  bin_size: 50
+  pre_failure_sample_window: 200
+  uniform_sampling_rate: 0.1
+  failure_rate_max_over_mean: 200.0
+  init_num_failures: 1.0
 config:
   num_envs: 2048
   num_steps: 24
@@ -48,6 +54,10 @@ config:
     action_distribution: gaussian
     action_limit: 20.0
 env_config:
+  # BeyondMimic's EMA curriculum is inactive; use sampling_config above.
+  adaptive_sampling:
+    enabled: false
+    kernel_size: 1
   observation_mode: proprioceptive
   formulation: beyondmimic
   action_clip: 20.0

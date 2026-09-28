@@ -29,6 +29,11 @@ from bello_mujoco.sonic.model import (
 )
 from bello_mujoco.sonic.observations import SonicObservationAssembler
 from bello_mujoco.sonic.reference import ReferenceBank
+from bello_mujoco.sonic.sampling import (
+    SonicSampler,
+    SonicSamplingConfig,
+    SonicTaskState,
+)
 from bello_mujoco.envs.sonic_transfer import BelloSonicTransferEnv
 from bello_mujoco.envs.motion_tracking import BelloMotionTrackingEnv
 from bello_mujoco.training.ppo_config import PPOConfig, parameter_learning_rate
@@ -151,19 +156,28 @@ def test_compiled_sonic_update_passes_bank_as_dynamic_buffers(monkeypatch):
     @dataclass(frozen=True)
     class Environment:
         reference_bank: ReferenceBank
+        sampler: SonicSampler
+
+    class State(NamedTuple):
+        value: jax.Array
+        task_state: SonicTaskState
 
     def fake_update(state, static, optimizer, env, config):
-        return state + env.reference_bank.qpos[0, 0], {}
+        return state._replace(value=state.value + env.reference_bank.qpos[0, 0]), {}
 
     monkeypatch.setattr(
         "bello_mujoco.training.sonic_transfer.update_runner_state", fake_update
     )
-    step = compile_sonic_update(Environment(bank), None, None, None)
-    assert float(step(jnp.asarray(1.0))[0]) == 1.0
+    sampler = SonicSampler.from_bank(bank, SonicSamplingConfig())
+    state = State(
+        jnp.asarray(1.0), SonicTaskState(jnp.zeros((3, 100)), sampler.initial_state())
+    )
+    step = compile_sonic_update(Environment(bank, sampler), None, None, None)
+    assert float(step(state)[0].value) == 1.0
     shifted = replace(bank, qpos=bank.qpos + 10.0)
-    assert float(step.func(jnp.asarray(1.0), shifted)[0]) == 11.0
-    traced = jax.make_jaxpr(step.func)(jnp.asarray(1.0), bank)
-    assert not traced.consts
+    assert float(step.func(state, shifted)[0].value) == 11.0
+    traced = jax.make_jaxpr(step.func)(state, bank)
+    assert all(np.asarray(value).size < bank.qpos.size for value in traced.consts)
     assert len(jax.tree_util.tree_leaves(bank)) == 11
     assert bank.max_clip_frames == 4
     assert bank.clock_end == 4
@@ -722,6 +736,10 @@ def test_physics_history_captures_final_substep_and_preserves_delayed_controls(
 
 def test_sonic_episode_metrics_keep_last_100_completions_across_rollouts():
     env = object.__new__(BelloSonicTransferEnv)
+    bank = ReferenceBank.from_clips((("train", synthetic_clip(0.0), "train"),))
+    object.__setattr__(
+        env, "sampler", SonicSampler.from_bank(bank, SonicSamplingConfig())
+    )
     state = env.initial_task_state()
     update = jax.jit(env.update_task_state)
     for start, count in ((0, 70), (70, 0), (70, 60), (130, 120)):
@@ -732,6 +750,8 @@ def test_sonic_episode_metrics_keep_last_100_completions_across_rollouts():
                 "done/any": jnp.arange(128) < count,
                 "episode_return": values,
                 "episode_length": values * 2,
+                "sampling/visited_bin": jnp.zeros(128, dtype=jnp.int32),
+                "done/terminal": jnp.zeros(128, dtype=jnp.bool_),
             },
         )
         total = start + count

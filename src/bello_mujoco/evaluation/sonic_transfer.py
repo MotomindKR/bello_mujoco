@@ -3,10 +3,42 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import math
+from statistics import mean
 
 from bello_mujoco.evaluation.motion import render_motion_policy
 from bello_mujoco.sonic.runtime import load_sonic_policy_runtime
 from bello_mujoco.training.normalization import init_observation_norm_state
+
+
+def uniform_clip_summary(results: dict[str, dict]) -> dict:
+    """Equal weight per explicitly selected clip, independent of the curriculum."""
+    if not results:
+        raise ValueError("uniform SONIC evaluation requires at least one clip")
+    fields = (
+        "rendered_steps",
+        "episode_return",
+        "completion_fraction",
+        "root_position_rms_m",
+        "root_orientation_rms_deg",
+        "joint_position_rms_rad",
+    )
+    if any(
+        not math.isfinite(row[field]) for row in results.values() for field in fields
+    ):
+        raise ValueError("nonfinite SONIC evaluation result")
+    return {
+        "clip_count": len(results),
+        "weighting": "equal_per_clip",
+        "start": "first_frame",
+        "actions": "deterministic_mean",
+        **{
+            f"mean_{field}": mean(row[field] for row in results.values())
+            for field in fields
+        },
+        "failure_fraction": mean(float(row["terminal"]) for row in results.values()),
+    }
 
 
 def render_sonic_checkpoint(
@@ -67,4 +99,18 @@ def render_sonic_checkpoint(
             ),
         )
         results[name] = dict(stats)
+    (output_directory / "summary.json").write_text(
+        json.dumps(
+            {
+                "checkpoint": str(Path(checkpoint).resolve()),
+                "steps_limit": steps,
+                "stop_on_terminal": stop_on_terminal,
+                "summary": uniform_clip_summary(results),
+                "clips": results,
+            },
+            indent=2,
+            allow_nan=False,
+        )
+        + "\n"
+    )
     return results

@@ -16,6 +16,7 @@ import equinox as eqx
 import jax
 
 from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
+from bello_mujoco.sonic.sampling import SonicSamplingConfig
 from bello_mujoco.envs.sonic_transfer import BelloSonicTransferEnv
 from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.repository import (
@@ -66,6 +67,7 @@ class SonicTransferTrainingRunConfig:
     checkpoint_config: CheckpointConfig = CheckpointConfig()
     wandb_config: WandbConfig = WandbConfig()
     warp: WarpConfig = WarpConfig()
+    sampling_config: SonicSamplingConfig = SonicSamplingConfig()
 
 
 def compile_sonic_update(env, config, static_policy, optimizer):
@@ -74,7 +76,14 @@ def compile_sonic_update(env, config, static_policy, optimizer):
     @jax.jit
     def update(state, bank):
         dynamic_env = replace(env, reference_bank=bank)
-        return update_runner_state(state, static_policy, optimizer, dynamic_env, config)
+        state, metrics = update_runner_state(
+            state, static_policy, optimizer, dynamic_env, config
+        )
+        # Reference refreshes its curriculum once after each PPO iteration.
+        task_state = state.task_state._replace(
+            sampling=env.sampler.refresh(state.task_state.sampling)
+        )
+        return state._replace(task_state=task_state), metrics
 
     return partial(update, bank=env.reference_bank)
 
@@ -138,6 +147,7 @@ def run_training(run_config: SonicTransferTrainingRunConfig) -> None:
             evaluation_names=run_config.dataset.evaluation_clips,
             warp=run_config.warp,
             batch_size=run_config.config.num_envs,
+            sampling_config=run_config.sampling_config,
         )
         imported = import_sonic_checkpoint(
             run_config.pretrained.checkpoint,

@@ -74,6 +74,7 @@ def load_sonic_policy_runtime(
         batch_size=1,
         use_viewer_model=use_viewer_model,
         load_mjx=False,
+        sampling_config=run_config.sampling_config,
     )
     template = sonic_policy_template(
         env.embodiment,

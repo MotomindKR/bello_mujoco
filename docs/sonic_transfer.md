@@ -158,9 +158,38 @@ are means over the last 100 completed episodes, with the buffer included in
 checkpoints. `train/mean_reward` is still explicitly a per-control-step mean;
 `train/mean_episode_return` averages episodes completed in the current rollout.
 
+### Adaptive motion sampling
+
+SONIC uses the pinned Any2Any temporal-bin curriculum, configured by
+`sampling_config` in the SONIC profile: 50-frame bins, a 200-frame backward
+start window, 10% uniform-bin mixing, a failure-rate clipping threshold of
+200 times the active-bin mean, and unit pseudocounts. Each control step adds
+`1 / bin_length` exposure to its occupied bin; a terminal failure adds one
+failure. Rates are failures divided by exposure, not raw failure counts.
+The source's sequence-length-agnostic weighting is `bin_length / bins_in_clip`;
+short final bins therefore matter (this is not exactly uniform over clips).
+The sampling distribution refreshes once per PPO iteration. Starts are integer
+frames in the selected bin, shifted backward by a random 0-199 frames and
+clamped at that clip's start. Held-out bins have zero probability.
+
+Counters and the frozen-within-rollout distribution live once in the checkpointed
+task state, alongside the completed-episode buffer; they are not replicated
+per environment. The shared BeyondMimic EMA sampler is unchanged. SONIC requires
+the inherited `env_config.adaptive_sampling` to remain at its inactive defaults;
+customization there fails explicitly. Configure `sampling_config` instead.
+Old raw-per-clip-EMA SONIC checkpoints cannot resume this recipe and should not
+be treated as reference-parity runs. Start fresh from original pretrained weights.
+
+Track `train/sampling/top_clip_probability`, `top_bin_probability`, and
+`failure_rate_mean`/`failure_rate_max`, in addition to normalized bin entropy.
+Training episode length is curriculum-dependent and can decrease when practice
+shifts to difficult segments. It is not a uniform evaluation or sufficient proof
+of forgetting. The reference trainer populates `objective/length` from its last
+100 completed training episodes; screenshot provenance is not independently verified.
+
 This is recipe alignment, not identical experiments: Mini dynamics, transmission,
 hardware filtering/delay, modest dynamics randomization, float32 inference,
-per-clip failure sampling and the 4,166-clip AMASS corpus remain deliberate
+and the 4,166-clip AMASS corpus remain deliberate
 departures. The README uses a small selected Oli corpus. MuJoCo contact counts
 use the final-step contact forces, whereas Isaac Lab uses contact-sensor history.
 Identical curves are not promised. Numerical preflight is not evidence of
@@ -246,7 +275,12 @@ The preparer does not upload or start training automatically.
 ## Evaluation and deployment
 
 Evaluation requires an explicit subset of the held-out split recorded in the
-checkpoint and writes one video and one result entry per clip:
+checkpoint and writes one video and one result entry per clip.
+It also writes `summary.json`, with equal weight per selected clip, deterministic
+mean actions, first-frame starts, mean completion fraction, failure fraction and
+tracking errors. Compare the same explicit held-out list and step limit across
+checkpoints. This fixed evaluation is separate from adaptive training metrics;
+it neither updates sampling counts nor consumes training samples.
 Nonfinite motion-evaluation state raises an error and closes video resources;
 it is not reported as a successful short rollout, even when terminal stopping
 is disabled.

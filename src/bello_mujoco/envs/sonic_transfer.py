@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from pathlib import Path
 
@@ -15,6 +15,7 @@ from bello_mujoco.envs.motion_tracking import (
     BelloMotionTrackingEnv,
     MotionTrackingEnvConfig,
     MotionTrackingState,
+    MotionAdaptiveSamplingConfig,
     quat_conjugate,
     quat_distance,
     quat_multiply,
@@ -28,6 +29,12 @@ from bello_mujoco.sonic.control import sonic_action_target
 from bello_mujoco.sonic.embodiment import MiniEmbodimentAdapter
 from bello_mujoco.sonic.observations import SonicObservationAssembler
 from bello_mujoco.sonic.reference import ReferenceBank, load_reference_bank
+from bello_mujoco.sonic.sampling import (
+    SonicSampler,
+    SonicSamplingConfig,
+    SonicSamplingState,
+    SonicTaskState,
+)
 
 
 @dataclass(frozen=True)
@@ -35,9 +42,16 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
     reference_bank: ReferenceBank | None = None
     embodiment: MiniEmbodimentAdapter | None = None
     observation_assembler: SonicObservationAssembler | None = None
+    sampling_config: SonicSamplingConfig = SonicSamplingConfig()
+    sampler: SonicSampler | None = None
+    sampling_state: SonicSamplingState | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
+        if self.config.adaptive_sampling != MotionAdaptiveSamplingConfig():
+            raise ValueError(
+                "SONIC requires default inactive env_config.adaptive_sampling; use sampling_config"
+            )
         if self.model.robot.asset != "bello_mini":
             raise ValueError("sonic_transfer currently supports only bello_mini")
         if self.reference_bank is None or self.embodiment is None:
@@ -66,6 +80,12 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
             raise ValueError(
                 "SONIC reference bank exceeds exact float32 frame-clock capacity"
             )
+        if self.sampler is None:
+            object.__setattr__(
+                self,
+                "sampler",
+                SonicSampler.from_bank(self.reference_bank, self.sampling_config),
+            )
 
     @classmethod
     def load_corpus(
@@ -79,6 +99,7 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
         batch_size: int = 1,
         use_viewer_model: bool = False,
         load_mjx: bool = True,
+        sampling_config: SonicSamplingConfig = SonicSamplingConfig(),
     ) -> BelloSonicTransferEnv:
         if not motion_paths:
             raise ValueError("sonic_transfer requires at least one motion clip")
@@ -120,6 +141,7 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
             reference_bank=bank,
             embodiment=embodiment,
             observation_assembler=assembler,
+            sampling_config=sampling_config,
         )
 
     @property
@@ -139,7 +161,21 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
 
     @property
     def sampling_bin_count(self) -> int:
-        return self.reference_bank.num_clips
+        return self.sampler.num_bins
+
+    def initial_sampling_failure_ema(self):
+        # SONIC keeps one shared sampler in RunnerState, not one copy per robot.
+        return jnp.zeros((0,), dtype=jnp.float32)
+
+    def _update_sampling_failure_ema(self, state, terminal):
+        return state.sampling_failure_ema[0]
+
+    def _sampling_metrics(self, state, observation, done_flags):
+        # Updated through the task-state hook after the transition, before reset
+        # state can lose the source frame. Nonterminal visits count as exposure.
+        return {
+            "sampling/visited_bin": self.sampler.bins_for_frames(state.reference_time)
+        }
 
     @property
     def observation_layout(self) -> ObservationLayout:
@@ -206,33 +242,15 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
         return self.reference_bank.time_offsets[clip_id] + local_frame
 
     def _reference_time_to_sampling_bin(self, reference_time: jax.Array) -> jax.Array:
-        frame = jnp.maximum(reference_time, 0.0)
-        return jnp.clip(
-            jnp.searchsorted(self.reference_bank.time_offsets, frame, side="right") - 1,
-            0,
-            self.reference_bank.num_clips - 1,
-        ).astype(jnp.int32)
-
-    def _sampling_probabilities(self, failure_ema: jax.Array) -> jax.Array:
-        return self.reference_bank.clip_sampling_probabilities(
-            failure_ema,
-            split="train",
-            uniform_ratio=self.config.adaptive_sampling.uniform_ratio,
-        )
+        return self.sampler.bins_for_frames(reference_time)
 
     def _sample_reference_time(
         self, rng: jax.Array, sampling_failure_ema: jax.Array
     ) -> jax.Array:
-        clip_key, frame_key = jax.random.split(rng)
-        selected = self.reference_bank.sample_clip(
-            clip_key,
-            sampling_failure_ema,
-            split="train",
-            uniform_ratio=self.config.adaptive_sampling.uniform_ratio,
-        )
-        max_frame = jnp.maximum(self.reference_bank.lengths[selected] - 1, 1)
-        local_frame = jax.random.uniform(frame_key, (), maxval=max_frame)
-        return self.reference_bank.time_offsets[selected] + local_frame
+        state = self.sampling_state
+        if state is None:
+            state = self.sampler.initial_state()
+        return self.sampler.sample(state, rng)
 
     def observation(
         self,
@@ -386,37 +404,51 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
 
     def initial_task_state(self):
         # Newest first: return, length, validity. Checkpointed with the runner.
-        return jnp.zeros((3, 100), dtype=jnp.float32)
+        return SonicTaskState(
+            jnp.zeros((3, 100), dtype=jnp.float32), self.sampler.initial_state()
+        )
+
+    def with_task_state(self, task_state):
+        return replace(self, sampling_state=task_state.sampling)
 
     def update_task_state(self, task_state, info):
+        sampling = self.sampler.accumulate(
+            task_state.sampling,
+            info["sampling/visited_bin"],
+            info["done/terminal"],
+        )
+        episodes = task_state.episodes
         done = info["done/any"]
-        count = jnp.minimum(jnp.sum(done), task_state.shape[1])
+        count = jnp.minimum(jnp.sum(done), episodes.shape[1])
         newest = (
             done.size
             - 1
-            - jnp.nonzero(done[::-1], size=task_state.shape[1], fill_value=done.size)[0]
+            - jnp.nonzero(done[::-1], size=episodes.shape[1], fill_value=done.size)[0]
         )
         completed = jnp.stack(
             (
                 info["episode_return"][newest],
                 info["episode_length"][newest],
-                jnp.ones(task_state.shape[1]),
+                jnp.ones(episodes.shape[1]),
             )
         )
-        positions = jnp.arange(task_state.shape[1])
-        return jnp.where(
+        positions = jnp.arange(episodes.shape[1])
+        episodes = jnp.where(
             positions[None, :] < count,
             completed,
-            task_state[:, jnp.maximum(positions - count, 0)],
+            episodes[:, jnp.maximum(positions - count, 0)],
         )
+        return SonicTaskState(episodes, sampling)
 
     def task_state_metrics(self, task_state):
-        count = jnp.sum(task_state[2])
-        means = jnp.sum(task_state[:2] * task_state[2], axis=1) / jnp.maximum(count, 1)
+        episodes = task_state.episodes
+        count = jnp.sum(episodes[2])
+        means = jnp.sum(episodes[:2] * episodes[2], axis=1) / jnp.maximum(count, 1)
         return {
             "objective/rewards": means[0],
             "objective/length": means[1],
             "objective/completed_episodes": count,
+            **self.sampler.metrics(task_state.sampling),
         }
 
     def _finish_termination_flags(self, state, height, orientation, end_effector):
