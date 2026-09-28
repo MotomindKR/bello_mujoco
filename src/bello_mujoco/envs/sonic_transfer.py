@@ -379,7 +379,10 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
                 if "ankle" in name
             ]
         )
-        return jnp.sum(state.data.qacc[indices] ** 2)
+        acceleration = (state.data.qvel[indices] - state.last_substep_qvel[indices]) / (
+            self.control_timestep / self.decimation
+        )
+        return jnp.sum(acceleration**2)
 
     def initial_task_state(self):
         # Newest first: return, length, validity. Checkpointed with the runner.

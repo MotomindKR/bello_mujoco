@@ -9,6 +9,7 @@ import pytest
 import equinox as eqx
 from onnx.reference import ReferenceEvaluator
 from types import SimpleNamespace
+from typing import NamedTuple
 
 from bello_mujoco.deployment import sonic_actor_onnx
 from bello_mujoco.configuration import sonic_transfer_training_profile
@@ -682,10 +683,41 @@ def test_sonic_ankle_cost_uses_physics_acceleration_in_logical_joint_order():
             policy_qvel_indices=(3, 1, 2),
         ),
     )
+    object.__setattr__(env, "config", SimpleNamespace(decimation=4))
+    env.model.mj_model = SimpleNamespace(opt=SimpleNamespace(timestep=0.005))
     state = SimpleNamespace(
-        data=SimpleNamespace(qacc=jnp.array([100.0, 200.0, 3.0, 4.0]))
+        data=SimpleNamespace(qvel=jnp.array([100.0, 200.0, 0.015, 0.02])),
+        last_substep_qvel=jnp.zeros(4),
     )
-    assert env._foot_acceleration_cost(None, state) == 25
+    assert env._foot_acceleration_cost(None, state) == pytest.approx(25)
+
+
+def test_physics_history_captures_final_substep_and_preserves_delayed_controls(
+    monkeypatch,
+):
+    class Data(NamedTuple):
+        qvel: jax.Array
+        ctrl: jax.Array
+
+        def replace(self, **kwargs):
+            return self._replace(**kwargs)
+
+    env = object.__new__(BelloMotionTrackingEnv)
+    object.__setattr__(env, "config", SimpleNamespace(decimation=4))
+    object.__setattr__(env, "model", SimpleNamespace(mjx_model=None))
+    object.__setattr__(
+        env, "delayed_ctrl", lambda old, new, index: jnp.where(index < 2, old, new)
+    )
+    monkeypatch.setattr(
+        "bello_mujoco.envs.motion_tracking.mjx.step",
+        lambda model, data: data.replace(qvel=data.qvel + data.ctrl),
+    )
+    data = Data(jnp.zeros(2), jnp.zeros(2))
+    stepped, previous = jax.jit(env._step_physics)(
+        data, jnp.array([1.0, 2.0]), jnp.array([3.0, 4.0])
+    )
+    np.testing.assert_array_equal(stepped.qvel, [8.0, 12.0])
+    np.testing.assert_array_equal(previous, [5.0, 8.0])
 
 
 def test_sonic_episode_metrics_keep_last_100_completions_across_rollouts():

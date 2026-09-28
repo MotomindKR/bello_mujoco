@@ -272,6 +272,7 @@ def make_native_motion_step(env: BelloMotionTrackingEnv):
         )
         requested_ctrl = target(state, action)
         for index in range(env.decimation):
+            last_substep_qvel = np.asarray(mj_data.qvel).copy()
             mj_data.ctrl[:] = np.asarray(
                 delayed(state.data.ctrl, requested_ctrl, index)
             )
@@ -286,6 +287,9 @@ def make_native_motion_step(env: BelloMotionTrackingEnv):
             joint_default_offset=state.joint_default_offset,
             step_count=int(state.step_count) + 1,
             episode_return=float(state.episode_return),
+        )
+        stepped = stepped.replace(
+            last_substep_qvel=jax.numpy.asarray(last_substep_qvel)
         )
         return outcome(state, stepped, rng)
 
@@ -384,6 +388,7 @@ def native_motion_state(
     actor_feedback = env._actor_feedback(data)
     return MotionTrackingState(
         data=data,
+        last_substep_qvel=data.qvel,
         last_action=jax.numpy.asarray(last_action, dtype=jax.numpy.float32),
         actor_feedback_history=jax.numpy.repeat(
             actor_feedback[None, :],

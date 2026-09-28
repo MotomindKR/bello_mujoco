@@ -75,6 +75,7 @@ class MotionTrackingState:
     episode_length: jax.Array
     last_episode_return: jax.Array
     last_episode_length: jax.Array
+    last_substep_qvel: jax.Array | None = None
 
 
 @dataclass(frozen=True)
@@ -610,6 +611,7 @@ class BelloMotionTrackingEnv:
         )
         state = MotionTrackingState(
             data=data,
+            last_substep_qvel=data.qvel,
             last_action=jnp.zeros(self.action_size, dtype=jnp.float32),
             actor_feedback_history=actor_feedback_history,
             actor_feedback_delay_steps=self._sample_observation_delay(latency_key),
@@ -655,6 +657,19 @@ class BelloMotionTrackingEnv:
         state = state.replace(data=data)
         return state, self.observation_batch(state, obs_rng)
 
+    def _step_physics(self, data, previous_ctrl, target_ctrl):
+        def substep(index, carry):
+            value, _ = carry
+            updated = mjx.step(
+                self.model.mjx_model,
+                value.replace(
+                    ctrl=self.delayed_ctrl(previous_ctrl, target_ctrl, index)
+                ),
+            )
+            return updated, value.qvel
+
+        return jax.lax.fori_loop(0, self.decimation, substep, (data, data.qvel))
+
     def step(
         self, state: MotionTrackingState, action: jax.Array
     ) -> tuple[
@@ -663,19 +678,10 @@ class BelloMotionTrackingEnv:
         self._require_mjx()
         action = jnp.clip(jnp.asarray(action), -self.action_clip, self.action_clip)
         data = state.data.replace(ctrl=self.action_target(state, action))
-        data = jax.lax.fori_loop(
-            0,
-            self.decimation,
-            lambda index, value: mjx.step(
-                self.model.mjx_model,
-                value.replace(
-                    ctrl=self.delayed_ctrl(state.data.ctrl, data.ctrl, index)
-                ),
-            ),
-            data,
-        )
+        data, last_substep_qvel = self._step_physics(data, state.data.ctrl, data.ctrl)
         stepped = state.replace(
             data=data,
+            last_substep_qvel=last_substep_qvel,
             last_action=action,
             actor_feedback_history=self._advance_actor_feedback_history(
                 state.actor_feedback_history, data
@@ -727,17 +733,10 @@ class BelloMotionTrackingEnv:
         data, next_push_step, push_applied = self._maybe_apply_push_batch(
             data, state, push_rng
         )
-        data = jax.lax.fori_loop(
-            0,
-            self.decimation,
-            lambda index, value: mjx.step(
-                self.model.mjx_model,
-                value.replace(ctrl=self.delayed_ctrl(state.data.ctrl, ctrl, index)),
-            ),
-            data,
-        )
+        data, last_substep_qvel = self._step_physics(data, state.data.ctrl, ctrl)
         stepped = state.replace(
             data=data,
+            last_substep_qvel=last_substep_qvel,
             last_action=action,
             actor_feedback_history=jax.vmap(self._advance_actor_feedback_history)(
                 state.actor_feedback_history,

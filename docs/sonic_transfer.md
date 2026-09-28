@@ -146,9 +146,10 @@ yaw), and end-effector height error 0.3 m. Clip exhaustion is the timeout:
 the reference config's nominal 10-second episode length does not itself add
 a time-limit termination term. PPO uses the reference TRL timeout convention,
 adding `gamma * V(s_t)` before done-masked GAE. Other profiles keep their
-next-state timeout bootstrap. Ankle acceleration uses the final physics-step
-MuJoCo `qacc`, rather than a velocity difference over the whole control period;
-Isaac Lab obtains the analogous quantity by physics-step finite differences.
+next-state timeout bootstrap. Ankle acceleration uses the velocity difference
+over the final physics substep, in both MJX and native CPU evaluation, matching
+Isaac Lab's physics-frequency finite differences. It does not use MuJoCo's
+solver `qacc` or a difference over the whole control period.
 The contact exemptions include ankles, wrists and elbows by canonical role.
 
 W&B SONIC charts use `update` as their default horizontal axis. Compare
