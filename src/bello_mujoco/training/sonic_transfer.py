@@ -109,6 +109,9 @@ def run_training(run_config: SonicTransferTrainingRunConfig) -> None:
     succeeded = False
     try:
         run = create_wandb_run(run_config.wandb_config)
+        if run is not None:
+            run.define_metric("update")
+            run.define_metric("train/*", step_metric="update")
         dataset_digest = verify_artifact(
             run_config.dataset.directory,
             run_config.dataset.artifact,

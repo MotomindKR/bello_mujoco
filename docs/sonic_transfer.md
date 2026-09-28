@@ -131,6 +131,40 @@ SONIC anchor, matching the source root and Mini's retargeting contract. The sour
 composition includes local five-point tracking, wrist anti-shake, and ankle
 acceleration terms with the pinned Any2Any weights.
 
+### Reward and training-curve alignment
+
+SONIC integrates every weighted reward term over the control timestep, matching
+Isaac Lab's `RewardManager`: at 50 Hz the multiplier is 0.02. This applies to
+PPO rewards, episode returns and component metrics, not just the plotted values.
+BeyondMimic retains its existing reward convention. Earlier SONIC runs before
+this correction omitted that multiplier and are not recipe-parity results;
+start again from the original NVIDIA checkpoint, not those trained adapters.
+
+The SONIC profile explicitly sets 4-6 second pushes, action clipping at +/-20,
+anchor height error 0.25 m, squared full-orientation error 1 rad^2 (including
+yaw), and end-effector height error 0.3 m. Clip exhaustion is the timeout:
+the reference config's nominal 10-second episode length does not itself add
+a time-limit termination term. PPO uses the reference TRL timeout convention,
+adding `gamma * V(s_t)` before done-masked GAE. Other profiles keep their
+next-state timeout bootstrap. Ankle acceleration uses the final physics-step
+MuJoCo `qacc`, rather than a velocity difference over the whole control period;
+Isaac Lab obtains the analogous quantity by physics-step finite differences.
+The contact exemptions include ankles, wrists and elbows by canonical role.
+
+W&B SONIC charts use `update` as their default horizontal axis. Compare
+`train/objective/rewards` and `train/objective/length` with the README: these
+are means over the last 100 completed episodes, with the buffer included in
+checkpoints. `train/mean_reward` is still explicitly a per-control-step mean;
+`train/mean_episode_return` averages episodes completed in the current rollout.
+
+This is recipe alignment, not identical experiments: Mini dynamics, transmission,
+hardware filtering/delay, modest dynamics randomization, float32 inference,
+per-clip failure sampling and the 4,166-clip AMASS corpus remain deliberate
+departures. The README uses a small selected Oli corpus. MuJoCo contact counts
+use the final-step contact forces, whereas Isaac Lab uses contact-sensor history.
+Identical curves are not promised. Numerical preflight is not evidence of
+convergence; inspect fixed held-out motion tracking before extending a rental.
+
 ## AMASS research corpus
 
 The current corpus target is **8 hours of accepted training motion plus 0.8

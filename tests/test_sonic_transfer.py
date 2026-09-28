@@ -613,6 +613,102 @@ def test_sonic_profile_keeps_any2any_lora_and_ppo_recipe(tmp_path) -> None:
     assert profile.env_config.reward.local_five_point_weight == pytest.approx(2.0)
     assert profile.env_config.reward.anti_shake_weight == pytest.approx(-0.005)
     assert profile.env_config.reward.foot_acceleration_weight == pytest.approx(-2.5e-6)
+    assert profile.config.timeout_bootstrap == "current_state"
+    assert profile.config.policy.action_limit == profile.env_config.action_clip == 20
+    assert profile.env_config.push.interval_seconds == (4.0, 6.0)
+    assert profile.env_config.done.root_height_error == 0.25
+    assert profile.env_config.done.root_orientation_error == 1.0
+    assert profile.env_config.done.end_effector_position_error == 0.3
+
+
+def test_sonic_integrates_all_reward_terms_and_keeps_beyondmimic_unchanged(monkeypatch):
+    monkeypatch.setattr(
+        BelloMotionTrackingEnv,
+        "_reward",
+        lambda self, previous, state, world_id: (
+            state - 0.5,
+            {"reward/tracking": state, "reward/penalty": jnp.array(-0.5)},
+        ),
+    )
+    env = object.__new__(BelloSonicTransferEnv)
+    object.__setattr__(env, "config", SimpleNamespace(decimation=4))
+    object.__setattr__(
+        env,
+        "model",
+        SimpleNamespace(mj_model=SimpleNamespace(opt=SimpleNamespace(timestep=0.005))),
+    )
+    rewards, terms = jax.jit(jax.vmap(lambda x: env._reward(None, x)))(
+        jnp.array([1.0, 2.0])
+    )
+    np.testing.assert_allclose(rewards, [0.01, 0.03])
+    np.testing.assert_allclose(terms["reward/tracking"], [0.02, 0.04])
+    np.testing.assert_allclose(terms["reward/penalty"], [-0.01, -0.01])
+    sanitized, _ = env._sanitize_nonfinite_reward(
+        rewards, terms, {"done/nonfinite": jnp.array([False, False])}
+    )
+    np.testing.assert_allclose(sanitized, rewards)
+    assert BelloMotionTrackingEnv._reward(env, None, jnp.array(2.0), 0)[0] == 1.5
+
+
+def test_sonic_orientation_termination_uses_full_squared_angle_including_yaw():
+    env = object.__new__(BelloSonicTransferEnv)
+    object.__setattr__(
+        env, "config", SimpleNamespace(done=SimpleNamespace(root_orientation_error=1.0))
+    )
+    identity = jnp.array([1.0, 0.0, 0.0, 0.0])
+    angles = np.array([0.99, 1.01, 2.0])
+    quats = jnp.asarray(
+        np.stack(
+            [np.cos(angles / 2), np.zeros(3), np.zeros(3), np.sin(angles / 2)], axis=1
+        )
+    )
+    result = jax.jit(
+        jax.vmap(lambda q: env._anchor_orientation_terminated(identity, q))
+    )
+    np.testing.assert_array_equal(result(quats), [False, True, True])
+    np.testing.assert_array_equal(result(-quats), [False, True, True])
+    assert not BelloMotionTrackingEnv._anchor_orientation_terminated(
+        env, identity, quats[2]
+    )
+
+
+def test_sonic_ankle_cost_uses_physics_acceleration_in_logical_joint_order():
+    env = object.__new__(BelloSonicTransferEnv)
+    object.__setattr__(
+        env,
+        "model",
+        SimpleNamespace(
+            actuator_joint_names=("right_ankle_roll", "elbow", "left_ankle_pitch"),
+            policy_qvel_indices=(3, 1, 2),
+        ),
+    )
+    state = SimpleNamespace(
+        data=SimpleNamespace(qacc=jnp.array([100.0, 200.0, 3.0, 4.0]))
+    )
+    assert env._foot_acceleration_cost(None, state) == 25
+
+
+def test_sonic_episode_metrics_keep_last_100_completions_across_rollouts():
+    env = object.__new__(BelloSonicTransferEnv)
+    state = env.initial_task_state()
+    update = jax.jit(env.update_task_state)
+    for start, count in ((0, 70), (70, 0), (70, 60), (130, 120)):
+        values = jnp.arange(start, start + 128, dtype=jnp.float32)
+        state = update(
+            state,
+            {
+                "done/any": jnp.arange(128) < count,
+                "episode_return": values,
+                "episode_length": values * 2,
+            },
+        )
+        total = start + count
+        metrics = env.task_state_metrics(state)
+        assert metrics["objective/rewards"] == pytest.approx(
+            np.mean(np.arange(max(total - 100, 0), total))
+        )
+        assert metrics["objective/length"] == 2 * metrics["objective/rewards"]
+        assert metrics["objective/completed_episodes"] == min(total, 100)
 
 
 def test_separate_critic_learning_rate_is_selected_by_parameter_path() -> None:

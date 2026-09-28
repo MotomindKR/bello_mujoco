@@ -1038,17 +1038,8 @@ class BelloMotionTrackingEnv:
             jnp.abs(state.data.xpos[anchor_id, 2] - reference.body_pos[anchor_index, 2])
             > self.config.done.root_height_error
         )
-        reference_gravity = quat_rotate_inverse(
-            reference.body_quat[anchor_index],
-            jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32),
-        )
-        robot_gravity = quat_rotate_inverse(
-            state.data.xquat[anchor_id],
-            jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32),
-        )
-        orientation = (
-            jnp.abs(reference_gravity[2] - robot_gravity[2])
-            > self.config.done.root_orientation_error
+        orientation = self._anchor_orientation_terminated(
+            reference.body_quat[anchor_index], state.data.xquat[anchor_id]
         )
         ee_indices = jnp.asarray(self.end_effector_indices)
         ee_error = jnp.abs(
@@ -1056,6 +1047,15 @@ class BelloMotionTrackingEnv:
         )
         end_effector = jnp.any(ee_error > self.config.done.end_effector_position_error)
         return self._finish_termination_flags(state, height, orientation, end_effector)
+
+    def _anchor_orientation_terminated(self, reference_quat, robot_quat):
+        gravity = jnp.asarray([0.0, 0.0, -1.0], dtype=jnp.float32)
+        reference_gravity = quat_rotate_inverse(reference_quat, gravity)
+        robot_gravity = quat_rotate_inverse(robot_quat, gravity)
+        return (
+            jnp.abs(reference_gravity[2] - robot_gravity[2])
+            > self.config.done.root_orientation_error
+        )
 
     def _finish_termination_flags(
         self,
@@ -1583,7 +1583,7 @@ class BelloMotionTrackingEnv:
         forceful = normal_force > self.config.reward.undesired_contact_force_threshold
         contact_body = jnp.asarray(self.model.geom_body_ids)[contact_geom]
         robot_body_ids = np.unique(self.model.geom_body_ids[self.model.robot_geom_ids])
-        allowed = {self._body_id(name) for name in self.end_effector_names}
+        allowed = {self._body_id(name) for name in self.allowed_contact_body_names}
         undesired_body_ids = jnp.asarray(
             [body_id for body_id in robot_body_ids if body_id not in allowed],
             dtype=jnp.int32,
@@ -1594,6 +1594,10 @@ class BelloMotionTrackingEnv:
             & pair_contains_each(contact_body, undesired_body_ids)
         )
         return jnp.sum(jnp.any(body_contact, axis=0).astype(jnp.float32))
+
+    @property
+    def allowed_contact_body_names(self) -> tuple[str, ...]:
+        return self.end_effector_names
 
     def _joint_limit_cost(self, state: MotionTrackingState) -> jax.Array:
         positions = state.data.qpos[jnp.asarray(self.model.policy_qpos_indices)]

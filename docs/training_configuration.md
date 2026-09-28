@@ -2,6 +2,11 @@
 
 Values belong in YAML, not duplicated documentation tables.
 
+`config.timeout_bootstrap` selects next-state timeout values by default.
+SONIC explicitly selects `current_state` to reproduce Any2Any TRL's
+`gamma * V(s_t)` reward correction followed by done-masked GAE. This does not
+change the timeout convention for locomotion or BeyondMimic.
+
 Use `asset_config.joint_soft_limits` for task-specific target restrictions. The
 mapping contains logical joint names and `[lower, upper]` radians. Unspecified
 Mini joints use canonical URDF ranges. Resolved actuator limits are saved with

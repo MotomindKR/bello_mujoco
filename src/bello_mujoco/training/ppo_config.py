@@ -101,6 +101,9 @@ class PPOConfig:
     )
     gamma: float = _validated(0.99, _unit_interval)
     gae_lambda: float = _validated(0.95, _unit_interval)
+    timeout_bootstrap: str = _validated(
+        "next_state", _one_of("next_state", "current_state")
+    )
     clip_eps: float = _validated(0.2, _positive_finite)
     ent_coef: float = _validated(0.01, _nonnegative_finite)
     vf_coef: float = _validated(1.0, _nonnegative_finite)

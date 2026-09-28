@@ -27,6 +27,7 @@ config:
   max_learning_rate: 0.0002
   gamma: 0.99
   gae_lambda: 0.95
+  timeout_bootstrap: current_state
   clip_eps: 0.2
   ent_coef: 0.01
   vf_coef: 1.0
@@ -45,11 +46,11 @@ config:
     max_log_std: -0.5108256238
     obs_stack_size: 10
     action_distribution: gaussian
-    action_limit: 100.0
+    action_limit: 20.0
 env_config:
   observation_mode: proprioceptive
   formulation: beyondmimic
-  action_clip: 100.0
+  action_clip: 20.0
   decimation: 4
   anchor_body_name: pelvis_link
   simulation_physics:
@@ -62,6 +63,14 @@ env_config:
   observation_latency:
     enabled: true
     delay_steps: [0, 2]
+  push:
+    enabled: true
+    interval_seconds: [4.0, 6.0]
+  done:
+    root_height_error: 0.25
+    # SONIC compares squared full quaternion angle (rad^2), including yaw.
+    root_orientation_error: 1.0
+    end_effector_position_error: 0.3
   reward:
     root_position_weight: 0.5
     root_orientation_weight: 0.5

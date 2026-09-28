@@ -170,6 +170,15 @@ def compute_gae(
             + config.gamma * next_value * not_terminal
             - transition.value
         )
+        if config.timeout_bootstrap == "current_state":
+            # TRL adds gamma * V(s_t) for timeouts before computing done-masked GAE.
+            timeout = transition.info["done/timeout"].astype(jnp.float32)
+            delta = (
+                transition.reward
+                + config.gamma * timeout * transition.value
+                + config.gamma * next_value * not_boundary
+                - transition.value
+            )
         gae = delta + config.gamma * config.gae_lambda * not_boundary * gae
         return (gae, transition.value), gae
 

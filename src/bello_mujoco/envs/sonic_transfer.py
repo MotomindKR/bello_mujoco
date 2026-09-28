@@ -16,6 +16,7 @@ from bello_mujoco.envs.motion_tracking import (
     MotionTrackingEnvConfig,
     MotionTrackingState,
     quat_conjugate,
+    quat_distance,
     quat_multiply,
     rotation_6d,
 )
@@ -343,6 +344,77 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
             model=self.model,
             actuator_config=self.actuator_config,
         )
+
+    def _reward(self, previous, state, world_id=0):
+        reward, components = super()._reward(previous, state, world_id)
+        # Isaac Lab RewardManager integrates weighted reward rates over step_dt.
+        return reward * self.control_timestep, {
+            name: value * self.control_timestep for name, value in components.items()
+        }
+
+    @property
+    def allowed_contact_body_names(self):
+        return tuple(
+            name
+            for name in self.motion.body_names
+            if any(part in name for part in ("ankle_roll", "wrist_yaw", "elbow"))
+        )
+
+    def _anchor_orientation_terminated(self, reference_quat, robot_quat):
+        return (
+            quat_distance(reference_quat, robot_quat) ** 2
+            > self.config.done.root_orientation_error
+        )
+
+    def _foot_acceleration_cost(self, previous, state):
+        # Isaac Lab updates joint acceleration at physics frequency, not 50 Hz.
+        indices = jnp.asarray(
+            [
+                index
+                for name, index in zip(
+                    self.model.actuator_joint_names,
+                    self.model.policy_qvel_indices,
+                    strict=True,
+                )
+                if "ankle" in name
+            ]
+        )
+        return jnp.sum(state.data.qacc[indices] ** 2)
+
+    def initial_task_state(self):
+        # Newest first: return, length, validity. Checkpointed with the runner.
+        return jnp.zeros((3, 100), dtype=jnp.float32)
+
+    def update_task_state(self, task_state, info):
+        done = info["done/any"]
+        count = jnp.minimum(jnp.sum(done), task_state.shape[1])
+        newest = (
+            done.size
+            - 1
+            - jnp.nonzero(done[::-1], size=task_state.shape[1], fill_value=done.size)[0]
+        )
+        completed = jnp.stack(
+            (
+                info["episode_return"][newest],
+                info["episode_length"][newest],
+                jnp.ones(task_state.shape[1]),
+            )
+        )
+        positions = jnp.arange(task_state.shape[1])
+        return jnp.where(
+            positions[None, :] < count,
+            completed,
+            task_state[:, jnp.maximum(positions - count, 0)],
+        )
+
+    def task_state_metrics(self, task_state):
+        count = jnp.sum(task_state[2])
+        means = jnp.sum(task_state[:2] * task_state[2], axis=1) / jnp.maximum(count, 1)
+        return {
+            "objective/rewards": means[0],
+            "objective/length": means[1],
+            "objective/completed_episodes": count,
+        }
 
     def _finish_termination_flags(self, state, height, orientation, end_effector):
         flags = super()._finish_termination_flags(
