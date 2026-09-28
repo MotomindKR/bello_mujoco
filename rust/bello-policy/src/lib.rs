@@ -18,6 +18,7 @@ pub mod gait;
 pub mod hardware;
 pub mod locomotion;
 pub mod motion;
+pub mod power;
 pub mod remote;
 pub mod target_limits;
 pub mod torso;

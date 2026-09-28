@@ -79,6 +79,16 @@ stale/disconnected input requests standing, not motor disable. Received aborts
 remain latched and malformed messages still stop control. The checkpoint owns command mapping
 and slewing. Optional JSONL policy logs use a new file, never overwrite one.
 
+Each locomotion/motion sample and the `startup_target` event includes
+`motor_rails`, keyed by power-board name. Each reading contains `voltage_v`,
+`current_a` (signed, including regeneration), `sample_age_ms`, `stale`, `sequence`,
+and `connection_generation`. Age includes the daemon-reported sample age and
+time since local receipt. Staleness uses the board's configured timeout or the
+daemon's stale flag. Unknown, offline, malformed, or disconnected readings are
+`null`, never a fabricated zero; a robot without power boards logs `{}`.
+The logger reads a background telemetry cache and reconnects automatically.
+Power telemetry does not add an RPC to the control loop or gate motor control.
+
 Synthetic lifecycle checks cover rejection, stale feedback, remote abort,
 signals, and ambiguous start timeouts. A synthetic hold actor has completed the
 native policy/hardwared/MuJoCo lifecycle on isolated Lima vCAN. Trained-policy

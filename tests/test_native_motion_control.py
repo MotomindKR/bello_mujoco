@@ -20,7 +20,12 @@ from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.hardware import _pose_pb2 as pb
 from bello_mujoco.motion.clip import MotionClip
 from bello_mujoco.training.tracking import to_builtin
-from test_native_control import SyntheticHardware, bundle, start_services
+from test_native_control import (
+    SyntheticHardware,
+    assert_motor_rail_log,
+    bundle,
+    start_services,
+)
 from test_native_control import hardware_proto as hardware_proto
 
 pytestmark = pytest.mark.integration
@@ -407,6 +412,8 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
         )
         assert fake.calls[-2:] == ["disable", "release"]
         events = [json.loads(line) for line in log.read_text().splitlines()]
+        if failure is None:
+            assert_motor_rail_log([row for row in events if "motion" in row])
         rows = [row["motion"] for row in events if "motion" in row]
         assert all(row["observation_mode"] == observation_mode for row in rows)
         gains = np.asarray([row["motor_gains"] for row in rows])

@@ -316,6 +316,9 @@ pub async fn run(
         .as_ref()
         .map(|p| OpenOptions::new().write(true).create_new(true).open(p))
         .transpose()?;
+    let power = log
+        .as_ref()
+        .map(|_| crate::power::Source::start(&hardware.robot, rpc));
     let preflight = hardware.feedback(proto::GroupState::Idle).await?;
     let limits = hardware.target_limits.clone();
     let startup_margin = hardware.config.startup_feedback_margin_radians;
@@ -348,7 +351,8 @@ pub async fn run(
                 &mut *log,
                 &serde_json::json!({
                     "event": "startup_target", "measured_motor_position": initial.motor_position,
-                    "motor_target": startup_target
+                    "motor_target": startup_target,
+                    "motor_rails": power.as_ref().map(crate::power::Source::snapshot)
                 }),
             )?;
             log.write_all(b"\n")?;
@@ -514,7 +518,7 @@ pub async fn run(
                 if let Some(log) = &mut log {
                     serde_json::to_writer(
                         &mut *log,
-                        &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "motion": step.log, "command": command}),
+                        &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "motion": step.log, "command": command, "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}),
                     )?;
                     log.write_all(b"\n")?;
                     log.flush()?;
@@ -570,7 +574,7 @@ pub async fn run(
             if let Some(log) = &mut log {
                 serde_json::to_writer(
                     &mut *log,
-                    &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "policy": step, "following_live": following_live, "command": command}),
+                    &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "policy": step, "following_live": following_live, "command": command, "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}),
                 )?;
                 log.write_all(b"\n")?;
                 log.flush()?;

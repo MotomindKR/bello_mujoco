@@ -118,7 +118,13 @@ class SyntheticHardware:
             serial_devices=[
                 p.SerialDeviceInfo(
                     name="serial", port="none", baud_rate=115200, status=status
-                )
+                ),
+                p.SerialDeviceInfo(
+                    name="power_serial",
+                    port="power-none",
+                    baud_rate=115200,
+                    status=status,
+                ),
             ],
             imus=[
                 p.ImuInfo(
@@ -129,7 +135,41 @@ class SyntheticHardware:
                     status=status,
                 )
             ],
+            power_boards=[
+                p.PowerBoardInfo(
+                    name="supply",
+                    serial_device="power_serial",
+                    profile="agx",
+                    stale_timeout_ms=3000,
+                    sync_period_ms=1000,
+                    status=status,
+                )
+            ],
         )
+
+    def WatchTelemetry(self, request, context):
+        assert request.include_power_boards
+        assert list(request.power_boards) == ["supply"]
+        assert not request.include_motors and not request.include_imu
+        p = self.pb
+        while context.is_active() and not self.closed.is_set():
+            yield p.WatchTelemetryResponse(
+                monotonic_ns=time.monotonic_ns(),
+                power_board=p.PowerBoardTelemetry(
+                    board_name="supply",
+                    connection_generation=1,
+                    status=p.DeviceStatus(state=p.DEVICE_STATE_ONLINE),
+                    samples=[
+                        p.PowerBoardSample(
+                            sequence=42,
+                            motor_rail=p.PowerVoltageCurrent(
+                                voltage_v=48.5, current_a=-1.25
+                            ),
+                        )
+                    ],
+                ),
+            )
+            self.closed.wait(0.01)
 
     def GetStateFrame(self, request, context):
         p = self.pb
@@ -282,6 +322,8 @@ def start_services(fake, *, pose_enabled=True):
         make = (
             grpc.stream_stream_rpc_method_handler
             if method.client_streaming
+            else grpc.unary_stream_rpc_method_handler
+            if method.server_streaming
             else grpc.unary_unary_rpc_method_handler
         )
         methods[method.name] = make(
@@ -569,6 +611,8 @@ def test_native_operator_lifecycle_and_failure_cleanup(
         ), transcript.decode(errors="replace")
         assert fake.calls[-2:] == ["disable", "release"]
         log = [json.loads(line) for line in log_path.read_text().splitlines()]
+        if failure is None:
+            assert_motor_rail_log([row for row in log if "policy" in row])
         if failure in ("startup_quantization", "startup_margin"):
             targets = np.asarray(fake.targets)
             assert np.all(targets[:, 0] >= 0)
@@ -638,6 +682,20 @@ def test_native_operator_lifecycle_and_failure_cleanup(
         fake.closed.set()
         server.stop(0).wait()
         pool.shutdown(wait=True)
+
+
+def assert_motor_rail_log(rows):
+    assert rows and all("motor_rails" in row for row in rows)
+    readings = [row["motor_rails"]["supply"] for row in rows]
+    received = [value for value in readings if value is not None]
+    assert received
+    for value in received:
+        assert value["voltage_v"] == 48.5
+        assert value["current_a"] == -1.25
+        assert 0 <= value["sample_age_ms"] < 3000
+        assert value["stale"] is False
+        assert value["sequence"] == 42
+        assert value["connection_generation"] == 1
 
 
 @pytest.mark.parametrize("position", [-0.00019180590524214836, -0.002])
