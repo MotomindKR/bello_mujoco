@@ -190,7 +190,9 @@ def render_motion_policy(
                 nonfinite = bool(jax.device_get(info["done/nonfinite"]))
                 terminal = terminal or step_terminal
                 timeout = timeout or step_timeout
-                if step_timeout or nonfinite or (stop_on_terminal and step_terminal):
+                if nonfinite:
+                    raise RuntimeError("motion evaluation encountered nonfinite state")
+                if step_timeout or (stop_on_terminal and step_terminal):
                     break
     finally:
         resources.close()

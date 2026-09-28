@@ -212,6 +212,9 @@ The preparer does not upload or start training automatically.
 
 Evaluation requires an explicit subset of the held-out split recorded in the
 checkpoint and writes one video and one result entry per clip:
+Nonfinite motion-evaluation state raises an error and closes video resources;
+it is not reported as a successful short rollout, even when terminal stopping
+is disabled.
 
 ```bash
 uv run bello-eval task=sonic_transfer \
