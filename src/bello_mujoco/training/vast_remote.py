@@ -400,17 +400,18 @@ import json
 import sys
 from pathlib import Path
 
+from bello_mujoco.evaluation.software import configure_software_rendering
+configure_software_rendering()
+
 import equinox as eqx
 import jax
 import numpy as np
 
 from bello_mujoco.deployment import ExportConfig, export_checkpoint
 from bello_mujoco.evaluation.motion import render_motion_policy
-from bello_mujoco.evaluation.software import configure_software_rendering
 from bello_mujoco.sonic.runtime import load_sonic_policy_runtime
 from bello_mujoco.training.normalization import init_observation_norm_state
 
-configure_software_rendering()
 directory, dataset = map(Path, sys.argv[1:])
 paths = list(directory.glob("smoke_*/final"))
 clips = sorted(dataset.glob("*.npz"))

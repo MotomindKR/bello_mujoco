@@ -732,6 +732,46 @@ def test_remote_command_preflights_software_rendering() -> None:
     )
 
 
+def test_sonic_preflight_configures_software_before_runtime_imports() -> None:
+    import ast
+
+    script = vast_remote.REMOTE_TRAIN_SCRIPT
+    block = next(
+        part.split("\nPY", 1)[0]
+        for part in script.split("<<'PY'\n")[1:]
+        if "sonic_preflight_checkpoint_restored" in part.split("\nPY", 1)[0]
+    )
+    statements = ast.parse(block).body
+    configured = False
+    for statement in statements:
+        if (
+            isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Call)
+            and isinstance(statement.value.func, ast.Name)
+            and statement.value.func.id == "configure_software_rendering"
+        ):
+            configured = True
+        if isinstance(statement, ast.Import):
+            names = [item.name for item in statement.names]
+        elif isinstance(statement, ast.ImportFrom):
+            names = [statement.module or ""]
+        else:
+            continue
+        for name in names:
+            if name not in {
+                "json",
+                "sys",
+                "pathlib",
+                "bello_mujoco.evaluation.software",
+            }:
+                assert configured, (
+                    f"runtime dependency imported before software setup: {name}"
+                )
+    assert configured
+    assert "render_motion_policy(" in block
+    assert "export_checkpoint(ExportConfig(" in block
+
+
 def test_motion_preflight_exports_and_restores_before_training() -> None:
     import ast
 
