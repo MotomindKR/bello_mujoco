@@ -76,6 +76,8 @@ class ActuatorConfig:
 
     def __post_init__(self) -> None:
         for name, config in self.joints.items():
+            if not math.isfinite(config.default_pos):
+                raise ValueError(f"default_pos must be finite: {name}")
             if config.mode not in VALID_ACTUATOR_MODES:
                 raise ValueError(
                     f"actuator config for joint {name!r} has invalid mode "
@@ -130,6 +132,19 @@ class ActuatorConfig:
             joints={
                 name: replace(config, soft_limit=limits[name])
                 if name in limits
+                else config
+                for name, config in self.joints.items()
+            }
+        )
+
+    def with_default_positions(self, positions: dict[str, float]) -> ActuatorConfig:
+        unknown = set(positions) - set(self.joints)
+        if unknown:
+            raise ValueError(f"unknown joints in default positions: {sorted(unknown)}")
+        return ActuatorConfig(
+            joints={
+                name: replace(config, default_pos=positions[name])
+                if name in positions
                 else config
                 for name, config in self.joints.items()
             }

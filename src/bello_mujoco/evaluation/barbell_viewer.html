@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bello Mini | barbell feasibility</title>
+<link rel="icon" href="data:,">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #edf1f4; color: #243440; font: 14px system-ui, sans-serif; }
+  header { padding: 14px 20px; background: white; border-bottom: 1px solid #ccd5dc; }
+  h1 { font-size: 19px; margin: 0 0 5px; }
+  p { line-height: 1.5; }
+  header p { margin: 0; color: #536773; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 390px; height: calc(100dvh - 84px); }
+  #viewport { position: relative; min-height: 420px; }
+  canvas { width: 100%; height: 100%; display: block; }
+  #views { position: absolute; top: 12px; left: 14px; display: flex; gap: 6px; }
+  button { padding: 8px 12px; border: 1px solid #ccd5dc; border-radius: 5px; background: white; cursor: pointer; color: inherit; }
+  #legend { position: absolute; bottom: 12px; left: 14px; background: #ffffffeb; padding: 10px; border-radius: 6px; line-height: 1.7; pointer-events: none; }
+  aside { overflow: auto; background: white; padding: 18px; border-left: 1px solid #ccd5dc; }
+  h2 { font-size: 15px; margin: 18px 0 8px; }
+  #status { padding: 12px; background: #fff0df; border-left: 4px solid #bf6324; font-weight: 650; line-height: 1.5; }
+  #payload { width: 100%; }
+  .muted { color: #637683; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: right; padding: 6px 3px; border-bottom: 1px solid #e6ebef; }
+  th:first-child, td:first-child { text-align: left; }
+  .over { color: #b43b28; font-weight: 700; }
+  li { margin-bottom: 6px; }
+  ul { padding-left: 18px; }
+  a { color: #26659a; }
+  @media(max-width: 800px) { main { display: block; height: auto; } #viewport { height: 65dvh; } aside { max-height: none; } }
+</style>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}
+</script>
+<header>
+  <h1>Bello Mini / barbell starting-pose review</h1>
+  <p>CAD visual geometry + gravity-only load screen. This is a posed model, not a successful lift or trained policy.</p>
+</header>
+<main>
+  <section id="viewport" aria-label="Interactive 3D robot and barbell">
+    <div id="views"><button data-view="iso">Isometric</button><button data-view="front">Front</button><button data-view="side">Side</button><button id="weights">Solid weights</button></div>
+    <div id="legend">Drag: orbit · wheel: zoom · right-drag: pan<br>
+      Orange: provisional end weights · cyan dots: grip points<br>
+      Cyan arrows: sphere-to-shaft offsets · purple dot: combined COM projection<br>
+      Green outline: sole support polygon · axes: X red / Y green / Z blue
+    </div>
+  </section>
+  <aside>
+    <div id="status">Loading geometry and static results…</div>
+    <h2>Payload: <span id="mass"></span> kg total</h2>
+    <input id="payload" type="range" aria-label="Payload sample" min="0" step="1">
+    <p class="muted">Changes the static load result only. Pose and placeholder end-weight dimensions remain fixed.</p>
+    <p id="geometry"></p><p id="support"></p>
+    <h2>Physical motor load | Nm</h2>
+    <p class="muted">Absolute static torque. Red exceeds configured peak. Rated is not an indefinite-hold guarantee.</p>
+    <table><thead><tr><th>Motor</th><th>Load</th><th>Rated</th><th>Peak</th></tr></thead><tbody id="motors"></tbody></table>
+    <h2>Combined coupled-joint load | Nm</h2>
+    <p class="muted">These additional net joint limits can bind before either motor saturates.</p>
+    <table><thead><tr><th>Joint</th><th>Load</th><th>Min</th><th>Max</th></tr></thead><tbody id="joints"></tbody></table>
+    <h2>Scope and assumptions</h2><ul id="limitations"></ul>
+    <p class="muted" id="source"></p><a href="report.json">Full numerical report / joint angles</a>
+  </aside>
+</main>
+<script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+  const el = id => document.getElementById(id);
+  try {
+    const response = await fetch('report.json');
+    if (!response.ok) throw new Error(`report.json: HTTP ${response.status}`);
+    const report = await response.json();
+    const viewport = el('viewport');
+    const renderer = new THREE.WebGLRenderer({antialias: true, preserveDrawingBuffer: true});
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setClearColor(0xedf1f4);
+    viewport.prepend(renderer.domElement);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 50);
+    camera.up.set(0, 0, 1);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0.06, 0, 0.66);
+    controls.enableDamping = true;
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x738294, 2.5));
+    for (const [pos, power] of [[[3, -3, 5], 3], [[-2, 2, 3], 1.5]]) {
+      const light = new THREE.DirectionalLight(0xffffff, power); light.position.set(...pos); scene.add(light);
+    }
+    const grid = new THREE.GridHelper(3, 30, 0x9eafbb, 0xd1dbe2);
+    grid.rotation.x = Math.PI / 2; grid.position.z = -0.002; scene.add(grid);
+    const axes = new THREE.AxesHelper(0.20); axes.position.set(-0.30, -0.40, 0); scene.add(axes);
+    const gltf = await new GLTFLoader().loadAsync('scene.glb'); scene.add(gltf.scene);
+    const weightMaterials = [];
+    for (const sign of [-1, 1]) gltf.scene.getObjectByName(`end_weight_${sign}`).traverse(node => {
+      if (!node.isMesh) return;
+      node.material = node.material.clone(); weightMaterials.push(node.material);
+    });
+    let faded = true;
+    const setWeightOpacity = () => {
+      weightMaterials.forEach(m => {m.transparent = faded; m.opacity = faded ? 0.18 : 1; m.depthWrite = !faded; m.needsUpdate = true;});
+      el('weights').textContent = faded ? 'Solid weights' : 'Transparent weights';
+    };
+    el('weights').onclick = () => {faded = !faded; setWeightOpacity();}; setWeightOpacity();
+    for (const hand of report.hands) {
+      const position = new THREE.Vector3(...hand.position_m);
+      const grip = new THREE.Mesh(new THREE.SphereGeometry(0.012), new THREE.MeshBasicMaterial({color: 0x008fa5}));
+      grip.position.copy(position); scene.add(grip);
+      const sphereCenter = new THREE.Vector3(...hand.sphere_center_m);
+      const offset = position.clone().sub(sphereCenter);
+      scene.add(new THREE.ArrowHelper(offset.clone().normalize(), sphereCenter, offset.length(), 0x008fa5, 0.012, 0.009));
+    }
+    // Report support points are per-foot convex polygons; draw each using its Y sign.
+    for (const sign of [-1, 1]) {
+      const points = report.support_points_m.filter(p => Math.sign(p[1]) === sign).map(p => new THREE.Vector3(p[0], p[1], 0.003));
+      points.push(points[0].clone());
+      scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({color: 0x358c62})));
+    }
+    const com = new THREE.Mesh(new THREE.SphereGeometry(0.012), new THREE.MeshBasicMaterial({color: 0x8957ad}));
+    scene.add(com);
+    const view = name => {
+      camera.position.set(...({iso: [2.4, -2.5, 1.9], front: [3.1, 0, 0.85], side: [0.05, -3.1, 0.85]}[name]));
+      controls.target.set(0.06, 0, 0.66); controls.update();
+    };
+    document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => view(button.dataset.view)));
+    view('iso');
+    new ResizeObserver(() => {
+      const w = viewport.clientWidth, h = viewport.clientHeight;
+      renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
+    }).observe(viewport);
+    renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+    const hand = report.hands[0];
+    const forearm = hand.forearm_angle_from_downward_vertical_rad * 180 / Math.PI;
+    const offset = new THREE.Vector3(...hand.position_m).sub(new THREE.Vector3(...hand.sphere_center_m)).normalize();
+    const offsetAngle = Math.acos(THREE.MathUtils.clamp(-offset.z, -1, 1)) * 180 / Math.PI;
+    el('geometry').textContent = `Robot: ${report.robot_mass_kg.toFixed(2)} kg. Bar: ${report.config.bar_length_m.toFixed(2)} m. Grip spacing: ${(report.config.grip_spacing_m * 1000).toFixed(0)} mm. Grip height: ${(report.bar_center_world_m[2] * 1000).toFixed(0)} mm. Forearm: ${forearm.toFixed(1)}° from downward vertical; sphere-to-shaft offset: ${offsetAngle.toFixed(1)}° from down.`;
+    el('geometry').textContent += ` Shaft center: ${(hand.sphere_surface_to_shaft_center_m * 1000).toFixed(0)} mm beyond the ${(hand.sphere_radius_m * 1000).toFixed(0)} mm-radius hand sphere. End weights: ${(report.config.end_weight_radius_m * 200).toFixed(0)} cm diameter × ${(report.config.end_weight_width_m * 100).toFixed(0)} cm thick.`;
+    el('source').textContent = `Source ${report.source_commit.slice(0, 12)} · bello-stack ${report.stack_commit.slice(0, 12)}`;
+    for (const text of report.limitations) { const li = document.createElement('li'); li.textContent = text; el('limitations').append(li); }
+    const slider = el('payload'); slider.max = report.samples.length - 1;
+    slider.value = report.samples.findIndex(s => s.bar_mass_kg === report.config.bar_mass_kg);
+    const update = () => {
+      const sample = report.samples[Number(slider.value)]; el('mass').textContent = sample.bar_mass_kg;
+      const overloaded = sample.maximum_effort_fraction > 1 + 1e-6;
+      el('status').textContent = !sample.ground_equilibrium ? 'No ground-supported static equilibrium at this pose.' : overloaded ? 'Static overload: this pose exceeds a configured motor or combined joint torque limit.' : report.robot_self_collisions.length ? 'Robot self-collision at this pose.' : 'Within motor/joint limits in this static screen only. Dynamic/grip/thermal checks remain unvalidated.';
+      el('support').textContent = `Combined COM support margin: ${(1000 * sample.support_margin_m).toFixed(1)} mm. Equal load per hand: ${(sample.bar_mass_kg * 9.81 / 2).toFixed(1)} N.`;
+      com.position.set(sample.combined_com_m[0], sample.combined_com_m[1], 0.012);
+      el('motors').replaceChildren();
+      report.motors.forEach((motor, i) => {
+        const row = document.createElement('tr');
+        const torque = sample.torque_nm === null ? null : Math.abs(sample.torque_nm[i]);
+        if (torque !== null && torque > motor.peak_nm) row.className = 'over';
+        for (const value of [motor.coordinate.replace('_joint', '').replace('left_', 'L ').replace('right_', 'R ').replaceAll('_', ' '), torque === null ? '—' : torque.toFixed(1), motor.rated_nm.toFixed(0), motor.peak_nm.toFixed(0)]) {
+          const cell = document.createElement('td'); cell.textContent = value; row.append(cell);
+        }
+        el('motors').append(row);
+      });
+      el('joints').replaceChildren();
+      report.joint_effort_limits.forEach((joint, i) => {
+        if (!joint.coupled) return;
+        const torque = sample.joint_torque_nm?.[i];
+        const row = document.createElement('tr');
+        if (torque < joint.lower_nm - 1e-6 || torque > joint.upper_nm + 1e-6) row.className = 'over';
+        for (const value of [joint.joint.replace('_joint', '').replace('left_', 'L ').replace('right_', 'R ').replaceAll('_', ' '), torque == null ? '—' : torque.toFixed(2), joint.lower_nm.toFixed(0), joint.upper_nm.toFixed(0)]) {
+          const cell = document.createElement('td'); cell.textContent = value; row.append(cell);
+        }
+        el('joints').append(row);
+      });
+    };
+    slider.addEventListener('input', update); update();
+    document.documentElement.dataset.ready = 'true';
+  } catch (error) {
+    el('status').textContent = `Preview failed: ${error.message}. Serve this folder with a local HTTP server; the viewer requires the pinned Three.js CDN.`;
+    console.error(error);
+  }
+</script>
+</html>

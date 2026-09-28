@@ -26,7 +26,11 @@ inference, native CPU simulation, and Mesa llvmpipe software rasterization on
 Linux; use Lima on macOS.
 
 Maintained experiments are `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
-`bello_mini_standing`, `motion`, and `bello_mini_motion`. Values live in YAML, not documentation tables.
+`bello_mini_standing`, `bello_mini_loaded_standing`, `motion`, and
+`bello_mini_motion`, and `bello_mini_barbell_motion`. The barbell recipes use
+[reviewed references](docs/barbell_feasibility.md). The 15 kg motion profile
+explicitly permits exploratory simulation with its failed exact-reference
+effort screen preserved; deployment remains gated. Values live in YAML, not documentation tables.
 Checkpoints require their exact clean root Git commit and pinned dependencies.
 Historical policies run from historical checkouts, without compatibility fallbacks.
 

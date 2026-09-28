@@ -1,0 +1,71 @@
+# Randomized standing with one shared rigid bar and ideal shaft-axis hinges.
+asset_config:
+  target_total_mass_kg: 49.5
+  barbell:
+    mass_kg: 30.0
+  joint_default_positions:
+    # Reviewed forearms ~60 deg from down; unchanged gains, modes and limits.
+    left_shoulder_pitch_joint: 0.000367519
+    left_shoulder_roll_joint: -0.013369513
+    left_shoulder_yaw_joint: -0.006997438
+    left_elbow_pitch_joint: -1.048458276
+    left_wrist_yaw_joint: 0.004661893
+    left_wrist_pitch_joint: 0.786308457
+    left_wrist_roll_joint: 0.018025604
+    right_shoulder_pitch_joint: 0.000367519
+    right_shoulder_roll_joint: 0.013369513
+    right_shoulder_yaw_joint: 0.006997438
+    right_elbow_pitch_joint: -1.048458276
+    right_wrist_yaw_joint: -0.004661893
+    right_wrist_pitch_joint: 0.786308457
+    right_wrist_roll_joint: -0.018025604
+command_config:
+  torso:
+    roll: [0.0, 0.0]
+    pitch: [0.0, 0.0]
+    yaw: [0.0, 0.0]
+env_config:
+  arm_pose_path: outputs/barbell-training/standing.npz
+  spawn:
+    joint_pos_noise: [0.0, 0.0]
+    joint_pos_scale_range: [1.0, 1.0]
+    joint_vel_range: [0.0, 0.0]
+    root_vel_range: [0.0, 0.0]
+    stagger_initial_step_count: false
+  max_episode_steps: 1500
+  terrain:
+    slope_angle_range: [0.0, 0.0]
+  model_randomization:
+    payload_distribution: standing
+    joint_origin_range: [0.0, 0.0]
+    torso_mass_scale_range: [0.95, 1.05]
+    torso_com_offset_range: [-0.01, 0.01]
+    actuator_strength_range: [0.95, 1.05]
+  torso_com_curriculum:
+    enabled: false
+  random_push:
+    lin_vel_x: [-0.2, 0.2]
+    lin_vel_y: [-0.2, 0.2]
+reward_config:
+  tracking:
+    torso_orientation_std: 0.5
+  weights:
+    # Permit compensation instead of tightly enforcing unloaded upright posture.
+    track_torso_orientation: 0.5
+    base_height: -2.0
+    joint_pose: -0.25
+    # Held arms cannot avoid the payload effort. Keep a cost, but do not let
+    # unavoidable arm load dominate survival. Ratings and hard limits stay intact.
+    stand_motor_continuous_torque_excess: -1.0
+checkpoint_config:
+  name: bello_mini_loaded_standing_seed0
+  wandb_artifact_name: bello_mini_loaded_standing_seed0
+wandb_config:
+  group: bello-mini-loaded-standing
+  run_name: bello_mini_loaded_standing_seed0
+  tags: [standing, bello-mini, rigid-bar, randomized-load]
+video_config:
+  filename_prefix: bello_mini_loaded_standing
+  torso_command: [0.0, 0.0, 0.0]
+  standing_push_speed: 0.2
+  steps: 1500

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import shutil
@@ -169,6 +170,18 @@ def save_training_checkpoint(
     staging_path = Path(tempfile.mkdtemp(prefix=f".{path.name}.tmp-", dir=path.parent))
     checkpointer = ocp.PyTreeCheckpointer()
     try:
+        if (
+            isinstance(metadata, LocomotionCheckpointMetadata)
+            and metadata.env.arm_pose_path is not None
+        ):
+            if (
+                hashlib.sha256(metadata.env.arm_pose_path.read_bytes()).hexdigest()
+                != metadata.env.arm_pose_sha256
+            ):
+                raise ValueError("arm reference changed since training initialization")
+            shutil.copyfile(metadata.env.arm_pose_path, staging_path / "standing.npz")
+            document["metadata"]["env"]["arm_pose_path"] = "standing.npz"
+            _sync_file(staging_path / "standing.npz")
         if motion is not None:
             save_motion_clip(staging_path / MOTION_FILE, motion)
             _sync_file(staging_path / MOTION_FILE)
@@ -425,6 +438,11 @@ def _resume_contract_payload(
 
     payload = to_builtin(metadata)
     payload["ppo"].pop("total_timesteps")
+    if (
+        isinstance(metadata, LocomotionCheckpointMetadata)
+        and metadata.env.arm_pose_path is not None
+    ):
+        payload["env"]["arm_pose_path"] = "standing.npz"
     return payload
 
 

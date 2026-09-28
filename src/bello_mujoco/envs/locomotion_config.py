@@ -3,6 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, fields
 import math
+from pathlib import Path
 from bello_mujoco.envs.rewards import (
     CommandConfig,
     RewardConfig,
@@ -165,6 +166,8 @@ class NumericalSafetyConfig:
 class BelloEnvConfig:
     """Runtime environment settings that affect stepping and model loading."""
 
+    arm_pose_path: Path | None = None
+    arm_pose_sha256: str | None = None
     decimation: int = CONTROL_DECIMATION
     max_episode_steps: int = MAX_EPISODE_STEPS
     action_clip: float = BELLO_ACTION_CLIP

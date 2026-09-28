@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 import math
+import hashlib
 
 import jax
 
@@ -103,6 +104,17 @@ def run_training(run_config: TrainingRunConfig) -> None:
     video_config = run_config.video_config
     warp = run_config.warp
 
+    if env_config.arm_pose_path is not None:
+        path = (
+            checkpoint_config.resume_path.resolve() / "standing.npz"
+            if checkpoint_config.resume_path is not None
+            else env_config.arm_pose_path.resolve()
+        )
+        env_config = replace(
+            env_config,
+            arm_pose_path=path,
+            arm_pose_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
     validate_ppo_config(config)
     validate_video_config(video_config)
     command_config.torso.validate_target(video_config.torso_command)

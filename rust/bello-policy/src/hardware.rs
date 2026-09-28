@@ -368,6 +368,7 @@ fn decode_feedback(
         Ok(v.to_array())
     };
     Ok(Feedback {
+        arm_target: None,
         motor_position: motor_names
             .iter()
             .map(|name| motors[name.as_str()].position)

@@ -145,7 +145,7 @@ def test_impact_accumulation_matches_scalar_and_batch(monkeypatch):
 @pytest.mark.parametrize("done", [False, True])
 def test_post_physics_episode_accounting_matches_vmap(monkeypatch, done):
     monkeypatch.setattr(
-        "bello_mujoco.envs.locomotion_step.gait_diagnostics", lambda *args: {}
+        "bello_mujoco.envs.locomotion_step.gait_diagnostics", lambda *args, **kwargs: {}
     )
     env, state = toy_env(), toy_state()
     state = state.replace(

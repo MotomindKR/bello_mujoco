@@ -662,6 +662,10 @@ def run_rerun_evaluation(
             )
             action_delta = action_np - last_action
             ctrl = mujoco_action_to_ctrl(env, action_np)
+            if env.config.arm_pose_path is not None:
+                ctrl = np.asarray(
+                    env.apply_arm_target(jnp.asarray(ctrl), episode_step_count)
+                )
             ctrl = np.asarray(
                 limit_motor_step(
                     jnp.asarray(ctrl),

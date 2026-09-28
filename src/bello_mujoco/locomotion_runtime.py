@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import equinox as eqx
@@ -41,7 +41,23 @@ def load_locomotion_policy_runtime(
         prepared,
         warp=metadata.warp,
         batch_size=1,
-        env_config=metadata.env,
+        env_config=replace(
+            metadata.env,
+            arm_pose_path=(
+                Path(checkpoint_path).resolve() / "standing.npz"
+                if metadata.env.arm_pose_path is not None
+                else None
+            ),
+            model_randomization=(
+                replace(
+                    metadata.env.model_randomization,
+                    enabled=False,
+                    payload_distribution="fixed",
+                )
+                if metadata.asset.barbell is not None
+                else metadata.env.model_randomization
+            ),
+        ),
         actuator_config=metadata.asset.actuator_config,
         imu_body_name=metadata.asset.imu_config.body_name,
         reward_config=metadata.reward,

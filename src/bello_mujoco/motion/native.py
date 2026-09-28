@@ -15,6 +15,9 @@ class NativeContactData:
     contact__worldid: jax.Array
     contact__efc_address: jax.Array
     efc__force: jax.Array
+    nefc: jax.Array | None = None
+    efc__id: jax.Array | None = None
+    efc__type: jax.Array | None = None
 
 
 @jax.tree_util.register_dataclass

@@ -2,7 +2,9 @@
 
 The `motion` experiment trains Bello; `bello_mini_motion` trains Bello Mini against
 one canonical NPZ reference using BeyondMimic. Offline import/editing, dataset generation, TWIST,
-and TWIST2 are removed. Prepare reference data outside this repository.
+and TWIST2 are removed. Prepare imported human reference data outside this repository. The separate
+[barbell reference generator](barbell_feasibility.md) produces a screened rigid
+fixed-load lift candidate locally; it does not change GMR.
 
 ```bash
 uv run --group training bello-train experiment=motion motion_path=motions/asap_fixed_head/CLIP.npz
@@ -148,3 +150,16 @@ closes so the cause survives host teardown.
 
 Live upper-body retargeting is separate and retains shape/frame and freshness
 checks without per-source revision fingerprints. See [hardware](hardware.md).
+
+## Fixed barbell motion
+
+`bello_mini_barbell_motion` uses the shared rigid bar scene and fixed 15 kg
+mass/inertia. Its NPZ includes `free_joint_qpos`, `joint_qpos_indices`,
+`joint_qvel_indices`, `bar_mass_kg`, and `screen_passed`. The coordinate metadata
+must match the loaded scene. Each free-body quaternion is interpolated and
+normalized independently. Both bodies undergo the same reset/alignment rigid
+transform; scalar joints are indexed by name rather than inferred from array
+length. Robot-only reference archives retain their existing representation.
+
+The current candidate is rejected by its nominal-hold torque screen. Review
+its video and diagnostics before revising the stance or starting training.

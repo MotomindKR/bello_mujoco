@@ -1,4 +1,5 @@
 from dataclasses import replace
+import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
@@ -10,6 +11,8 @@ from bello_mujoco.models.compiler import (
     compile_robot,
     validate_actuator_joint_contract,
 )
+from bello_mujoco.models.urdf import add_end_effector_payloads
+from bello_mujoco.robot import PayloadAttachment
 
 
 @pytest.mark.parametrize("asset", ["bello", "bello_mini"])
@@ -69,3 +72,66 @@ def test_actuator_mapping_is_immutable():
 def test_invalid_payload_is_rejected(value):
     with pytest.raises(ValueError, match="payload"):
         ModelConfig(end_effector_payload_mass_kg=value)
+
+
+@pytest.mark.parametrize("offset", [(0, 0), (0, 0, float("nan")), (float("inf"), 0, 0)])
+def test_payload_offset_rejects_invalid_coordinates(offset):
+    with pytest.raises(ValueError, match="offset"):
+        ModelConfig(
+            end_effector_payload_mass_kg=1.0, end_effector_payload_offset_m=offset
+        )
+
+
+def test_payload_offset_requires_mass_and_is_immutable():
+    with pytest.raises(ValueError, match="positive payload mass"):
+        ModelConfig(end_effector_payload_offset_m=(0.01, 0.0, 0.0))
+    offset = [0.01, 0.02, -0.03]
+    config = ModelConfig(
+        end_effector_payload_mass_kg=1.0, end_effector_payload_offset_m=offset
+    )
+    offset[0] = 99.0
+    assert config.end_effector_payload_offset_m == (0.01, 0.02, -0.03)
+
+
+@pytest.mark.parametrize("hand_mass", [0.0, 0.4])
+def test_payload_offset_preserves_existing_mass_geometry_and_frame(hand_mass):
+    root = ET.fromstring("""<mujoco><worldbody>
+      <body name="arm"><joint name="hinge" axis="0 1 0"/>
+        <geom type="sphere" size=".1" mass="1"/>
+        <body name="hand" pos=".1 0 -.2">
+          <geom name="visual" type="sphere" size=".03" mass="0"/>
+        </body>
+      </body>
+    </worldbody></mujoco>""")
+    if hand_mass:
+        ET.SubElement(
+            root.find(".//body[@name='hand']"),
+            "inertial",
+            mass=str(hand_mass),
+            pos=".01 .02 -.03",
+            diaginertia=".001 .001 .001",
+        )
+    attachment = PayloadAttachment("hand", 0.03, (0.01, 0.02, -0.03))
+    add_end_effector_payloads(root, (attachment,), 2.0, (0.04, 0.0, -0.06))
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    hand = model.body("hand").id
+    payload = model.body("hand_payload").id
+    assert model.body_mass.sum() == pytest.approx(3.0 + hand_mass)
+    assert model.body_mass[hand] == pytest.approx(hand_mass)
+    np.testing.assert_allclose(model.body_pos[hand], [0.1, 0, -0.2])
+    assert model.body_parentid[payload] == hand
+    np.testing.assert_allclose(model.body_pos[payload], [0.05, 0.02, -0.09])
+    np.testing.assert_allclose(model.body_ipos[payload], [0, 0, 0])
+    if hand_mass:
+        np.testing.assert_allclose(model.body_ipos[hand], [0.01, 0.02, -0.03])
+        np.testing.assert_allclose(model.body_inertia[hand], [0.001] * 3)
+    np.testing.assert_allclose(model.geom("visual").pos, [0, 0, 0])
+    np.testing.assert_allclose(model.body_inertia[payload], [0.4 * 2.0 * 0.03**2] * 3)
+    with pytest.raises(ValueError, match="already exists"):
+        add_end_effector_payloads(root, (attachment,), 2.0, (0.0, 0.0, 0.0))
+    with pytest.raises(ValueError, match="missing payload attachment"):
+        add_end_effector_payloads(
+            ET.fromstring("<mujoco/>"), (attachment,), 2.0, (0.0, 0.0, 0.0)
+        )
+    with pytest.raises(ValueError, match="no payload attachment"):
+        add_end_effector_payloads(root, (), 2.0, (0.0, 0.0, 0.0))

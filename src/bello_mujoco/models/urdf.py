@@ -14,7 +14,7 @@ from bello_mujoco.model_validation import (
     validate_home_pose,
     validate_robot_collision_geometry,
 )
-from bello_mujoco.robot import CoupledActuatorGroup, RobotDefinition
+from bello_mujoco.robot import CoupledActuatorGroup, PayloadAttachment, RobotDefinition
 from bello_mujoco.models.serialization import save_model_xml
 
 TRANSPARENT_COLLISION_RGBA = "0.8 0.8 0.8 0"
@@ -41,6 +41,7 @@ def compile_urdf_to_mjcf(
     robot: RobotDefinition,
     target_total_mass_kg: float | None = None,
     end_effector_payload_mass_kg: float = 0.0,
+    end_effector_payload_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> None:
     model = mujoco.MjModel.from_xml_path(str(urdf_path))
     tree = save_model_xml(viewer_mjcf_path, model)
@@ -79,20 +80,12 @@ def compile_urdf_to_mjcf(
                         ),
                     )
     if end_effector_payload_mass_kg:
-        for attachment in robot.payload_attachments:
-            body = root.find(f".//body[@name='{attachment.link_name}']")
-            if body is None or body.find("inertial") is not None:
-                raise ValueError(
-                    f"payload requires an inertial-free attachment frame: {attachment.link_name}"
-                )
-            inertia = 0.4 * end_effector_payload_mass_kg * attachment.radius_m**2
-            ET.SubElement(
-                body,
-                "inertial",
-                mass=str(end_effector_payload_mass_kg),
-                pos=format_vec(np.asarray(attachment.center_m)),
-                diaginertia=f"{inertia} {inertia} {inertia}",
-            )
+        add_end_effector_payloads(
+            root,
+            robot.payload_attachments,
+            end_effector_payload_mass_kg,
+            end_effector_payload_offset_m,
+        )
     ensure_collision_geoms_transparent(root)
     ET.indent(tree, space="  ")
     tree.write(viewer_mjcf_path, encoding="utf-8", xml_declaration=True)
@@ -112,6 +105,39 @@ def compile_urdf_to_mjcf(
     validate_robot_collision_geometry(model)
     validate_home_pose(model)
     mujoco.MjModel.from_xml_path(str(viewer_mjcf_path))
+
+
+def add_end_effector_payloads(
+    root: ET.Element,
+    attachments: tuple[PayloadAttachment, ...],
+    mass_kg: float,
+    offset_m: tuple[float, float, float],
+) -> None:
+    if not attachments:
+        raise ValueError("robot has no payload attachment frames")
+    for attachment in attachments:
+        body = root.find(f".//body[@name='{attachment.link_name}']")
+        if body is None:
+            raise ValueError(
+                f"missing payload attachment frame: {attachment.link_name}"
+            )
+        name = f"{attachment.link_name}_payload"
+        if root.find(f".//body[@name='{name}']") is not None:
+            raise ValueError(f"payload body already exists: {name}")
+        payload = ET.SubElement(
+            body,
+            "body",
+            name=name,
+            pos=format_vec(np.asarray(attachment.center_m) + offset_m),
+        )
+        inertia = 0.4 * mass_kg * attachment.radius_m**2
+        ET.SubElement(
+            payload,
+            "inertial",
+            mass=str(mass_kg),
+            pos="0 0 0",
+            diaginertia=f"{inertia} {inertia} {inertia}",
+        )
 
 
 def massless_fixed_urdf_link_names(urdf_path: Path) -> set[str]:

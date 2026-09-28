@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -15,6 +16,11 @@ if TYPE_CHECKING:
     from mujoco import mjx
 
 from bello_mujoco.actuators import ActuatorConfig
+from bello_mujoco.models.barbell import (
+    sample_payloads,
+    free_joint_coordinates,
+    grip_equality_ids,
+)
 from bello_mujoco.models.compiler import (
     ModelConfig,
     CompiledRobot,
@@ -114,6 +120,7 @@ class ModelRandomizationConfig:
     """Fixed per-world physical model variation for vectorized MJX training."""
 
     enabled: bool = False
+    payload_distribution: Literal["fixed", "standing"] = "fixed"
     seed: int = 0
     joint_origin_range: tuple[float, float] = (0.0, 0.0)
     joint_angle_offset_range: tuple[float, float] = (0.0, 0.0)
@@ -128,6 +135,10 @@ class ModelRandomizationConfig:
     gravity_fraction_range: tuple[float, float] = (0.0, 0.0)
 
     def __post_init__(self) -> None:
+        if self.payload_distribution not in {"fixed", "standing"}:
+            raise ValueError("payload_distribution must be fixed or standing")
+        if self.payload_distribution == "standing" and not self.enabled:
+            raise ValueError("standing payload sampling requires model randomization")
         if self.seed < 0:
             raise ValueError(
                 f"model_randomization.seed must be nonnegative, got {self.seed}"
@@ -232,6 +243,25 @@ class BelloModel:
     default_ctrl: np.ndarray
     root_qpos_adr: int
     root_qvel_adr: int
+
+    payload_mass: np.ndarray | None = None
+    robot_mass: np.ndarray | None = None
+
+    @cached_property
+    def bar_body_id(self):
+        return mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "barbell")
+
+    @cached_property
+    def free_joint_coordinates(self):
+        return free_joint_coordinates(self.mj_model)
+
+    @cached_property
+    def bar_qpos_adr(self):
+        return int(self.mj_model.joint("barbell_free").qposadr[0])
+
+    @cached_property
+    def grip_equality_ids(self):
+        return grip_equality_ids(self.mj_model)
 
     @cached_property
     def target_limits(self):
@@ -488,7 +518,8 @@ def _load_model_from_path(
 
     terrain_geom_ids = named_geom_indices(mj_model, terrain.name)
     foot_body_ids = foot_body_indices(mj_model, robot)
-    robot_geom_ids = robot_collision_geom_indices(mj_model)
+    bar_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "barbell")
+    robot_geom_ids = robot_collision_geom_indices(mj_model, excluded_body_ids={bar_id})
     foot_geom_ids = foot_support_geom_indices(mj_model, robot, foot_body_ids)
     foot_geom_id_set = set(foot_geom_ids.tolist())
     nonfoot_robot_geom_ids = np.asarray(
@@ -523,6 +554,16 @@ def _load_model_from_path(
     if simulation_timestep is not None:
         mj_model.opt.timestep = simulation_timestep
 
+    if bar_id >= 0 and np.any(
+        mj_model.eq_solref[
+            grip_equality_ids(mj_model),
+            0,
+        ]
+        < 2 * mj_model.opt.timestep
+    ):
+        raise ValueError(
+            "bar grip time constant must be at least twice the physics timestep"
+        )
     mjx_model = None
     if load_mjx:
         import jax.numpy as jnp
@@ -530,14 +571,25 @@ def _load_model_from_path(
 
         mjx_model = mjx.put_model(mj_model, impl="warp")
         if randomized_fields is not None:
+            fields = (
+                "jnt_pos",
+                "body_inertia",
+                "body_mass",
+                "body_ipos",
+                "geom_friction",
+                "actuator_gainprm",
+                "actuator_biasprm",
+                "body_invweight0",
+                "dof_invweight0",
+                "body_subtreemass",
+                "tendon_invweight0",
+            )
             mjx_model = mjx_model.replace(
-                jnt_pos=jnp.asarray(randomized_fields["jnt_pos"]),
-                body_inertia=jnp.asarray(randomized_fields["body_inertia"]),
-                body_mass=jnp.asarray(randomized_fields["body_mass"]),
-                body_ipos=jnp.asarray(randomized_fields["body_ipos"]),
-                geom_friction=jnp.asarray(randomized_fields["geom_friction"]),
-                actuator_gainprm=jnp.asarray(randomized_fields["actuator_gainprm"]),
-                actuator_biasprm=jnp.asarray(randomized_fields["actuator_biasprm"]),
+                **{
+                    name: jnp.asarray(randomized_fields[name])
+                    for name in fields
+                    if name in randomized_fields
+                }
             )
 
     default_qpos, default_qvel, default_ctrl = model_home_state(mj_model)
@@ -547,6 +599,7 @@ def _load_model_from_path(
     default_qpos[root_qpos_adr + 3 : root_qpos_adr + 7] = np.asarray(
         robot.default_root_quaternion, dtype=np.float32
     )
+    original_root = default_qpos[root_qpos_adr : root_qpos_adr + 3].copy()
     default_qpos = place_root_above_terrain(
         mj_model,
         default_qpos,
@@ -554,6 +607,11 @@ def _load_model_from_path(
         terrain=terrain,
         clearance=spawn_clearance,
     )
+    if bar_id >= 0:
+        bar_qadr = int(mj_model.joint("barbell_free").qposadr[0])
+        default_qpos[bar_qadr : bar_qadr + 3] += (
+            default_qpos[root_qpos_adr : root_qpos_adr + 3] - original_root
+        )
     expected_default_ctrl = (
         actuator_coordinate_transform_matrix @ default_qpos[actuator_qpos_indices]
     )
@@ -620,6 +678,25 @@ def _load_model_from_path(
         terrain_geom_quat=terrain_geom_quat,
         nonfoot_robot_geom_ids=nonfoot_robot_geom_ids,
         nonfoot_robot_body_ids=nonfoot_robot_body_ids,
+        robot_mass=(
+            randomized_fields["body_mass"].sum(axis=1)
+            - (randomized_fields["body_mass"][:, bar_id] if bar_id >= 0 else 0.0)
+            if randomized_fields is not None
+            else np.full(
+                batch_size,
+                mj_model.body_mass.sum()
+                - (mj_model.body_mass[bar_id] if bar_id >= 0 else 0.0),
+            )
+        ),
+        payload_mass=(
+            randomized_fields["payload_mass"]
+            if randomized_fields is not None
+            else np.full(
+                batch_size,
+                mj_model.body_mass[bar_id] if bar_id >= 0 else 0.0,
+                dtype=np.float32,
+            )
+        ),
         default_qpos=default_qpos,
         default_qvel=default_qvel,
         default_ctrl=default_ctrl,
@@ -793,7 +870,22 @@ def _randomized_model_fields(
             )
         )
 
-    return {
+    bar_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "barbell")
+    payload_mass = np.full(
+        batch_size, mj_model.body_mass[bar_id] if bar_id >= 0 else 0.0, dtype=np.float32
+    )
+    if config.payload_distribution == "standing":
+        if bar_id < 0:
+            raise ValueError("standing payload sampling requires a rigid bar")
+        payload_mass = sample_payloads(config.seed, batch_size)
+        # Unloaded worlds retain a positive-mass disconnected prop, parked remotely.
+        physical_mass = np.where(
+            payload_mass > 0, payload_mass, mj_model.body_mass[bar_id]
+        )
+        body_inertia[:, bar_id] *= (physical_mass / mj_model.body_mass[bar_id])[:, None]
+        body_mass[:, bar_id] = physical_mass
+    result = {
+        "payload_mass": payload_mass,
         "jnt_pos": jnt_pos,
         "body_inertia": body_inertia,
         "body_mass": body_mass,
@@ -806,6 +898,25 @@ def _randomized_model_fields(
         "gravity_fraction": gravity_fraction,
         "joint_angle_offset": joint_angle_offset,
     }
+    if bar_id >= 0:
+        # Grip softness depends on inverse inertias, not just body_mass. Recompute
+        # native constants once per world, outside the rollout, for Warp parity.
+        native = deepcopy(mj_model)
+        derived = (
+            "body_invweight0",
+            "dof_invweight0",
+            "body_subtreemass",
+            "tendon_invweight0",
+        )
+        for name in derived:
+            result[name] = np.empty(
+                (batch_size, *getattr(native, name).shape), dtype=np.float32
+            )
+        for world in range(batch_size):
+            _apply_native_model_sample(native, result, sample=world)
+            for name in derived:
+                result[name][world] = getattr(native, name)
+    return result
 
 
 def _apply_native_model_sample(
@@ -904,7 +1015,10 @@ def robot_geom_min_z(
     mujoco.mj_forward(mj_model, data)
     min_z: float | None = None
     for geom_id in range(mj_model.ngeom):
-        if mj_model.geom_bodyid[geom_id] == 0:
+        if (
+            mj_model.geom_bodyid[geom_id] == 0
+            or mj_model.body(int(mj_model.geom_bodyid[geom_id])).name == "barbell"
+        ):
             continue
         if (
             mj_model.geom_contype[geom_id] == 0

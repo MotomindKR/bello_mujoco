@@ -15,6 +15,18 @@ not the effective joint impedance. Gains must be finite and nonnegative. Resolve
 gains are saved with the checkpoint and used by evaluation and policy export.
 Mini motion overrides gains in its profile; locomotion retains its existing gains.
 
+Use `asset_config.joint_default_positions` for sparse nominal joint-angle
+overrides in radians, including held-arm targets. Unspecified joints retain their
+defaults; modes, gains and limits do not change. The actual compiled home pose
+is checked for joint-limit violations and self-collisions at initialization.
+
+`asset_config.end_effector_payload_mass_kg` adds that mass **per attachment**.
+`end_effector_payload_offset_m` moves its center from the canonical attachment
+center, expressed in each attachment's local link frame. This changes inertia,
+not visuals or collision geometry, and requires positive payload mass when
+nonzero. These are independent spherical hand loads, not a shared rigid object.
+`target_total_mass_kg` scales the robot before those payloads are added.
+
 Target restrictions and reward margins are separate. `asset_config.joint_soft_limits`
 caps commanded targets; it does not change the URDF's physical stops. Locomotion's
 `reward_config.limits_pose.joint_soft_limit_factor` and motion's
@@ -33,7 +45,9 @@ without making that margin a physical stop or a target clamp.
 | `deps/bello-stack/descriptions/` | Canonical geometry and hardware configuration |
 
 Maintained experiments: `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
-`bello_mini_standing`, `motion`. The CLI accepts its public top-level overrides;
+`bello_mini_standing`, `bello_mini_loaded_standing`, `motion`, `bello_mini_motion`,
+and `bello_mini_barbell_motion`.
+The CLI accepts its public top-level overrides;
 edit the selected recipe for nested reward/physics changes.
 
 ```bash
@@ -132,3 +146,38 @@ Runtime initialization validates the selected robot, including default-pose
 collisions. Unit tests exercise algorithms and invalid-input handling with
 synthetic inputs. Do not test a robot's YAML values, joint count, nominal angles,
 or geometry inventory as fixed expectations.
+
+## Rigid barbell profiles
+
+`asset_config.barbell` describes one rigid free body and two shaft-axis hinge grips.
+Each hand's local +Y stays aligned with the shaft; only rotation around that
+axis is free. Two point constraints spaced 0.10 m along the axis implement
+each hinge, with no extra mass or free-body coordinates. All four constraints
+disconnect in unloaded worlds. The approved hand-local -Z offset is unchanged.
+It is incompatible with `end_effector_payload_mass_kg`. `target_total_mass_kg`
+scales the robot before adding the bar. Normal walking profiles leave it null.
+
+`env_config.model_randomization.payload_distribution` defaults to `fixed`.
+`standing` requires enabled model randomization and a rigid bar, and samples
+25% unloaded, 25% 30 kg, and 50% uniform 5--30 kg per world. It is never used by
+`bello_mini_barbell_motion`, which now selects a fixed 15 kg reference and scene.
+Python and Rust require the screened clip mass to match the scene mass; changing
+the configured load requires rebuilding and screening the reference.
+Generic mass/inertia randomization applies only to robot bodies.
+
+`env_config.arm_pose_path` enables the standing arm trajectory bank and extended
+observations. `arm_pose_sha256` is filled by the training entrypoint and checked
+on restore; the bank is bundled with the checkpoint. Missing or failed banks
+are errors. Feedback measurements cover all joints, the action vector remains
+leg/waist only, and commanded arm joint targets are appended after last action.
+No exact payload mass is given to the actor. The training profile preserves
+existing filtering, latency, gains and torque clamps.
+
+See [barbell preparation and validation](barbell_feasibility.md) for generation,
+reference review, the current feasibility blocker and pending runtime gates.
+
+For exploratory barbell simulation, `env_config.allow_unscreened_reference`
+(default `false`) permits a failed exact-reference torque screen without changing
+the archive result or relaxing mass, torque, grip, or collision constraints.
+The fixed-15 kg profile enables this setting; saved simulation checkpoints retain
+it. Rust deployment continues to require a passed screen.

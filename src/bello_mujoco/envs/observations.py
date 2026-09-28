@@ -90,6 +90,7 @@ def build_observation(
     torso_command,
     noise_before_filter=False,
     residual_noise_scale=0.0,
+    arm_target=None,
 ):
     (
         linear_velocity,
@@ -129,6 +130,8 @@ def build_observation(
             (action, "last_action", 7, 1.0),
         ]
     )
+    if arm_target is not None:
+        components.append((arm_target, "joint_pos", 5, 0.0))
     if config.privileged:
         components.extend(
             [

@@ -69,6 +69,13 @@ class NativeDataImplementation:
     cfrc_int: jax.Array
     actuator_velocity: jax.Array
     efc__force: jax.Array
+    contact__geom: jax.Array | None = None
+    contact__efc_address: jax.Array | None = None
+    contact__worldid: jax.Array | None = None
+    nacon: jax.Array | None = None
+    nefc: jax.Array | None = None
+    efc__id: jax.Array | None = None
+    efc__type: jax.Array | None = None
 
 
 @dataclass(frozen=True)
@@ -604,12 +611,21 @@ def reset_mujoco_data(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> None:
     mj_data.ctrl[:] = mujoco_action_to_ctrl(
         env, np.zeros(env.action_size, dtype=np.float32)
     )
+    if env.config.arm_pose_path is not None and env.model.payload_mass[0] == 0:
+        mj_data.eq_active[env.model.grip_equality_ids] = False
+        mj_data.qpos[env.model.bar_qpos_adr : env.model.bar_qpos_adr + 3] = [
+            10.0,
+            0.0,
+            0.15,
+        ]
     mujoco.mj_forward(env.model.mj_model, mj_data)
     if env.model.foot_body_ids.size:
         clearance_adjustment = env.config.spawn.clearance - float(
             np.min(mujoco_foot_height(env, mj_data))
         )
         mj_data.qpos[env.model.root_qpos_adr + 2] += clearance_adjustment
+        if env.config.arm_pose_path is not None:
+            mj_data.qpos[env.model.bar_qpos_adr + 2] += clearance_adjustment
         mujoco.mj_forward(env.model.mj_model, mj_data)
 
 
@@ -820,8 +836,34 @@ def mujoco_eval_state(
                 np.asarray(mj_data.actuator_velocity, dtype=np.float32).copy()
             ),
             efc__force=jnp.asarray(
-                np.asarray(mj_data.efc_force, dtype=np.float32).copy()
+                np.pad(
+                    np.asarray(mj_data.efc_force, dtype=np.float32),
+                    (0, max(0, 1 - mj_data.nefc)),
+                )
             ),
+            efc__id=jnp.asarray(
+                np.pad(
+                    mj_data.efc_id, (0, max(0, 1 - mj_data.nefc)), constant_values=-1
+                )
+            ),
+            efc__type=jnp.asarray(
+                np.pad(
+                    mj_data.efc_type, (0, max(0, 1 - mj_data.nefc)), constant_values=-1
+                )
+            ),
+            nefc=jnp.asarray([mj_data.nefc]),
+            contact__geom=jnp.asarray(
+                np.pad(mj_data.contact.geom, ((0, max(0, 1 - mj_data.ncon)), (0, 0)))
+            ),
+            contact__efc_address=jnp.asarray(
+                np.pad(
+                    mj_data.contact.efc_address,
+                    (0, max(0, 1 - mj_data.ncon)),
+                    constant_values=-1,
+                )[:, None]
+            ),
+            contact__worldid=jnp.zeros(max(1, mj_data.ncon), dtype=jnp.int32),
+            nacon=jnp.asarray([mj_data.ncon]),
         ),
     )
     state = BelloState(

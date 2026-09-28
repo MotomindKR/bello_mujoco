@@ -21,6 +21,7 @@ Use the default `nix develop` shell for CPU evaluation and development.
 ```bash
 uv run --group training bello-train experiment=bello_mini_locomotion seed=1
 uv run --group training bello-train experiment=bello_mini_standing
+uv run --group training bello-train experiment=bello_mini_loaded_standing # requires screened arm bank
 uv run --group training bello-train experiment=motion motion_path=motions/asap_fixed_head/CLIP.npz
 uv run --group training bello-train experiment=bello_mini_motion motion_path=/path/to/mini/CLIP.npz
 uv run --group training bello-train experiment=bello_mini_locomotion resume_path=checkpoints/RUN
@@ -83,3 +84,9 @@ contract, validity rules, and freshness settings.
 
 See [Vast.ai](vast_ai.md). Remote completion/failure and the host deadline own
 rental teardown. Closing a local monitor does not destroy a running job.
+
+The barbell recipes (`bello_mini_loaded_standing`, `bello_mini_barbell_motion`)
+require the [reference preparation and review gate](barbell_feasibility.md).
+Generate artifacts with `uv run python -m bello_mujoco.evaluation.barbell_reference
+--output outputs/barbell-training --standing --video`. The current 30 kg hold
+fails the effort screen; neither recipe is cleared for long training.

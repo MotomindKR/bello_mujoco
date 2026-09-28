@@ -23,6 +23,7 @@ from mujoco import mjx
 import numpy as np
 
 from bello_mujoco.actuators import ActuatorConfig
+from bello_mujoco.envs.barbell import bar_metrics
 from bello_mujoco.models.compiler import ModelConfig, CompiledRobot
 from bello_mujoco.contracts import CONTROL_DECIMATION, ActionLayout, ObservationLayout
 from bello_mujoco.envs.actions import (
@@ -34,6 +35,8 @@ from bello_mujoco.envs.actions import (
 from bello_mujoco.envs.geometry import (
     pair_contains_each,
     quat_rotate,
+    quat_multiply,
+    quat_conjugate,
     quat_rotate_inverse,
     tree_where,
     yaw_quat,
@@ -158,6 +161,7 @@ class MotionDoneConfig:
 
 @dataclass(frozen=True)
 class MotionTrackingEnvConfig:
+    allow_unscreened_reference: bool = False
     motion_path: Path = Path(
         "motions/asap_fixed_head/video_single_foot_balance_level1_filter_amass.npz"
     )
@@ -205,18 +209,44 @@ class BelloMotionTrackingEnv:
         if self.model.actuator_joint_names != self.motion.joint_names:
             raise ValueError("model and motion actuator orders do not match")
         actuator_count = self.model.mj_model.nu
-        expected_nq = 7 + actuator_count
-        expected_nv = 6 + actuator_count
+        free = self.model.free_joint_coordinates
+        expected_nq = 7 * len(free) + actuator_count
+        expected_nv = 6 * len(free) + actuator_count
         if (
             self.model.mj_model.nq != expected_nq
             or self.model.mj_model.nv != expected_nv
         ):
             raise ValueError(
-                "motion-tracking Bello must contain only its floating base and "
-                "actuated one-DoF joints; expected "
-                f"nq={expected_nq}, nv={expected_nv}, got "
-                f"nq={self.model.mj_model.nq}, nv={self.model.mj_model.nv}"
+                "motion scene must contain named free bodies and actuated one-DoF joints"
             )
+        if self.model.bar_body_id >= 0:
+            if (
+                self.config.model_randomization.payload_distribution != "fixed"
+                or self.motion.object_mass_kg is None
+                or (
+                    not self.motion.screen_passed
+                    and not self.config.allow_unscreened_reference
+                )
+                or not np.isclose(
+                    self.model.mj_model.body_mass[self.model.bar_body_id],
+                    self.motion.object_mass_kg,
+                    rtol=0,
+                    atol=1e-8,
+                )
+            ):
+                raise ValueError(
+                    "barbell BeyondMimic requires a screened matching bar mass with fixed payload distribution"
+                )
+            if any(self.config.reset.joint_pos_noise) or any(
+                self.config.reset.joint_vel_noise
+            ):
+                raise ValueError(
+                    "barbell reset joint noise would break grip consistency"
+                )
+            if any(self.config.model_randomization.joint_origin_range):
+                raise ValueError(
+                    "barbell reference requires unchanged joint origins for coherent grips"
+                )
         expected_policy_indices = np.arange(actuator_count, dtype=np.int32)
         if not np.array_equal(self.model.policy_ctrl_indices, expected_policy_indices):
             raise ValueError(
@@ -323,7 +353,11 @@ class BelloMotionTrackingEnv:
         )
         return cls(
             model,
-            load_motion_clip(env_config.motion_path, model),
+            load_motion_clip(
+                env_config.motion_path,
+                model,
+                allow_unscreened_reference=env_config.allow_unscreened_reference,
+            ),
             asset_config.actuator_config,
             env_config,
         )
@@ -357,7 +391,11 @@ class BelloMotionTrackingEnv:
         )
         return cls(
             model,
-            load_motion_clip(env_config.motion_path, model),
+            load_motion_clip(
+                env_config.motion_path,
+                model,
+                allow_unscreened_reference=env_config.allow_unscreened_reference,
+            ),
             actuator_config,
             env_config,
         )
@@ -551,7 +589,14 @@ class BelloMotionTrackingEnv:
             )
         rotated_source_xy = quat_rotate(
             yaw_quat_from_angle(alignment_yaw),
-            jnp.concatenate([source.qpos[:2], jnp.zeros(1)]),
+            jnp.concatenate(
+                [
+                    source.qpos[
+                        self.model.root_qpos_adr : self.model.root_qpos_adr + 2
+                    ],
+                    jnp.zeros(1),
+                ]
+            ),
         )[:2]
         alignment_xy = desired_xy - rotated_source_xy
         reference = self.aligned_reference(reference_time, alignment_xy, alignment_yaw)
@@ -748,7 +793,7 @@ class BelloMotionTrackingEnv:
         )
         world_ids = jnp.arange(batch_size, dtype=jnp.int32)
         reward, reward_info = jax.vmap(self._reward)(state, stepped, world_ids)
-        done_flags = jax.vmap(self.termination_flags)(stepped)
+        done_flags = jax.vmap(self.termination_flags)(stepped, world_ids)
         reward, reward_info = self._sanitize_nonfinite_reward(
             reward, reward_info, done_flags
         )
@@ -828,9 +873,10 @@ class BelloMotionTrackingEnv:
                 reference.body_quat[anchor_index],
             )
         )
-        root_quat = qpos[3:7]
-        base_linear_velocity = quat_rotate_inverse(root_quat, qvel[:3])
-        base_angular_velocity = qvel[3:6]
+        r, v = self.model.root_qpos_adr, self.model.root_qvel_adr
+        root_quat = qpos[r + 3 : r + 7]
+        base_linear_velocity = quat_rotate_inverse(root_quat, qvel[v : v + 3])
+        base_angular_velocity = qvel[v + 3 : v + 6]
         current_joint_position = (
             qpos[qpos_indices] - joint_default - state.joint_default_offset
         )
@@ -958,7 +1004,9 @@ class BelloMotionTrackingEnv:
         }
         return jnp.sum(jnp.stack(tuple(components.values()))), components
 
-    def termination_flags(self, state: MotionTrackingState) -> dict[str, jax.Array]:
+    def termination_flags(
+        self, state: MotionTrackingState, world_id=0
+    ) -> dict[str, jax.Array]:
         """Return named termination conditions for one policy frame."""
 
         reference = self.aligned_reference(
@@ -991,7 +1039,19 @@ class BelloMotionTrackingEnv:
             state.data.xpos[ids[ee_indices], 2] - target_pos[ee_indices, 2]
         )
         end_effector = jnp.any(ee_error > self.config.done.end_effector_position_error)
-        return self._finish_termination_flags(state, height, orientation, end_effector)
+        flags = self._finish_termination_flags(state, height, orientation, end_effector)
+        if len(self.motion.free_joint_qpos) > 1:
+            metrics = bar_metrics(self.model, state.data, world_id)
+            invalid = (
+                (metrics["barbell/grip_axis_error_rad"] > 0.1)
+                | (metrics["barbell/grip_error_m"] > 0.015)
+                | (metrics["barbell/unintended_contact_force_n"] > 1.0)
+            )
+            flags.update(metrics)
+            flags["done/barbell"] = invalid
+            flags["done/terminal"] |= invalid
+            flags["done/any"] |= invalid
+        return flags
 
     def _finish_termination_flags(
         self,
@@ -1097,10 +1157,16 @@ class BelloMotionTrackingEnv:
         source = sample_motion(self.motion, time)
         rotation = yaw_quat_from_angle(alignment_yaw)
         qpos = source.qpos
-        root_pos = quat_rotate(rotation, qpos[:3]).at[:2].add(alignment_xy)
-        qpos = qpos.at[:3].set(root_pos).at[3:7].set(quat_multiply(rotation, qpos[3:7]))
-        qvel = source.qvel.at[:3].set(quat_rotate(rotation, source.qvel[:3]))
-        # Free-joint angular qvel is root-local, so world-yaw alignment leaves it.
+        qvel = source.qvel
+        for q, v in self.model.free_joint_coordinates:
+            position = quat_rotate(rotation, qpos[q : q + 3]).at[:2].add(alignment_xy)
+            qpos = (
+                qpos.at[q : q + 3]
+                .set(position)
+                .at[q + 3 : q + 7]
+                .set(quat_multiply(rotation, qpos[q + 3 : q + 7]))
+            )
+            qvel = qvel.at[v : v + 3].set(quat_rotate(rotation, source.qvel[v : v + 3]))
         body_pos = (
             jax.vmap(lambda value: quat_rotate(rotation, value))(source.body_pos)
             .at[:, :2]
@@ -1295,14 +1361,17 @@ class BelloMotionTrackingEnv:
             old_qpos, old_qvel, _, _ = self._unpack_actor_feedback(history[0])
             qpos, qvel, anchor_pos, anchor_quat = self._unpack_actor_feedback(measured)
             alpha = feedback_filter_alpha(self.control_timestep, filtering.cutoff_hz)
-            root_quat = quat_slerp(old_qpos[3:7], qpos[3:7], alpha)
-            rotation = quat_multiply(root_quat, quat_conjugate(qpos[3:7]))
+            r = self.model.root_qpos_adr
+            root_quat = quat_slerp(old_qpos[r + 3 : r + 7], qpos[r + 3 : r + 7], alpha)
+            rotation = quat_multiply(root_quat, quat_conjugate(qpos[r + 3 : r + 7]))
             # The estimator root pose and raw joints define the observed anchor FK.
-            anchor_pos = qpos[:3] + quat_rotate(rotation, anchor_pos - qpos[:3])
+            anchor_pos = qpos[r : r + 3] + quat_rotate(
+                rotation, anchor_pos - qpos[r : r + 3]
+            )
             anchor_quat = quat_multiply(rotation, anchor_quat)
             measured = jnp.concatenate(
                 (
-                    qpos.at[3:7].set(root_quat),
+                    qpos.at[r + 3 : r + 7].set(root_quat),
                     old_qvel + alpha * (qvel - old_qvel),
                     anchor_pos,
                     anchor_quat,
@@ -1324,8 +1393,9 @@ class BelloMotionTrackingEnv:
         linear_noise = symmetric_vector_noise(
             linear_key, (noise.base_linear_velocity,) * 3
         )
-        qvel = qvel.at[:3].add(quat_rotate(qpos[3:7], linear_noise))
-        qvel = qvel.at[3:6].add(
+        r, v = self.model.root_qpos_adr, self.model.root_qvel_adr
+        qvel = qvel.at[v : v + 3].add(quat_rotate(qpos[r + 3 : r + 7], linear_noise))
+        qvel = qvel.at[v + 3 : v + 6].add(
             symmetric_vector_noise(angular_key, (noise.base_angular_velocity,) * 3)
         )
         positions = jnp.asarray(self.model.policy_qpos_indices)
@@ -1430,13 +1500,24 @@ class BelloMotionTrackingEnv:
             angular_key, self.config.reset.root_angular_velocity_noise
         )
         rotation_delta = quat_from_euler_xyz(rotation_noise)
-        qpos = (
-            qpos.at[:3]
-            .add(position_noise)
-            .at[3:7]
-            .set(quat_multiply(rotation_delta, qpos[3:7]))
-        )
-        qvel = qvel.at[:3].add(linear_noise).at[3:6].add(angular_noise)
+        r = self.model.root_qpos_adr
+        origin = qpos[r : r + 3]
+        omega = quat_rotate(qpos[r + 3 : r + 7], angular_noise)
+        for q, v in self.model.free_joint_coordinates:
+            offset = quat_rotate(rotation_delta, qpos[q : q + 3] - origin)
+            orientation = quat_multiply(rotation_delta, qpos[q + 3 : q + 7])
+            qpos = (
+                qpos.at[q : q + 3]
+                .set(origin + position_noise + offset)
+                .at[q + 3 : q + 7]
+                .set(orientation)
+            )
+            qvel = qvel.at[v : v + 3].set(
+                quat_rotate(rotation_delta, qvel[v : v + 3])
+                + linear_noise
+                + jnp.cross(omega, offset)
+            )
+            qvel = qvel.at[v + 3 : v + 6].add(quat_rotate_inverse(orientation, omega))
         return qpos, qvel
 
     def _sample_push_interval(self, rng: jax.Array | None) -> jax.Array:
@@ -1639,23 +1720,6 @@ def symmetric_vector_noise(rng: jax.Array, maximum: tuple[float, ...]) -> jax.Ar
         minval=-maximum_array,
         maxval=maximum_array,
         dtype=jnp.float32,
-    )
-
-
-def quat_conjugate(quat: jax.Array) -> jax.Array:
-    return quat * jnp.asarray([1.0, -1.0, -1.0, -1.0])
-
-
-def quat_multiply(left: jax.Array, right: jax.Array) -> jax.Array:
-    lw, lx, ly, lz = left
-    rw, rx, ry, rz = right
-    return jnp.asarray(
-        [
-            lw * rw - lx * rx - ly * ry - lz * rz,
-            lw * rx + lx * rw + ly * rz - lz * ry,
-            lw * ry - lx * rz + ly * rw + lz * rx,
-            lw * rz + lx * ry - ly * rx + lz * rw,
-        ]
     )
 
 

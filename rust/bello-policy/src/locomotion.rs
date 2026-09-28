@@ -42,6 +42,10 @@ struct Settings {
     left_axis: [f32; 2],
     action_clip: f32,
     hardware_imu_frame: String,
+    #[serde(default)]
+    held_indices: Vec<usize>,
+    #[serde(default)]
+    motor_from_joint: Vec<Vec<f64>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -54,6 +58,8 @@ pub struct Feedback {
     pub linear_acceleration: [f64; 3],
     pub command: [f32; 3],
     pub torso_command: [f32; 3],
+    #[serde(default)]
+    pub arm_target: Option<Vec<f64>>,
 }
 
 #[derive(Serialize)]
@@ -123,6 +129,34 @@ impl Locomotion {
             .environment
             .gait
             .validate(&settings.command, policy.metadata.control_timestep as f32)?;
+        let extended = policy
+            .metadata
+            .observation_frame
+            .iter()
+            .any(|(name, _)| name == "arm_target");
+        if extended {
+            ensure!(
+                !settings.held_indices.is_empty()
+                    && settings
+                        .held_indices
+                        .iter()
+                        .all(|&i| i < n && !policy.metadata.policy_indices.contains(&i)),
+                "invalid held arm mapping"
+            );
+            ensure!(
+                settings.motor_from_joint.len() == n
+                    && settings
+                        .motor_from_joint
+                        .iter()
+                        .all(|row| row.len() == n && row.iter().all(|x| x.is_finite())),
+                "invalid joint-to-motor mapping"
+            );
+        }
+        let observed_count = if extended {
+            n
+        } else {
+            policy.metadata.policy_indices.len()
+        };
         let scale = &settings.environment.observation.scale;
         settings.command.torso.validate()?;
         for (name, size) in &policy.metadata.observation_frame {
@@ -133,8 +167,9 @@ impl Locomotion {
                 "command" => (3, scale.command),
                 "torso_command" => (3, scale.command),
                 "gait_phase" => (3, scale.gait_phase),
-                "joint_position" => (policy.metadata.policy_indices.len(), scale.joint_pos),
-                "joint_velocity" => (policy.metadata.policy_indices.len(), scale.joint_vel),
+                "joint_position" => (observed_count, scale.joint_pos),
+                "joint_velocity" => (observed_count, scale.joint_vel),
+                "arm_target" => (settings.held_indices.len(), scale.joint_pos),
                 "last_action" => (policy.metadata.policy_indices.len(), scale.last_action),
                 _ => bail!("unsupported hardware observation {name}"),
             };
@@ -274,6 +309,27 @@ impl Locomotion {
             self.policy.metadata.control_timestep as f32,
         )?;
         let gait = self.gait.features(&s.environment.gait, &s.command);
+        let extended = self
+            .policy
+            .metadata
+            .observation_frame
+            .iter()
+            .any(|(name, _)| name == "arm_target");
+        if extended {
+            let target = sample
+                .arm_target
+                .as_ref()
+                .context("loaded standing requires an explicit commanded arm target")?;
+            ensure!(
+                target.len() == s.held_indices.len() && target.iter().all(|x| x.is_finite()),
+                "invalid arm target"
+            );
+        }
+        let observed_indices = if extended {
+            (0..n).collect::<Vec<_>>()
+        } else {
+            self.policy.metadata.policy_indices.clone()
+        };
         let scale = &s.environment.observation.scale;
         let mut observation = Vec::new();
         for (name, _) in &self.policy.metadata.observation_frame {
@@ -291,6 +347,13 @@ impl Locomotion {
                     .iter()
                     .map(|x| x * scale.last_action)
                     .collect(),
+                "arm_target" => sample
+                    .arm_target
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|x| (*x * scale.joint_pos as f64) as f32)
+                    .collect(),
                 "joint_position" | "joint_velocity" => {
                     let position = name == "joint_position";
                     let motors = if position {
@@ -298,9 +361,7 @@ impl Locomotion {
                     } else {
                         &sample.motor_velocity
                     };
-                    self.policy
-                        .metadata
-                        .policy_indices
+                    observed_indices
                         .iter()
                         .map(|&i| {
                             let value: f64 = s.joint_from_motor[i]
@@ -333,7 +394,35 @@ impl Locomotion {
             let start = self.history.len() - observation.len();
             self.history[start..].copy_from_slice(&observation);
         }
-        let output = self.policy.infer(&self.history)?;
+        let mut output = self.policy.infer(&self.history)?;
+        if extended {
+            let mut joints = s.default_joint_position.clone();
+            for (&i, &value) in s
+                .held_indices
+                .iter()
+                .zip(sample.arm_target.as_ref().unwrap())
+            {
+                joints[i] = value;
+            }
+            for &i in &s.held_indices {
+                output.motor_target[i] = s.motor_from_joint[i]
+                    .iter()
+                    .zip(&joints)
+                    .map(|(a, b)| a * b)
+                    .sum::<f64>() as f32;
+            }
+            crate::target_limits::TargetLimits::new(
+                &self.policy.document,
+                &self.policy.metadata.default_position,
+            )?
+            .validate(
+                &output
+                    .motor_target
+                    .iter()
+                    .map(|&v| v as f64)
+                    .collect::<Vec<_>>(),
+            )?;
+        }
         self.last_action = output
             .action
             .iter()

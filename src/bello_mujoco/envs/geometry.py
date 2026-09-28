@@ -87,3 +87,20 @@ def pair_both_contained(pair: jax.Array, candidates) -> jax.Array:
         return jnp.zeros(pair.shape[0], dtype=bool)
     contained = jnp.any(pair[:, :, None] == candidates[None, None, :], axis=2)
     return jnp.all(contained, axis=1)
+
+
+def quat_conjugate(quat: jax.Array) -> jax.Array:
+    return quat * jnp.asarray([1.0, -1.0, -1.0, -1.0])
+
+
+def quat_multiply(left: jax.Array, right: jax.Array) -> jax.Array:
+    lw, lx, ly, lz = left
+    rw, rx, ry, rz = right
+    return jnp.asarray(
+        [
+            lw * rw - lx * rx - ly * ry - lz * rz,
+            lw * rx + lx * rw + ly * rz - lz * ry,
+            lw * ry - lx * rz + ly * rw + lz * rx,
+            lw * rz + lx * ry - ly * rx + lz * rw,
+        ]
+    )

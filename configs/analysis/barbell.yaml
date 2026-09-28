@@ -1,0 +1,31 @@
+# Offline starting-pose feasibility screen; not a training/deployment config.
+asset: bello_mini
+robot_mass_kg: 49.5
+bar_mass_kg: 30.0
+bar_length_m: 1.2
+shaft_diameter_m: 0.03
+# User dimensions: 20 cm diameter, 15 cm axial thickness per end weight.
+# Cylindrical shape and outer faces flush with assembly ends remain assumptions.
+end_weight_radius_m: 0.10
+end_weight_width_m: 0.15
+# Selected between the shoulder-roll and upper-arm axis spacings. Confirm visually.
+grip_spacing_m: 0.40
+torso_body: torso_link
+# Preserve the reviewed arm pose (forearms ~60 deg from downward vertical).
+# Reviewed option A: offset along hand-local -Z, perpendicular to the previous
+# +X offset. This is a sphere-proxy grasp frame, not a measured hand CAD datum.
+bar_center_in_torso_m: [0.2087184166404533, 0.0, -0.2796829407771256]
+hands:
+  - body: left_end_effector_sphere_link
+    side: left
+    # Sphere center [0, 0, -0.025] minus 65 mm along local Z.
+    grip_local_m: [0.0, 0.0, -0.090]
+    palm_normal_local: [1.0, 0.0, 0.0]
+  - body: right_end_effector_sphere_link
+    side: right
+    grip_local_m: [0.0, 0.0, -0.090]
+    palm_normal_local: [1.0, 0.0, 0.0]
+# Local -Z is the reviewed shaft-offset direction; +X remains the assumed palm
+# normal. The offset is 15 deg forward from downward vertical at this pose.
+hand_rpy_rad: [0.0, -0.2617993877991494, 0.0]
+payload_samples_kg: [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0]

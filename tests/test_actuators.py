@@ -82,6 +82,38 @@ def test_task_gains_preserve_other_actuator_properties_and_input():
         original.with_gains({"missing": (2.0, 0.5)})
 
 
+def test_task_pose_preserves_gains_modes_limits_and_input():
+    from dataclasses import replace
+
+    original = ActuatorConfig(
+        joints={
+            "hinge": JointActuatorConfig(
+                mode="policy", soft_limit=(-0.4, 0.8), effort_limit=3.0
+            ),
+            "other": JointActuatorConfig(),
+        }
+    )
+    positions = {"hinge": 0.3}
+    modified = original.with_default_positions(positions)
+    positions["hinge"] = 0.7
+    assert modified.joints["hinge"] == replace(
+        original.joints["hinge"], default_pos=0.3
+    )
+    assert original.joints["hinge"].default_pos == 0.0
+    assert modified.joints["other"] == original.joints["other"]
+    with pytest.raises(ValueError, match="unknown joints"):
+        original.with_default_positions({"missing": 0.0})
+
+
+@pytest.mark.parametrize("position", [float("nan"), float("inf"), -0.5, 1.0])
+def test_task_pose_rejects_nonfinite_or_outside_soft_limits(position):
+    config = ActuatorConfig(
+        joints={"hinge": JointActuatorConfig(soft_limit=(-0.4, 0.8))}
+    )
+    with pytest.raises(ValueError, match="default_pos"):
+        config.with_default_positions({"hinge": position})
+
+
 @pytest.mark.parametrize(
     "gains",
     [(1.0,), (-1.0, 0.5), (1.0, -0.5), (1.0, float("nan")), (float("inf"), 1.0)],
@@ -144,12 +176,14 @@ def test_model_task_overrides_decode_freeze_and_round_trip(monkeypatch):
             "actuator_mode": "policy",
             "joint_soft_limits": {"hinge": [-0.4, 0.8]},
             "joint_gains": {"hinge": [5.0, 0.5]},
+            "joint_default_positions": {"hinge": 0.2},
         },
         strict=True,
     )
     assert config.actuator_config.joints["hinge"].mode == "policy"
     assert config.actuator_config.joints["hinge"].soft_limit == (-0.4, 0.8)
     assert config.actuator_config.joints["hinge"].gains == (5.0, 0.5)
+    assert config.actuator_config.joints["hinge"].default_pos == 0.2
     assert (
         dataclass_from_dict(
             ModelConfig, asdict(config), strict=True, require_all_fields=True
@@ -160,5 +194,7 @@ def test_model_task_overrides_decode_freeze_and_round_trip(monkeypatch):
         config.joint_soft_limits["hinge"] = (-1.0, 1.0)
     with pytest.raises(TypeError):
         config.joint_gains["hinge"] = (10.0, 1.0)
+    with pytest.raises(TypeError):
+        config.joint_default_positions["hinge"] = 0.1
     unchanged = ModelConfig(actuator_mode="policy")
     assert unchanged.actuator_config.joints["hinge"].gains == (40.0, 2.0)

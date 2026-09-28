@@ -34,11 +34,12 @@ from bello_mujoco.training.tracking import to_builtin
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.parametrize("arms", [False, True])
 @pytest.mark.parametrize(
     "slew,transitions", [(False, False), (False, True), (True, False), (True, True)]
 )
 def test_native_telemetry_matches_python_through_command_transitions(
-    rust_policy, slew, transitions
+    rust_policy, slew, transitions, arms
 ):
     run, _, source = rust_policy
     gait = GaitConfig(
@@ -68,9 +69,10 @@ def test_native_telemetry_matches_python_through_command_transitions(
             ("command", 3),
             ("torso_command", 3),
             ("gait_phase", 3),
-            ("joint_position", 2),
-            ("joint_velocity", 2),
+            ("joint_position", 3 if arms else 2),
+            ("joint_velocity", 3 if arms else 2),
             ("last_action", 2),
+            *((("arm_target", 1),) if arms else ()),
         )
     )
     config = PPOConfig(policy=ActorCriticConfig(hidden_dims=(8,), obs_stack_size=3))
@@ -82,7 +84,8 @@ def test_native_telemetry_matches_python_through_command_transitions(
     inverse = np.array([[0.5, 0.5, 0], [-0.5, 0.5, 0], [0, 0, 1.0]])
     default = np.array([0.1, -0.2, 0.3])
     rotation = np.array([[0.0, -1, 0], [1, 0, 0], [0, 0, 1]])
-    indices = np.array([0, 2])
+    indices = np.array([0, 1] if arms else [0, 2])
+    observed_indices = np.arange(3) if arms else indices
     limits = np.array([[-1, 1], [-1, 1], [-1, 1]])
     nominal = np.linalg.inv(inverse) @ default
     metadata = dict(
@@ -97,6 +100,8 @@ def test_native_telemetry_matches_python_through_command_transitions(
         observation_max_abs=100.0,
         coordinates=["sum", "difference", "held"],
         policy_indices=indices.tolist(),
+        held_indices=[2] if arms else [1],
+        motor_from_joint=np.linalg.inv(inverse).tolist(),
         default_position=nominal.tolist(),
         kp=[2.0] * 3,
         kd=[0.1] * 3,
@@ -180,6 +185,8 @@ def test_native_telemetry_matches_python_through_command_transitions(
             command=request,
             torso_command=[0.15, -0.2, 0.4] if index < 200 else [-0.1, 0.1, -0.3],
         )
+        if arms:
+            sample["arm_target"] = [0.3 + 0.1 * np.sin(index * 0.02)]
         samples.append(sample)
         torso_command = slew_torso_command(
             torso_command,
@@ -210,8 +217,8 @@ def test_native_telemetry_matches_python_through_command_transitions(
                 gravity,
                 np.zeros(1),
                 current,
-                (inverse @ sample["motor_position"] - default)[indices],
-                (inverse @ sample["motor_velocity"])[indices],
+                (inverse @ sample["motor_position"] - default)[observed_indices],
+                (inverse @ sample["motor_velocity"])[observed_indices],
                 np.zeros(2),
                 last_action,
             )
@@ -223,6 +230,7 @@ def test_native_telemetry_matches_python_through_command_transitions(
                 env_config.observation,
                 None,
                 torso_command=torso_command,
+                arm_target=jnp.asarray(sample["arm_target"]) if arms else None,
             )
         )
         history = (
@@ -239,6 +247,8 @@ def test_native_telemetry_matches_python_through_command_transitions(
         )
         target = nominal.copy()
         target[indices] += np.clip(last_action, -1, 1) * span
+        if arms:
+            target[2] = sample["arm_target"][0]
         expected.append(
             (
                 observation,

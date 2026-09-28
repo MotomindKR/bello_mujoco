@@ -1,0 +1,52 @@
+config:
+  total_timesteps: 100000000
+  num_envs: 1024
+motion:
+  directory: outputs/barbell-15kg
+  sequence: handover_cycle
+asset_config:
+  asset: bello_mini
+  target_total_mass_kg: 49.5
+  barbell:
+    mass_kg: 15.0
+  joint_default_positions:
+    left_shoulder_pitch_joint: 0.000367519
+    left_shoulder_roll_joint: -0.013369513
+    left_shoulder_yaw_joint: -0.006997438
+    left_elbow_pitch_joint: -1.048458276
+    left_wrist_yaw_joint: 0.004661893
+    left_wrist_pitch_joint: 0.786308457
+    left_wrist_roll_joint: 0.018025604
+    right_shoulder_pitch_joint: 0.000367519
+    right_shoulder_roll_joint: 0.013369513
+    right_shoulder_yaw_joint: 0.006997438
+    right_elbow_pitch_joint: -1.048458276
+    right_wrist_yaw_joint: -0.004661893
+    right_wrist_pitch_joint: 0.786308457
+    right_wrist_roll_joint: -0.018025604
+env_config:
+  # Exploratory simulation: retain the failed screen in the reference/checkpoint.
+  allow_unscreened_reference: true
+  reset:
+    joint_pos_noise:
+    - 0.0
+    - 0.0
+    joint_vel_noise:
+    - 0.0
+    - 0.0
+  model_randomization:
+    payload_distribution: fixed
+    joint_origin_range:
+    - 0.0
+    - 0.0
+checkpoint_config:
+  every_updates: 100
+  name: bello_mini_barbell_15kg_handover_cycle_seed${config.seed}
+wandb_config:
+  group: bello-mini-barbell-motion
+  tags:
+  - bello-mini
+  - beyondmimic
+  - rigid-bar
+  - fixed-15kg
+  - exploratory-unscreened-reference

@@ -80,6 +80,9 @@ def motion_fixture(rust_policy, request, observation_mode):
         positions.append(data.xpos[ids].copy())
         quaternions.append(data.xquat[ids].copy() * (-1 if i % 2 else 1))
     clip = MotionClip(
+        free_joint_qpos=(0,),
+        joint_qpos_indices=tuple(qpos_indices.tolist()),
+        joint_qvel_indices=tuple(qvel_indices.tolist()),
         fps=10.0,
         joint_names=joint_names,
         body_names=("root", "anchor", "tip"),
@@ -105,6 +108,9 @@ def motion_fixture(rust_policy, request, observation_mode):
         anchor_body_index=1,
         model=SimpleNamespace(
             mj_model=model,
+            root_qpos_adr=0,
+            root_qvel_adr=0,
+            free_joint_coordinates=((0, 0),),
             policy_qpos_indices=qpos_indices,
             policy_qvel_indices=qvel_indices,
             policy_ctrl_indices=np.arange(2),
@@ -376,3 +382,35 @@ def test_motion_mode_must_match_exported_actor_layout(motion_fixture):
         )
         assert result.returncode != 0
         assert error in result.stderr
+
+
+@pytest.mark.parametrize("mass", [15.0, 30.0])
+def test_motion_bundle_with_separate_fixed_bar_state(motion_fixture, mass):
+    import xml.etree.ElementTree as ET
+
+    f = motion_fixture
+    tree = ET.fromstring(XML)
+    body = ET.SubElement(tree.find("worldbody"), "body", name="barbell")
+    ET.SubElement(body, "freejoint", name="barbell_free")
+    ET.SubElement(body, "geom", size=".1", mass=str(mass))
+    physics = ET.tostring(tree, encoding="unicode")
+    frames = f.clip.num_frames
+    clip = replace(
+        f.clip,
+        qpos=jnp.concatenate(
+            (f.clip.qpos, jnp.tile(jnp.array([0.4, 0, 0.8, 1, 0, 0, 0]), (frames, 1))),
+            axis=1,
+        ),
+        qvel=jnp.concatenate((f.clip.qvel, jnp.zeros((frames, 6))), axis=1),
+        free_joint_qpos=(0, f.clip.qpos.shape[1]),
+        object_mass_kg=mass,
+        screen_passed=True,
+    )
+    result = f.run(content=f.bundle(motion=clip, physics=physics), check=True)
+    assert result.returncode == 0, result.stderr
+    result = f.run(
+        content=f.bundle(motion=replace(clip, object_mass_kg=20.0), physics=physics),
+        check=True,
+    )
+    assert result.returncode != 0
+    assert "match the screened reference mass" in result.stderr

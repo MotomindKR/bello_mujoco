@@ -28,8 +28,10 @@ ExperimentName = Literal[
     "bello_locomotion",
     "bello_mini_locomotion",
     "bello_mini_standing",
+    "bello_mini_loaded_standing",
     "motion",
     "bello_mini_motion",
+    "bello_mini_barbell_motion",
 ]
 CONFIG_ROOT = project_data_path("configs")
 _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
@@ -37,13 +39,17 @@ _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
     "bello_locomotion": Path("profiles/train/bello_locomotion.yaml"),
     "bello_mini_locomotion": Path("profiles/train/bello_mini_locomotion.yaml"),
     "bello_mini_standing": Path("profiles/train/bello_mini_standing.yaml"),
+    "bello_mini_loaded_standing": Path(
+        "profiles/train/bello_mini_loaded_standing.yaml"
+    ),
+    "bello_mini_barbell_motion": Path("profiles/train/bello_mini_barbell_motion.yaml"),
     "motion": Path("profiles/train/motion.yaml"),
     "bello_mini_motion": Path("profiles/train/bello_mini_motion.yaml"),
 }
 
 
 def is_motion_experiment(name: ExperimentName) -> bool:
-    return name in ("motion", "bello_mini_motion")
+    return name in ("motion", "bello_mini_motion", "bello_mini_barbell_motion")
 
 
 def dataclass_from_dict(
@@ -233,6 +239,11 @@ def locomotion_training_profile(name: ExperimentName) -> TrainingRunConfig:
         "bello_locomotion": ("bello_locomotion",),
         "bello_mini_locomotion": ("bello_mini_locomotion",),
         "bello_mini_standing": ("bello_mini_locomotion", "bello_mini_standing"),
+        "bello_mini_loaded_standing": (
+            "bello_mini_locomotion",
+            "bello_mini_standing",
+            "bello_mini_loaded_standing",
+        ),
     }
     if name != "smoke" and name not in profile_layers:
         raise ValueError(f"{name!r} is not a locomotion experiment")
@@ -260,6 +271,8 @@ def motion_training_profile(
         _config("train_motion/default.yaml"),
         _config("profiles/train/motion.yaml"),
     ]
+    if name == "bello_mini_barbell_motion":
+        paths.append(_config("profiles/train/bello_mini_motion.yaml"))
     if name != "motion":
         paths.append(CONFIG_ROOT.parent / profile_config_relative_path(name))
     merged = _merged_profile(paths)

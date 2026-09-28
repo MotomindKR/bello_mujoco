@@ -60,6 +60,9 @@ def env():
     for name, value in dict(
         model=SimpleNamespace(
             mj_model=model,
+            free_joint_coordinates=((0, 0),),
+            root_qpos_adr=0,
+            root_qvel_adr=0,
             policy_ctrl_indices=np.array([0]),
             policy_qpos_indices=np.array([7]),
             policy_qvel_indices=np.array([6]),
@@ -294,6 +297,8 @@ def test_native_contact_view_pads_without_changing_active_contacts(env):
             geom=np.array([[0, 1]] * 3), efc_address=np.array([0, 2, 4])
         ),
         efc_force=np.arange(5, dtype=np.float32),
+        efc_id=np.arange(5, dtype=np.int32),
+        efc_type=np.full(5, int(mujoco.mjtConstraint.mjCNSTR_CONTACT_FRICTIONLESS)),
     )
     state = native_motion_state(
         env,
@@ -367,7 +372,7 @@ def test_motion_model_loaders_forward_physics_and_training_randomization(
 
     monkeypatch.setattr(module, "load_model", loader)
     monkeypatch.setattr(module, "load_compiled_model", loader)
-    monkeypatch.setattr(module, "load_motion_clip", lambda *args: object())
+    monkeypatch.setattr(module, "load_motion_clip", lambda *args, **kwargs: object())
     monkeypatch.setattr(BelloMotionTrackingEnv, "__post_init__", lambda self: None)
     config = MotionTrackingEnvConfig(
         simulation_physics=SimulationPhysicsConfig(timestep=0.004),
@@ -396,6 +401,7 @@ def test_motion_asset_validation_checks_contract_not_default_config(
 
     config = SimpleNamespace(
         target_total_mass_kg=None,
+        barbell=None,
         enforce_policy_effort_limits=enforce_effort_limits,
         actuator_config=ActuatorConfig(
             joints={"hinge": JointActuatorConfig(mode="policy", soft_limit=(-0.5, 0.5))}

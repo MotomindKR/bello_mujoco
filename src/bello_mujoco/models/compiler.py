@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 
 from bello_mujoco.actuators import ActuatorConfig, ActuatorMode, FrozenDict
 from bello_mujoco.models import robot_descriptions_root
+from bello_mujoco.models.barbell import RigidBarConfig, attach_bar_to_model
 from bello_mujoco.models.urdf import ImuSensorConfig, compile_urdf_to_mjcf
 from bello_mujoco.robot import AssetName, robot_definition, validate_robot_source_urdf
 
@@ -22,8 +23,10 @@ atexit.register(_WORKSPACES.close)
 @dataclass(frozen=True)
 class ModelConfig:
     asset: AssetName = "bello"
+    barbell: RigidBarConfig | None = None
     target_total_mass_kg: float | None = None
     end_effector_payload_mass_kg: float = 0.0
+    end_effector_payload_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
     neighbor_exclusion_depth: int = 2
     enforce_policy_effort_limits: bool = True
     imu_config: ImuSensorConfig = ImuSensorConfig()
@@ -31,8 +34,13 @@ class ModelConfig:
     actuator_config: ActuatorConfig | None = None
     joint_soft_limits: dict[str, tuple[float, float]] = field(default_factory=dict)
     joint_gains: dict[str, tuple[float, float]] = field(default_factory=dict)
+    joint_default_positions: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if self.barbell is not None and self.end_effector_payload_mass_kg != 0:
+            raise ValueError(
+                "rigid bar and independent hand payloads are mutually exclusive"
+            )
         definition = robot_definition(self.asset)
         limits = FrozenDict(
             {name: tuple(bounds) for name, bounds in self.joint_soft_limits.items()}
@@ -42,15 +50,20 @@ class ModelConfig:
             {name: tuple(values) for name, values in self.joint_gains.items()}
         )
         object.__setattr__(self, "joint_gains", gains)
+        positions = FrozenDict(self.joint_default_positions)
+        object.__setattr__(self, "joint_default_positions", positions)
         derived = (
             ActuatorConfig.for_asset(self.asset, mode=self.actuator_mode)
             .with_soft_limits(limits)
             .with_gains(gains)
+            .with_default_positions(positions)
         )
         configured = (
             derived
             if self.actuator_config is None
-            else self.actuator_config.with_soft_limits(limits).with_gains(gains)
+            else self.actuator_config.with_soft_limits(limits)
+            .with_gains(gains)
+            .with_default_positions(positions)
         )
         if self.actuator_mode is not None and configured != derived:
             raise ValueError(
@@ -75,6 +88,12 @@ class ModelConfig:
             raise ValueError(
                 "end_effector_payload_mass_kg must be finite and nonnegative"
             )
+        offset = tuple(self.end_effector_payload_offset_m)
+        if len(offset) != 3 or not all(math.isfinite(value) for value in offset):
+            raise ValueError("end_effector_payload_offset_m must have 3 finite values")
+        if any(offset) and not self.end_effector_payload_mass_kg:
+            raise ValueError("a payload offset requires positive payload mass")
+        object.__setattr__(self, "end_effector_payload_offset_m", offset)
         for actuator in definition.actuators:
             if (
                 actuator.effort_limit is not None
@@ -128,7 +147,11 @@ def compile_robot(config: ModelConfig) -> CompiledRobot:
         robot=definition,
         target_total_mass_kg=config.target_total_mass_kg,
         end_effector_payload_mass_kg=config.end_effector_payload_mass_kg,
+        end_effector_payload_offset_m=config.end_effector_payload_offset_m,
     )
+    if config.barbell is not None:
+        for path in (physics, visual):
+            attach_bar_to_model(path, config.barbell)
     return CompiledRobot(config.asset, source, physics, visual)
 
 

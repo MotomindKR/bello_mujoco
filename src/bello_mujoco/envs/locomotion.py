@@ -68,6 +68,12 @@ from bello_mujoco.envs.locomotion_config import (
 )
 from bello_mujoco.envs.locomotion_state import BelloState
 from bello_mujoco.envs import locomotion_step
+from bello_mujoco.envs.barbell import (
+    load_arm_bank,
+    arm_target,
+    coherent_bar_reset,
+    bar_contact_force,
+)
 from bello_mujoco.envs.torso import neutral_torso_quaternion, torso_orientation_error
 
 
@@ -95,6 +101,24 @@ class BelloLocomotionEnv:
             physics_dt=float(self.model.mj_model.opt.timestep),
         )
         self._validate_model_metadata()
+        if self.config.arm_pose_path is not None:
+            if self.model.bar_body_id < 0:
+                raise ValueError("arm pose bank requires the rigid bar scene")
+            _ = self.arm_bank
+            if any(self.config.model_randomization.joint_origin_range):
+                raise ValueError(
+                    "arm pose bank requires unchanged joint origins for coherent grips"
+                )
+            spawn = self.config.spawn
+            if (
+                any(spawn.joint_pos_noise)
+                or spawn.joint_pos_scale_range != (1.0, 1.0)
+                or any(spawn.joint_vel_range)
+                or any(spawn.root_vel_range)
+            ):
+                raise ValueError(
+                    "loaded standing resets require grip-coherent positions and velocities"
+                )
         if self.reward_config.enabled("track_torso_orientation"):
             _ = self._neutral_torso_quat
         _ = self.model.target_limits
@@ -243,7 +267,7 @@ class BelloLocomotionEnv:
 
     @property
     def actor_feedback_size(self) -> int:
-        return 9 + 2 * self.action_size
+        return 9 + 2 * len(self.observed_indices)
 
     def initial_task_state(self) -> jax.Array:
         if not self._curriculum_steps:
@@ -335,11 +359,13 @@ class BelloLocomotionEnv:
             components.append(("gait_phase", 3))
         components.extend(
             (
-                ("joint_position", self.action_size),
-                ("joint_velocity", self.action_size),
+                ("joint_position", len(self.observed_indices)),
+                ("joint_velocity", len(self.observed_indices)),
                 ("last_action", self.action_size),
             )
         )
+        if self.config.arm_pose_path is not None:
+            components.append(("arm_target", len(self.model.hold_ctrl_indices)))
         if observation.privileged:
             components.extend(
                 (
@@ -667,6 +693,13 @@ class BelloLocomotionEnv:
         data = data.replace(
             qpos=data.qpos.at[:, root_qpos + 2].add(clearance_adjustment)
         )
+        if self.config.arm_pose_path is not None:
+            loaded = jnp.asarray(self.model.payload_mass) > 0
+            data = data.replace(
+                qpos=data.qpos.at[:, self.model.bar_qpos_adr + 2].add(
+                    jnp.where(loaded, clearance_adjustment, 0.0)
+                )
+            )
         data = mjx.forward(self.model.mjx_model, data)
         state = state.replace(data=data)
         state = state.replace(
@@ -709,11 +742,14 @@ class BelloLocomotionEnv:
     ) -> BelloState:
         root_qpos = int(self.model.root_qpos_adr)
         adjustment = self._reset_foot_clearance_adjustment(state, world_id)
-        return state.replace(
-            data=state.data.replace(
-                qpos=state.data.qpos.at[root_qpos + 2].add(adjustment)
+        qpos = state.data.qpos.at[root_qpos + 2].add(adjustment)
+        if self.config.arm_pose_path is not None:
+            qpos = qpos.at[self.model.bar_qpos_adr + 2].add(
+                jnp.where(
+                    jnp.asarray(self.model.payload_mass)[world_id] > 0, adjustment, 0.0
+                )
             )
-        )
+        return state.replace(data=state.data.replace(qpos=qpos))
 
     def initial_step_counts(
         self, batch_size: int, rng: jax.Array | None = None
@@ -749,9 +785,12 @@ class BelloLocomotionEnv:
         )
 
     def _apply_reset_randomization(self, data, rng, world_id=0):
-        return randomize_spawn(
+        data = randomize_spawn(
             self.model, self.config.spawn, self._terrain_height, data, rng, world_id
         )
+        if self.config.arm_pose_path is not None:
+            data = coherent_bar_reset(self.model, data, world_id)
+        return data
 
     def delayed_ctrl(
         self,
@@ -849,10 +888,20 @@ class BelloLocomotionEnv:
             torso_command=state.torso_command,
             noise_before_filter=filtering.noise_before_filter,
             residual_noise_scale=filtering.residual_noise_scale,
+            arm_target=(
+                jnp.linalg.solve(
+                    jnp.asarray(self.model.actuator_coordinate_transform),
+                    self.apply_arm_target(
+                        jnp.asarray(self.model.default_ctrl), state.step_count, world_id
+                    ),
+                )[jnp.asarray(self.model.hold_ctrl_indices)]
+                if self.config.arm_pose_path is not None
+                else None
+            ),
         )
 
     def _actor_feedback(self, state: BelloState) -> jax.Array:
-        policy_indices = jnp.asarray(self.model.policy_ctrl_indices)
+        policy_indices = jnp.asarray(self.observed_indices)
         qpos_indices = jnp.asarray(self.model.actuator_qpos_indices)[policy_indices]
         qvel_indices = jnp.asarray(self.model.actuator_qvel_indices)[policy_indices]
         joint_position = (
@@ -931,6 +980,37 @@ class BelloLocomotionEnv:
             "ctrl_saturation_fraction": saturated.astype(jnp.float32).mean(),
             "ctrl_margin_min": jnp.min(ctrl_margin),
         }
+
+    @property
+    def observed_indices(self):
+        return (
+            np.arange(self.model.mj_model.nu)
+            if self.config.arm_pose_path is not None
+            else self.model.policy_ctrl_indices
+        )
+
+    @cached_property
+    def arm_bank(self):
+        return load_arm_bank(
+            self.config.arm_pose_path,
+            self.model,
+            self.config.arm_pose_sha256,
+            self.control_timestep,
+        )
+
+    def apply_arm_target(self, ctrl, step, world_id=0):
+        if self.config.arm_pose_path is None:
+            return ctrl
+        target = arm_target(
+            self.arm_bank,
+            step,
+            self.control_timestep,
+            world_id,
+            jnp.asarray(self.model.payload_mass)[world_id],
+            self.config.model_randomization.seed,
+        )
+        indices = jnp.asarray(self.model.hold_ctrl_indices)
+        return ctrl.at[indices].set(target[indices])
 
     def _action_target_details(
         self, action: jax.Array, joint_angle_offset: jax.Array | None = None
@@ -1098,7 +1178,7 @@ class BelloLocomotionEnv:
         self, state: BelloState, world_id: jax.Array | int = 0
     ) -> tuple[jax.Array, ...]:
         data = state.data
-        policy_idx = jnp.asarray(self.model.policy_ctrl_indices)
+        policy_idx = jnp.asarray(self.observed_indices)
         qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)[policy_idx]
         qvel_idx = jnp.asarray(self.model.actuator_qvel_indices)[policy_idx]
         joint_pos = (
@@ -1106,7 +1186,9 @@ class BelloLocomotionEnv:
             - jnp.asarray(self.model.default_joint_target)[policy_idx]
         )
         joint_vel = data.qvel[qvel_idx]
-        actuator_force = data.actuator_force[policy_idx]
+        actuator_force = data.actuator_force[
+            jnp.asarray(self.model.policy_ctrl_indices)
+        ]
         base_lin_vel = self._link_lin_vel(state, self.root_link_name)
         imu_lin_acc = self._imu_linear_acceleration(state)
         imu_ang_vel = self._imu_angular_velocity(state)
@@ -1165,8 +1247,13 @@ class BelloLocomotionEnv:
         linear_force = state.data._impl.cfrc_int[body_ids, 3:]
         return jnp.linalg.norm(linear_force, axis=1)
 
-    def _robot_weight(self) -> jax.Array:
-        total_mass = float(np.sum(self.model.mj_model.body_mass))
+    def _robot_weight(self, world_id=0) -> jax.Array:
+        total_mass = (
+            jnp.asarray(self.model.robot_mass)[world_id]
+            + jnp.asarray(self.model.payload_mass)[world_id]
+            if self.config.arm_pose_path is not None
+            else float(np.sum(self.model.mj_model.body_mass))
+        )
         gravity = float(np.linalg.norm(self.model.mj_model.opt.gravity))
         return jnp.asarray(total_mass * gravity, dtype=jnp.float32)
 
@@ -1437,7 +1524,13 @@ class BelloLocomotionEnv:
                 )
             )
         )
-        terminal = bad_pose | nonfinite | unstable
+        bar_support = (
+            (bar_contact_force(self.model, state.data, world_id) > 1.0)
+            & (jnp.asarray(self.model.payload_mass)[world_id] > 0)
+            if self.config.arm_pose_path is not None
+            else jnp.asarray(False)
+        )
+        terminal = bad_pose | nonfinite | unstable | bar_support
         done = terminal | timeout
         return {
             "done/any": done,
@@ -1447,6 +1540,11 @@ class BelloLocomotionEnv:
             "done/timeout": timeout,
             "done/nonfinite": nonfinite,
             "done/unstable": unstable,
+            **(
+                {"done/bar_support": bar_support}
+                if self.config.arm_pose_path is not None
+                else {}
+            ),
         }
 
     def _base_height(
@@ -1521,7 +1619,7 @@ class BelloLocomotionEnv:
                     else None
                 ),
                 joint_force=self._leg_joint_force(next_state),
-                robot_weight=self._robot_weight(),
+                robot_weight=self._robot_weight(world_id),
                 joint_limit_low=self._actuator_joint_limits[:, 0],
                 joint_limit_high=self._actuator_joint_limits[:, 1],
                 policy_joint_indices=jnp.asarray(self.model.policy_ctrl_indices),

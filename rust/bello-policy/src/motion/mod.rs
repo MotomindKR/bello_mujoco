@@ -19,6 +19,8 @@ use rotation::*;
 #[derive(Deserialize)]
 struct Settings {
     joint_names: Vec<String>,
+    #[serde(default)]
+    root_qpos_adr: usize,
     joint_from_motor: Vec<Vec<f64>>,
     default_joint_position: Vec<f64>,
     end_effector_names: Vec<String>,
@@ -161,11 +163,26 @@ impl Motion {
         );
         let model = MjModel::from_xml_string(std::str::from_utf8(&policy.physics_xml)?)?;
         ensure!(
-            model.nq() as usize == n + 7
-                && model.nv() as usize == n + 6
-                && model.jnt_type()[0] == MjtJoint::mjJNT_FREE,
-            "motion model must have one floating base and scalar joints"
+            model.nq() as usize == clip.nq
+                && model.nv() as usize == clip.nv
+                && model
+                    .jnt_type()
+                    .iter()
+                    .enumerate()
+                    .any(|(i, kind)| *kind == MjtJoint::mjJNT_FREE
+                        && model.jnt_qposadr()[i] as usize == settings.root_qpos_adr),
+            "motion model and reference coordinates differ"
         );
+        if clip.free_qpos.len() > 1 {
+            let bar = model
+                .name_to_id(MjtObj::mjOBJ_BODY, "barbell")
+                .context("missing fixed barbell body")?;
+            ensure!(
+                clip.object_mass_kg
+                    .is_some_and(|mass| (model.body_mass()[bar] - mass).abs() <= 1e-8),
+                "motion object mass must match the screened reference mass"
+            );
+        }
         let mut qpos_indices = Vec::with_capacity(n);
         let mut qvel_indices = Vec::with_capacity(n);
         for name in &settings.joint_names {
@@ -182,6 +199,23 @@ impl Motion {
             qpos_indices.push(model.jnt_qposadr()[id] as usize);
             qvel_indices.push(model.jnt_dofadr()[id] as usize);
         }
+        ensure!(
+            clip.joint_qpos_indices.is_empty()
+                || (qpos_indices == clip.joint_qpos_indices
+                    && qvel_indices == clip.joint_qvel_indices),
+            "reference robot coordinate mapping differs from model"
+        );
+        let model_free: Vec<usize> = model
+            .jnt_type()
+            .iter()
+            .enumerate()
+            .filter(|(_, kind)| **kind == MjtJoint::mjJNT_FREE)
+            .map(|(i, _)| model.jnt_qposadr()[i] as usize)
+            .collect();
+        ensure!(
+            model_free == clip.free_qpos,
+            "reference free-body mapping differs from model"
+        );
         let bodies = clip
             .body_names
             .iter()
@@ -328,11 +362,12 @@ impl Motion {
         if feedback.initialize {
             self.reset();
             let source = self.clip.sample(feedback.reference_time);
-            let source_quat = from_wxyz(source.qpos[3..7].try_into()?);
+            let r = self.settings.root_qpos_adr;
+            let source_quat = from_wxyz(source.qpos[r + 3..r + 7].try_into()?);
             let rotation = DQuat::from_rotation_z(
                 quat.to_euler(EulerRot::ZYX).0 - source_quat.to_euler(EulerRot::ZYX).0,
             );
-            let position = rotation * DVec3::from_slice(&source.qpos[..3]);
+            let position = rotation * DVec3::from_slice(&source.qpos[r..r + 3]);
             self.alignment = Some((
                 (DVec3::from_array(root_position) - position).truncate(),
                 rotation,
@@ -355,8 +390,9 @@ impl Motion {
             position.iter().chain(&velocity).all(|v| v.is_finite()),
             "nonfinite mapped motion feedback"
         );
-        self.data.qpos_mut()[..3].copy_from_slice(&root_position);
-        self.data.qpos_mut()[3..7].copy_from_slice(&to_wxyz(quat));
+        let r = self.settings.root_qpos_adr;
+        self.data.qpos_mut()[r..r + 3].copy_from_slice(&root_position);
+        self.data.qpos_mut()[r + 3..r + 7].copy_from_slice(&to_wxyz(quat));
         for (&index, &value) in self.qpos_indices.iter().zip(&position) {
             self.data.qpos_mut()[index] = value;
         }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bello_mujoco.envs.actions import limit_motor_step
+from bello_mujoco.envs.barbell import bar_metrics
 from functools import partial
 from typing import TYPE_CHECKING
 import jax
@@ -272,11 +273,16 @@ def step_outcome(
             foot_touchdown,
             foot_normal_impulse,
             foot_peak_normal_force,
+            robot_weight=env._robot_weight(world_id)
+            if env.config.arm_pose_path is not None
+            else None,
         ),
         "returned_episode": done,
         **done_flags,
         **reward_info,
     }
+    if env.config.arm_pose_path is not None:
+        info.update(bar_metrics(env.model, reward_state.data, world_id))
     if env.reward_config.enabled("track_torso_orientation"):
         info["tracking/torso_orientation_error"] = env._torso_orientation_error(
             reward_state
@@ -294,6 +300,8 @@ def step(
         env.action_clip,
     )
     ctrl, motor_saturation = env._action_target_details(action)
+    if env.config.arm_pose_path is not None:
+        ctrl = env.apply_arm_target(ctrl, state.step_count)
     ctrl = limit_motor_step(ctrl, state.data.ctrl, env.model.target_limits)
     data = state.data.replace(ctrl=ctrl)
     (
@@ -367,6 +375,10 @@ def step_batch(
     ctrl, motor_saturation = jax.vmap(env._action_target_details)(
         action, joint_angle_offset
     )
+    if env.config.arm_pose_path is not None:
+        ctrl = jax.vmap(env.apply_arm_target)(
+            ctrl, state.step_count, jnp.arange(batch_size)
+        )
     ctrl = jax.vmap(
         lambda target, previous: limit_motor_step(
             target, previous, env.model.target_limits

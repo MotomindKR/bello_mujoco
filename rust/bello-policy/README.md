@@ -234,3 +234,16 @@ producer outage, malformed references, torso limits/slew, and unchanged
 policy-owned targets. Update producer and runner together: available references
 must contain all three torso angles. Retraining with torso commands and live
 tracking/emulator commissioning are required before deploying this behavior.
+
+Loaded-standing bundles include all-joint measurements and `arm_target` in the
+observation frame. Telemetry must provide the explicit commanded held-arm joint
+targets in metadata `held_indices` order. The runtime rejects missing/nonfinite
+commands, maps them to held motor targets, and enforces existing target bounds.
+Ordinary walking bundles do not require this field. A physical loaded handover
+or arm-command producer is not implemented by this telemetry contract.
+
+Motion clips with a bar carry explicit joint/free-body coordinate mappings and
+a passed 30 kg screen. The consumer checks these against bundled physics and
+interpolates the bar quaternion separately. Object configuration stays in the
+bundle; mass is not randomized by the runtime. See the repository's barbell
+feasibility guide for the currently failed nominal-hold screen and rollout gates.

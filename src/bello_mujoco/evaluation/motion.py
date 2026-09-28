@@ -351,6 +351,13 @@ def native_motion_state(
         contact__worldid=jax.numpy.zeros(capacity, dtype=jax.numpy.int32),
         contact__efc_address=jax.numpy.asarray(contact_address[:, None]),
         efc__force=jax.numpy.asarray(efc_force),
+        nefc=jax.numpy.asarray([nefc]),
+        efc__id=jax.numpy.asarray(
+            np.pad(mj_data.efc_id, (0, len(efc_force) - nefc), constant_values=-1)
+        ),
+        efc__type=jax.numpy.asarray(
+            np.pad(mj_data.efc_type, (0, len(efc_force) - nefc), constant_values=-1)
+        ),
     )
     data = NativeMotionData(
         qpos=jax.numpy.asarray(

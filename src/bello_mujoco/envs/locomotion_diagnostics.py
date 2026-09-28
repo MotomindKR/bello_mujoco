@@ -23,7 +23,10 @@ def gait_diagnostics(
     foot_touchdown: jax.Array,
     foot_normal_impulse: jax.Array,
     foot_peak_normal_force: jax.Array,
+    robot_weight=None,
 ) -> dict[str, jax.Array]:
+    if robot_weight is None:
+        robot_weight = env._robot_weight()
     contact = foot_contact.astype(bool)
     previous = state.last_foot_contact.astype(bool)
     initialized = state.step_count > 0
@@ -40,13 +43,13 @@ def gait_diagnostics(
     ).astype(bool)
     contact_count = jnp.sum(contact.astype(jnp.int32))
     normalized_joint_force = env._leg_joint_force(next_state) / jnp.maximum(
-        env._robot_weight(), 1.0e-6
+        robot_weight, 1.0e-6
     )
     normalized_contact_force = foot_peak_normal_force / jnp.maximum(
-        env._robot_weight(), 1.0e-6
+        robot_weight, 1.0e-6
     )
     normalized_contact_impulse = foot_normal_impulse / jnp.maximum(
-        env._robot_weight() * env.control_timestep, 1.0e-6
+        robot_weight * env.control_timestep, 1.0e-6
     )
     joint_force_excess = jnp.maximum(
         normalized_joint_force

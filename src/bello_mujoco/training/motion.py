@@ -510,7 +510,15 @@ def validate_motion_checkpoint_config(config: CheckpointConfig) -> None:
 
 
 def _validate_motion_asset(config: ModelConfig) -> None:
-    if config.target_total_mass_kg is not None:
+    if config.barbell is not None:
+        if (
+            config.target_total_mass_kg != 49.5
+            or not config.enforce_policy_effort_limits
+        ):
+            raise ValueError(
+                "barbell motion requires a 49.5 kg robot, fixed positive-mass bar, and original effort limits"
+            )
+    elif config.target_total_mass_kg is not None:
         raise ValueError("motion tracking requires canonical robot mass")
     if any(joint.mode != "policy" for joint in config.actuator_config.joints.values()):
         raise ValueError("motion tracking requires all actuators in policy mode")
