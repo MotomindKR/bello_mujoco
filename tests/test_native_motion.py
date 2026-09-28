@@ -47,6 +47,7 @@ class ObservationEnvironment(SimpleNamespace):
     aligned_reference = BelloMotionTrackingEnv.aligned_reference
     unaligned_reference = BelloMotionTrackingEnv.unaligned_reference
     bounded_reference_time = BelloMotionTrackingEnv.bounded_reference_time
+    advance_reference_time = BelloMotionTrackingEnv.advance_reference_time
     _unpack_actor_feedback = BelloMotionTrackingEnv._unpack_actor_feedback
     _corrupt_observation_terms = BelloMotionTrackingEnv._corrupt_observation_terms
 
