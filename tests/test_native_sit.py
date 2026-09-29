@@ -144,6 +144,8 @@ def test_sit_completion_requires_separate_support_confirmations(
     # Stand continues balancing until a separate support confirmation.
     assert all(c.kp == 2 for c in fake.command_frames[-1])
     client.buttons = {"a": True}
+    client.wait(lambda s: s.phase == "settling to hold")
+    fake.orientation = hardware_proto.Quaternion(y=-(2**-0.5), w=2**-0.5)
     client.wait(lambda s: s.phase == "upright")
     time.sleep(1.2)
     assert client.status.phase == "upright"
@@ -165,7 +167,6 @@ def test_sit_completion_requires_separate_support_confirmations(
     np.testing.assert_allclose(legs[-1], [-0.35, 0.85] * 2, atol=1e-6)
     client.buttons = {"a": True}
     client.wait(lambda s: s.phase == "lowering onto back")
-    fake.orientation = hardware_proto.Quaternion(y=-(2**-0.5), w=2**-0.5)
     time.sleep(1.2)
     assert client.status.phase == "lowering onto back"
     assert "disable" not in fake.calls
@@ -195,7 +196,9 @@ def test_sit_completion_requires_separate_support_confirmations(
     assert fake.state == hardware_proto.GROUP_STATE_RUNNING
 
 
-def test_sit_reverses_to_stand_with_measured_ankle_engagement(sit_runner):
+def test_sit_reverses_to_stand_with_measured_ankle_engagement(
+    sit_runner, hardware_proto
+):
     fake, client, _, _ = sit_runner
     client.press(1.1, a=True)
     client.wait(lambda s: s.phase == "upright")
@@ -209,6 +212,13 @@ def test_sit_reverses_to_stand_with_measured_ankle_engagement(sit_runner):
     client.buttons = {"forward": 1.0}
     client.wait(lambda s: s.phase == "upright")
     client.buttons = {}
+    fake.orientation = hardware_proto.Quaternion(y=-(2**-0.5), w=2**-0.5)
+    client.wait(lambda s: not s.startup_ready)
+    client.press(1.1, a=True)
+    assert client.status.phase == "upright"
+    assert all(fake.command_frames[-1][i].kp == 0 for i in (2, 3, 6, 7))
+    fake.orientation = hardware_proto.Quaternion(w=1.0)
+    client.wait(lambda s: s.startup_ready)
     for i in (2, 3, 6, 7):
         fake.positions[i] = 0.1
     time.sleep(0.1)
@@ -224,7 +234,9 @@ def test_sit_reverses_to_stand_with_measured_ankle_engagement(sit_runner):
 
 
 @pytest.mark.parametrize("loss", ["stream", "controller"])
-def test_sit_disconnect_freezes_each_stage_and_requires_neutral(sit_runner, loss):
+def test_sit_disconnect_freezes_each_stage_and_requires_neutral(
+    sit_runner, hardware_proto, loss
+):
     fake, client, connect, _ = sit_runner
 
     def reconnect():
@@ -252,6 +264,7 @@ def test_sit_disconnect_freezes_each_stage_and_requires_neutral(sit_runner, loss
 
     client.buttons = {"a": True}
     client.wait(lambda s: s.phase == "releasing ankles")
+    fake.orientation = hardware_proto.Quaternion(y=-(2**-0.5), w=2**-0.5)
     reconnect()
     client.wait(lambda s: s.phase == "upright")
     client.press(0.3, forward=-1.0)
@@ -289,15 +302,23 @@ def test_sit_abort_damps_without_disabling(sit_runner, hardware_proto, phase):
     assert "disable" not in fake.calls
 
 
-@pytest.mark.parametrize("fault", ["tilt", "stale"])
-def test_sit_retains_hardware_safety_checks(sit_runner, hardware_proto, fault):
+@pytest.mark.parametrize("phase", ["awaiting support", "engaging ankles", "lowering"])
+def test_sit_retains_hardware_safety_checks(sit_runner, hardware_proto, phase):
     fake, client, _, _ = sit_runner
-    bend(client)
-    if fault == "tilt":
+    fault = "tilt"
+    if phase == "engaging ankles":
+        client.press(1.1, a=True)
+        client.wait(lambda s: s.phase == "upright")
+        client.press(1.1, a=True)
+        client.wait(lambda s: s.phase == "engaging ankles")
+    if phase != "lowering":
         fake.orientation = hardware_proto.Quaternion(y=2**-0.5, w=2**-0.5)
     else:
+        bend(client)
         client.press(1.1, a=True)
         client.wait(lambda s: s.phase == "lowering onto back")
+        fake.orientation = hardware_proto.Quaternion(y=2**-0.5, w=2**-0.5)
+        fault = "stale"
         fake.failure = "stale"
     client.wait(lambda s: s.mode == pb.MODE_FAULT and s.can_clear_fault)
     assert fault in client.status.fault

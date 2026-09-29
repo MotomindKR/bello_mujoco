@@ -280,6 +280,10 @@ impl<'a> Sequence<'a> {
     }
 
     pub fn requires_upright(&self) -> bool {
+        // Sit is operator-supported until ankle engagement returns to balancing.
+        if self.descending {
+            return self.phase == Phase::EngagingAnkles;
+        }
         !matches!(
             self.phase,
             Phase::Bending | Phase::AwaitingLift | Phase::Lowering | Phase::Unloading | Phase::Idle
@@ -287,11 +291,11 @@ impl<'a> Sequence<'a> {
     }
 
     pub fn can_confirm(&self, upright: bool) -> bool {
-        self.phase == Phase::Lowering
+        matches!(self.phase, Phase::Bent | Phase::Lowering)
             || (upright
                 && matches!(
                     self.phase,
-                    Phase::AwaitingLift | Phase::Upright | Phase::Holding | Phase::Bent
+                    Phase::AwaitingLift | Phase::Upright | Phase::Holding
                 ))
     }
 
@@ -491,7 +495,8 @@ mod tests {
         tick(&mut s, 2., true, false, -1.);
         tick(&mut s, 0.02, true, false, 0.);
         assert_eq!(s.phase, Phase::Bent);
-        assert!(s.requires_upright());
+        assert!(!s.requires_upright());
+        assert!(s.can_confirm(false));
         tick(&mut s, 0.02, true, true, 0.);
         assert_eq!(s.phase, Phase::Lowering);
         assert!(!s.requires_upright());

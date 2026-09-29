@@ -513,8 +513,8 @@ Stand. The runner moves the legs; the operator supports and lowers the torso.
 | Stand | Select Sit; hold A for 1 s | Show **Support robot**; continue the standing policy. |
 | Support robot | Support the robot, release A, then hold A for 1 s | Ramp the last commanded pose to nominal over `ramp_seconds`, then ramp ankle gains to zero over `ankle_engage_seconds`. |
 | Bend | Push left stick down | Bend hips/knees toward the configured Back-down pose. Stick deflection scales the shared `straighten_speed_rps` limit; tighter motor step limits still apply. |
-| Pause / reverse | Release the stick to pause; push up to straighten | Retain the target when paused. Returning to nominal and holding A for 1 s restores ankle control from measured positions and enters Stand. |
-| Bent | Release all controls; hold A for 1 s | Show **Lower onto back**. Keep bent joints held and ankles free; permit the torso to tilt for manual lowering. |
+| Pause / reverse | Release the stick to pause; push up to straighten | Retain the target when paused. Returning to nominal with the torso upright and holding A for 1 s restores ankle control from measured positions and enters Stand. |
+| Bent | Release all controls; hold A for 1 s | Show **Lower onto back**. Keep bent joints held and ankles free; this confirmation accepts supported torso tilt. |
 | Lower onto back | Lower the supported robot onto its back, then release A and hold it for 1 s | Confirm floor support; ramp remaining gains to zero over `ankle_engage_seconds`, stop/disable groups, verify Idle, and release leases. |
 | Disarmed | Release inputs and select a startup | A new Back+Start hold can re-enable control, including Back-down startup from the floor. |
 
@@ -525,8 +525,13 @@ shows one left-stick widget with up/down glyphs from the selected controller
 style; the active direction highlights beyond the runner's neutral range. Other
 phases hide the stick widgets while keeping the card and abort control fixed.
 Floor support is confirmed by the operator, not inferred from IMU orientation.
-The upright tilt limit stays active until **Lower onto back**. All other hardware
-feedback, command and lease checks remain active throughout; faults or a
+After the **Support robot** confirmation, supported torso tilt is allowed through
+settling, ankle release, bending, lowering and unloading, including during a
+console disconnect. Returning to Stand requires an upright torso before ankle
+engagement; the normal upright tilt limit resumes during ankle engagement.
+While awaiting the initial support confirmation, the standing policy retains its
+normal tilt limit. All other hardware feedback, command and lease checks remain
+active throughout; faults or a
 one-second L1+R1/console abort damp the robot.
 
 Console/network loss or a disconnected gamepad freezes the current assisted
