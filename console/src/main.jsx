@@ -60,7 +60,7 @@ function App() {
   return (
     <GamepadTheme.Provider value={dark}>
       <GamepadStyle.Provider value={state.controllerStyle || "xbox"}>
-        <main>
+        <main className={tab === "Overview" ? "overview" : undefined}>
           <Header
             state={state}
             fault={fault}

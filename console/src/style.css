@@ -1240,6 +1240,57 @@ kbd.pressed {
   overscroll-behavior: contain;
 }
 
+/* Fit the overview to desktop height while keeping small windows scrollable. */
+@media (min-width: 1100px) {
+  main.overview {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    min-height: 700px;
+  }
+  .overview > .topbar,
+  .overview > .status-tabs {
+    flex-shrink: 0;
+  }
+  .overview > .layout {
+    flex: 1;
+    min-height: 0;
+  }
+  .overview .left,
+  .overview .right,
+  .overview .left .hero,
+  .overview .left .model {
+    min-height: 0;
+  }
+  .overview .operator-card {
+    height: 100%;
+  }
+}
+@media (min-width: 1100px) and (max-height: 800px) {
+  .overview .operator-card {
+    padding: 12px;
+    gap: 6px;
+    grid-template-rows: 76px 22px 84px 112px 44px minmax(100px, 1fr);
+  }
+  .overview .stick-indicator {
+    display: grid;
+    grid-template-columns: 56px minmax(0, 1fr);
+    grid-template-rows: 20px minmax(0, 1fr);
+    gap: 0 12px;
+  }
+  .overview .stick-label {
+    grid-column: 1 / -1;
+  }
+  .overview .stick-dial {
+    width: 48px;
+    height: 48px;
+    margin: 0;
+  }
+  .overview .stick-velocity > div {
+    flex-wrap: nowrap;
+  }
+}
+
 .abort-button {
   position: relative;
   display: flex;
