@@ -100,6 +100,7 @@ export function RobotView({ state, dark, visible }) {
   active.current = visible;
   const mount = useRef(null);
   const model = useRef(null);
+  const redraw = useRef(true);
   const transmissions = useRef([]);
   const [loadError, setLoadError] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -107,6 +108,10 @@ export function RobotView({ state, dark, visible }) {
     setLoaded(false);
     setLoadError("");
     let disposed = false;
+    const invalidate = () => {
+      redraw.current = true;
+    };
+    invalidate();
     const request = new AbortController();
     const host = mount.current;
     const scene = new THREE.Scene();
@@ -124,6 +129,7 @@ export function RobotView({ state, dark, visible }) {
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0, 0.5, 0);
     controls.enableDamping = true;
+    controls.addEventListener("change", invalidate);
     controls.update();
     const room = new RoomEnvironment();
     const generator = new THREE.PMREMGenerator(renderer);
@@ -174,6 +180,7 @@ export function RobotView({ state, dark, visible }) {
     loader.manager.onLoad = () => {
       if (disposed) return;
       setLoaded(true);
+      invalidate();
       const robot = model.current;
       if (robot) {
         const bounds = new THREE.Box3().setFromObject(robot);
@@ -225,6 +232,7 @@ export function RobotView({ state, dark, visible }) {
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setSize(width, height);
+      invalidate();
     });
     observer.observe(host);
     let animation;
@@ -232,7 +240,10 @@ export function RobotView({ state, dark, visible }) {
       animation = requestAnimationFrame(animate);
       if (active.current) {
         controls.update();
-        renderer.render(scene, camera);
+        if (redraw.current) {
+          redraw.current = false;
+          renderer.render(scene, camera);
+        }
       }
     };
     animate();
@@ -242,6 +253,7 @@ export function RobotView({ state, dark, visible }) {
       cancelAnimationFrame(animation);
       observer.disconnect();
       controls.dispose();
+      controls.removeEventListener("change", invalidate);
       disposeObject(scene);
       environment.dispose();
       renderer.dispose();
@@ -263,7 +275,7 @@ export function RobotView({ state, dark, visible }) {
     for (const [name, position] of Object.entries(
       jointPositions(coordinates, transmissions.current),
     )) {
-      if (robot.joints[name]) robot.joints[name].setJointValue(position);
+      if (robot.joints[name]?.setJointValue(position)) redraw.current = true;
     }
     if (
       state.services.estimator.fresh &&
@@ -272,6 +284,17 @@ export function RobotView({ state, dark, visible }) {
     ) {
       const p = state.pose.translationMetres,
         q = state.pose.orientationXyzw;
+      if (
+        robot.parent.position.y !== 0 ||
+        robot.position.x !== Number(p.x) ||
+        robot.position.y !== Number(p.y) ||
+        robot.position.z !== Number(p.z) ||
+        robot.quaternion.x !== Number(q.x) ||
+        robot.quaternion.y !== Number(q.y) ||
+        robot.quaternion.z !== Number(q.z) ||
+        robot.quaternion.w !== Number(q.w)
+      )
+        redraw.current = true;
       robot.parent.position.y = 0;
       robot.position.set(Number(p.x), Number(p.y), Number(p.z));
       robot.quaternion.set(Number(q.x), Number(q.y), Number(q.z), Number(q.w));
