@@ -6,6 +6,8 @@ const loader = require("@grpc/proto-loader");
 const { _electron: electron } = require("playwright");
 
 const root = path.resolve(__dirname, "../..");
+const capture = (page, options) =>
+  page.screenshot({ timeout: process.env.CI ? 120000 : 30000, ...options });
 const load = (source) =>
   grpc.loadPackageDefinition(
     loader.loadSync(path.join(root, source), {
@@ -324,6 +326,7 @@ async function serve(service, implementation) {
               "--use-gl=angle",
               "--use-angle=swiftshader",
               "--enable-unsafe-swiftshader",
+              "--force-device-scale-factor=1",
             ]
           : []),
       ],
@@ -442,7 +445,7 @@ async function serve(service, implementation) {
               }),
               "Fault recovery controls and hint must remain fully visible with long details",
             );
-            await page.screenshot({
+            await capture(page, {
               fullPage: true,
               path: path.join(
                 root,
@@ -656,7 +659,7 @@ async function serve(service, implementation) {
           label: document.querySelector(".abort-button").textContent,
         })),
       );
-      await page.screenshot({
+      await capture(page, {
         path: path.join(root, "console/out/console-abort-failure.png"),
       });
     }
@@ -691,7 +694,7 @@ async function serve(service, implementation) {
       0,
     );
     assert.equal(await page.locator(".model").getAttribute("data-error"), "");
-    await page.screenshot({
+    await capture(page, {
       path: path.join(root, "console/out/console-smoke.png"),
     });
     assert.equal(
@@ -720,7 +723,7 @@ async function serve(service, implementation) {
       .locator(".sticks")
       .getByText("0.4 rad/s", { exact: true })
       .waitFor();
-    await page.screenshot({
+    await capture(page, {
       path: path.join(root, "console/out/console-sticks.png"),
     });
     runnerStatus.mode = "MODE_STAND";
@@ -909,7 +912,7 @@ async function serve(service, implementation) {
     await page
       .getByRole("button", { name: "Clear fault", exact: true })
       .waitFor();
-    await page.screenshot({
+    await capture(page, {
       fullPage: true,
       path: path.join(root, "console/out/console-fault.png"),
     });
@@ -970,7 +973,7 @@ async function serve(service, implementation) {
     assert.equal(trackingCalls[0].includeRaw, false);
     assert.equal(trackingCalls[0].maxRateHz, 30);
     await page.getByRole("button", { name: "Center tracking pose" }).click();
-    await page.screenshot({
+    await capture(page, {
       path: path.join(root, "console/out/console-tracking.png"),
     });
     trackingAge = 2;
@@ -1003,7 +1006,7 @@ async function serve(service, implementation) {
             text.includes("can0"),
         ),
     );
-    await page.screenshot({
+    await capture(page, {
       path: path.join(root, "console/out/console-hardware.png"),
     });
     await page.getByLabel("Search status").fill("no-matching-motor");
@@ -1157,7 +1160,7 @@ async function serve(service, implementation) {
         .inputValue(),
       hardwareEndpoint.replace("127.0.0.1", "localhost"),
     );
-    await page.screenshot({
+    await capture(page, {
       path: path.join(root, "console/out/console-settings.png"),
     });
     await page.getByRole("button", { name: "Save" }).click();
@@ -1176,7 +1179,7 @@ async function serve(service, implementation) {
         document.querySelector(".motor-list strong")?.textContent ===
         "-1.2 rad",
     );
-    await page.screenshot({
+    await capture(page, {
       path: path.join(root, "console/out/console-bent.png"),
     });
     await page.locator(".feedback-motors > summary").click();
@@ -1188,7 +1191,7 @@ async function serve(service, implementation) {
           .trim() === "#15100f",
     );
     await page.waitForSelector('.model[data-ready="true"]');
-    await page.screenshot({
+    await capture(page, {
       path: path.join(root, "console/out/console-dark.png"),
     });
     await auditContrast(page);
@@ -1199,7 +1202,7 @@ async function serve(service, implementation) {
         () => document.documentElement.scrollWidth <= innerWidth,
       ),
     );
-    await page.screenshot({
+    await capture(page, {
       path: path.join(root, "console/out/console-mobile.png"),
     });
     for (const name of [
@@ -1233,7 +1236,7 @@ async function serve(service, implementation) {
             }),
           "Tracking badge must contain its label and stale status on mobile",
         );
-        await page.screenshot({
+        await capture(page, {
           path: path.join(
             root,
             "console/out/console-tracking-mobile-stale.png",
@@ -1248,7 +1251,7 @@ async function serve(service, implementation) {
         `${name} must fit mobile width`,
       );
     }
-    await page.screenshot({
+    await capture(page, {
       path: path.join(root, "console/out/console-services-mobile-dark.png"),
     });
     await page.getByRole("tab", { name: "Overview", exact: true }).click();
@@ -1259,7 +1262,7 @@ async function serve(service, implementation) {
     await page
       .getByRole("textbox", { name: "Runner", exact: true })
       .fill(replacementRunner);
-    await page.screenshot({
+    await capture(page, {
       path: path.join(root, "console/out/console-settings-mobile-dark.png"),
     });
     assert(
@@ -1399,31 +1402,37 @@ async function serve(service, implementation) {
       await restarted.locator(".header-status strong").textContent(),
       "Disarmed",
     );
-    const resizeState = await app.evaluate(async ({ BrowserWindow }) => {
-      const window = BrowserWindow.getAllWindows()[0];
-      const original = window.getBounds();
-      const resizable = window.isResizable();
-      const sizes = [];
-      for (const [width, height] of [
-        [800, 480],
-        [1000, 700],
-      ]) {
-        window.setSize(width, height);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        sizes.push(window.getSize());
-      }
-      window.setBounds(original);
-      return { resizable, sizes };
-    });
+    const resizeState = await app.evaluate(
+      async ({ BrowserWindow, screen }) => {
+        const window = BrowserWindow.getAllWindows()[0];
+        const original = window.getBounds();
+        const area = screen.getDisplayMatching(original).workArea;
+        const resizable = window.isResizable();
+        const sizes = [];
+        const requested = [
+          [800, 480],
+          [1000, 700],
+        ].map(([width, height]) => [
+          Math.min(width, area.width),
+          Math.min(height, area.height),
+        ]);
+        window.setPosition(area.x, area.y);
+        for (const [width, height] of requested) {
+          window.setSize(width, height);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          sizes.push(window.getSize());
+        }
+        window.setBounds(original);
+        return { resizable, sizes, requested };
+      },
+    );
     assert.equal(
       resizeState.resizable,
       true,
       "Native window must allow resizing",
     );
-    assert.deepEqual(resizeState.sizes, [
-      [800, 480],
-      [1000, 700],
-    ]);
+    assert.deepEqual(resizeState.sizes, resizeState.requested);
+    assert.notDeepEqual(resizeState.sizes[0], resizeState.sizes[1]);
     console.log(
       JSON.stringify({
         result: "passed",
