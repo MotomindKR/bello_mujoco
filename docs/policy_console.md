@@ -21,6 +21,8 @@ service packets alone does not make it Live. It also shows battery percentage an
 motor-rail voltage/current on every tab. Full power-board readings remain in
 Hardware status.
 An icon-only fullscreen toggle beside Settings enters and exits fullscreen.
+The top bar stays visible while scrolling any view. Tracking uses the same
+small edge inset as Overview.
 Missing readings remain `--`; outdated readings retain their values with a stale
 label. Power alerts appear beside the header readings; critical power flags and
 board faults also appear in the fault summary.

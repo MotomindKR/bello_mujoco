@@ -1057,6 +1057,18 @@ async function serve(service, implementation) {
     );
     await page.getByRole("tab", { name: "Tracking", exact: true }).click();
     await page.locator(".tracking-canvas canvas").waitFor();
+    const verifyTrackingInset = async () => {
+      const inset = await page.locator(".tracking-view").evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return [rect.left, innerWidth - rect.right];
+      });
+      assert.deepEqual(
+        inset,
+        [12, 12],
+        "Tracking must retain both edge insets",
+      );
+    };
+    await verifyTrackingInset();
     await page.waitForFunction(() =>
       document
         .querySelector(".tracking-feedback strong")
@@ -1301,6 +1313,20 @@ async function serve(service, implementation) {
     await capture(page, {
       path: path.join(root, "console/out/console-mobile.png"),
     });
+    const verifyPinnedHeader = async () => {
+      const scrolled = await page.evaluate(() => {
+        window.scrollTo(0, document.documentElement.scrollHeight);
+        const top = document
+          .querySelector(".topbar")
+          .getBoundingClientRect().top;
+        const distance = scrollY;
+        window.scrollTo(0, 0);
+        return { top, distance };
+      });
+      assert(scrolled.distance > 0, "Exercise a view that actually scrolls");
+      assert.equal(scrolled.top, 0, "Top bar must stay visible when scrolling");
+    };
+    await verifyPinnedHeader();
     for (const name of [
       "Hardware",
       "Pose",
@@ -1309,7 +1335,9 @@ async function serve(service, implementation) {
       "Tracking",
     ]) {
       await page.getByRole("tab", { name, exact: true }).click();
+      if (name === "Hardware") await verifyPinnedHeader();
       if (name === "Tracking") {
+        await verifyTrackingInset();
         trackingAge = 2;
         await page
           .locator(".tracking-toolbar .service")
