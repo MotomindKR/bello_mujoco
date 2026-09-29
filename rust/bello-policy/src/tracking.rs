@@ -4,7 +4,7 @@ use crate::{
     sonic::{ReferenceFrame, Sonic},
 };
 use anyhow::{Result, ensure};
-use glam::DQuat;
+use glam::{DQuat, EulerRot};
 use serde::Deserialize;
 use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
@@ -22,6 +22,10 @@ pub struct Config {
     pub max_sample_gap_seconds: f64,
     pub delay_seconds: f64,
     pub transition_seconds: f64,
+    pub neutral_return_seconds: f64,
+    pub neutral_joint_tolerance_radians: f64,
+    pub neutral_settle_timeout_seconds: f64,
+    pub standing_transition_seconds: f64,
     pub max_tilt_error_radians: f64,
     pub max_raw_action_abs: f32,
 }
@@ -234,15 +238,73 @@ impl Buffer {
     }
 }
 
+struct NeutralReturn {
+    initial: ReferenceFrame,
+    neutral: Vec<f64>,
+    started: Instant,
+    duration: f64,
+}
+
+impl NeutralReturn {
+    fn sample(&self, seconds: f64) -> ReferenceFrame {
+        let t = (seconds / self.duration).clamp(0., 1.);
+        let fraction = t * t * (3. - 2. * t);
+        let rate = 6. * t * (1. - t) / self.duration;
+        let yaw = DQuat::from_rotation_z(self.initial.orientation.to_euler(EulerRot::ZYX).0);
+        ReferenceFrame {
+            position: self
+                .initial
+                .position
+                .iter()
+                .zip(&self.neutral)
+                .map(|(a, b)| a + fraction * (b - a))
+                .collect(),
+            velocity: self
+                .initial
+                .position
+                .iter()
+                .zip(&self.neutral)
+                .map(|(a, b)| rate * (b - a))
+                .collect(),
+            orientation: self.initial.orientation.slerp(yaw, fraction),
+        }
+    }
+
+    fn window(&self, now: Instant, period: f64, dt: f64) -> (ReferenceFrame, Vec<ReferenceFrame>) {
+        let elapsed = now.saturating_duration_since(self.started).as_secs_f64();
+        (
+            self.sample(elapsed),
+            (0..10)
+                .map(|i| self.sample(elapsed + period + i as f64 * dt))
+                .collect(),
+        )
+    }
+}
+
 pub struct Tracking {
     pub sonic: Sonic,
     source: Source,
     buffer: Buffer,
     window: Option<(ReferenceFrame, Vec<ReferenceFrame>)>,
     robot: String,
+    config: Config,
+    neutral: Vec<f64>,
+    last_reference: Option<ReferenceFrame>,
+    returning: Option<NeutralReturn>,
 }
 impl Tracking {
     pub fn new(sonic: Sonic, config: &Config) -> Result<Self> {
+        for value in [
+            config.neutral_return_seconds,
+            config.neutral_joint_tolerance_radians,
+            config.neutral_settle_timeout_seconds,
+            config.standing_transition_seconds,
+        ] {
+            ensure!(
+                value.is_finite() && value > 0. && value < 60.,
+                "invalid SONIC return timing/tolerance"
+            );
+        }
         let robot = sonic.policy.metadata.robot.clone();
         let buffer = Buffer::new(
             sonic.joint_names().to_vec(),
@@ -262,7 +324,57 @@ impl Tracking {
             buffer,
             window: None,
             robot,
+            config: config.clone(),
+            neutral: Vec::new(),
+            last_reference: None,
+            returning: None,
         })
+    }
+    pub fn configure_neutral(&mut self, motor_position: &[f64]) -> Result<()> {
+        self.sonic.policy.target_limits.validate(motor_position)?;
+        self.neutral = self.sonic.joint_positions(motor_position);
+        Ok(())
+    }
+    pub fn reset(&mut self) {
+        self.sonic.reset();
+        self.returning = None;
+        self.last_reference = None;
+    }
+    pub fn begin_return(&mut self) -> bool {
+        let Some(initial) = self.last_reference.clone() else {
+            return false;
+        };
+        self.returning = Some(NeutralReturn {
+            initial,
+            neutral: self.neutral.clone(),
+            started: Instant::now(),
+            duration: self.config.neutral_return_seconds,
+        });
+        true
+    }
+    pub fn return_complete(&self, motor_position: &[f64]) -> Result<bool> {
+        let Some(returning) = &self.returning else {
+            return Ok(false);
+        };
+        let elapsed = returning.started.elapsed().as_secs_f64();
+        let error = self
+            .sonic
+            .joint_positions(motor_position)
+            .iter()
+            .zip(&self.neutral)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0., f64::max);
+        if elapsed >= returning.duration && error <= self.config.neutral_joint_tolerance_radians {
+            return Ok(true);
+        }
+        ensure!(
+            elapsed < returning.duration + self.config.neutral_settle_timeout_seconds,
+            "SONIC neutral settling timed out: joint error {error:.4} rad"
+        );
+        Ok(false)
+    }
+    pub fn standing_transition_seconds(&self) -> f64 {
+        self.config.standing_transition_seconds
     }
     pub fn refresh(&mut self) {
         let now = Instant::now();
@@ -290,6 +402,11 @@ impl Tracking {
         &self.buffer.status
     }
     pub fn reference_orientation(&self) -> DQuat {
+        if let Some(returning) = &self.returning {
+            return returning
+                .sample(returning.started.elapsed().as_secs_f64())
+                .orientation;
+        }
         self.window
             .as_ref()
             .map_or(DQuat::IDENTITY, |(initial, _)| initial.orientation)
@@ -299,11 +416,18 @@ impl Tracking {
         feedback: &crate::locomotion::Feedback,
         initialize: bool,
     ) -> Result<crate::sonic::Step> {
-        let (initial, frames) = self
-            .window
+        let generated = self.returning.as_ref().map(|returning| {
+            returning.window(
+                Instant::now(),
+                self.sonic.policy.metadata.control_timestep,
+                self.sonic.future_dt(),
+            )
+        });
+        let (initial, frames) = generated
             .as_ref()
+            .or(self.window.as_ref())
             .ok_or_else(|| anyhow::anyhow!(self.buffer.status.message.clone()))?;
-        self.sonic.step_reference(
+        let step = self.sonic.step_reference(
             &crate::sonic::Feedback {
                 motor_position: feedback.motor_position.clone(),
                 motor_velocity: feedback.motor_velocity.clone(),
@@ -314,7 +438,9 @@ impl Tracking {
             },
             initial.orientation,
             frames,
-        )
+        )?;
+        self.last_reference = Some(initial.clone());
+        Ok(step)
     }
 }
 
@@ -322,6 +448,53 @@ impl Tracking {
 mod tests {
     use super::*;
     use crate::reference::proto::{FullBodyReference, GetReferenceResponse};
+
+    #[test]
+    fn neutral_reference_is_bounded_upright_and_supplies_future_frames() {
+        let started = Instant::now();
+        let returning = NeutralReturn {
+            initial: ReferenceFrame {
+                position: vec![0.8, -0.4],
+                velocity: vec![0.3, -0.2],
+                orientation: DQuat::from_euler(EulerRot::ZYX, 0.7, 0.3, -0.2),
+            },
+            neutral: vec![0.2, 0.1],
+            started,
+            duration: 1.,
+        };
+        assert_eq!(returning.sample(0.).position, returning.initial.position);
+        assert_eq!(returning.sample(0.).velocity, vec![0.; 2]);
+        for i in 0..=100 {
+            let seconds = i as f64 / 100.;
+            let sample = returning.sample(seconds);
+            assert!((0.2 - 1e-10..=0.8).contains(&sample.position[0]));
+            assert!((-0.4..=0.1 + 1e-10).contains(&sample.position[1]));
+            if i > 0 && i < 100 {
+                let before = returning.sample(seconds - 1e-5);
+                let after = returning.sample(seconds + 1e-5);
+                for j in 0..2 {
+                    assert!(
+                        ((after.position[j] - before.position[j]) / 2e-5 - sample.velocity[j])
+                            .abs()
+                            < 1e-8
+                    );
+                }
+            }
+        }
+        let (initial, future) = returning.window(started + Duration::from_millis(800), 0.02, 0.1);
+        assert!(initial.position[0] > 0.2);
+        assert_eq!(future.len(), 10);
+        let last = future.last().unwrap();
+        assert!((last.position[0] - 0.2).abs() < 1e-10);
+        assert_eq!(last.velocity, vec![0.; 2]);
+        assert!(
+            last.orientation
+                .angle_between(DQuat::from_rotation_z(0.7))
+                .abs()
+                < 1e-7
+        );
+        assert_eq!(returning.sample(3.).position, last.position);
+    }
 
     fn config() -> Config {
         Config {
@@ -334,6 +507,10 @@ mod tests {
             max_sample_gap_seconds: 0.1,
             delay_seconds: 1.05,
             transition_seconds: 1.,
+            neutral_return_seconds: 1.,
+            neutral_joint_tolerance_radians: 0.15,
+            neutral_settle_timeout_seconds: 2.,
+            standing_transition_seconds: 0.2,
             max_tilt_error_radians: 0.5,
             max_raw_action_abs: 20.,
         }

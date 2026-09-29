@@ -560,7 +560,9 @@ pub async fn run(
                         deadline = tokio::time::Instant::now();
                         active_period = step.period;
                     }
-                    let phase = if let Some(failure) = step.log["failure"].as_str() {
+                    let phase = if step.log["phase"] == "returning_to_neutral" {
+                        "returning to neutral".to_owned()
+                    } else if let Some(failure) = step.log["failure"].as_str() {
                         format!("returning to Stand: {failure}")
                     } else {
                         step.log["phase"].as_str().unwrap_or("motion").to_owned()
@@ -593,7 +595,6 @@ pub async fn run(
                         *motion_interrupt.lock().unwrap() = None;
                         active_motion = None;
                         mode = Mode::Stand;
-                        policy.reset();
                         operator.set_mode(mode, "standing", "", 0.);
                     } else {
                         operator.set_mode(mode, &phase, name, progress);

@@ -197,6 +197,14 @@ impl Sonic {
         self.root_from_hardware_imu
     }
 
+    pub fn joint_positions(&self, motor_position: &[f64]) -> Vec<f64> {
+        self.settings
+            .joint_from_motor
+            .iter()
+            .map(|row| row.iter().zip(motor_position).map(|(a, b)| a * b).sum())
+            .collect()
+    }
+
     pub fn step(&mut self, feedback: &Feedback) -> Result<Step> {
         let clip = self
             .clip

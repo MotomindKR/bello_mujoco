@@ -31,13 +31,31 @@ impl Backend {
     pub fn reset(&mut self) {
         match self {
             Self::Mimic(m) => m.reset(),
-            Self::Sonic(t) => t.sonic.reset(),
+            Self::Sonic(t) => t.reset(),
         }
     }
     pub fn duration(&self) -> f64 {
         match self {
             Self::Mimic(m) => m.duration(),
             Self::Sonic(_) => f64::INFINITY,
+        }
+    }
+    pub fn begin_neutral_return(&mut self) -> bool {
+        match self {
+            Self::Sonic(t) => t.begin_return(),
+            Self::Mimic(_) => false,
+        }
+    }
+    pub fn neutral_return_complete(&self, motor_position: &[f64]) -> Result<bool> {
+        match self {
+            Self::Sonic(t) => t.return_complete(motor_position),
+            Self::Mimic(_) => Ok(false),
+        }
+    }
+    pub fn standing_transition_seconds(&self, default: f64) -> f64 {
+        match self {
+            Self::Sonic(t) => t.standing_transition_seconds(),
+            Self::Mimic(_) => default,
         }
     }
     pub fn observation_mode(&self) -> ObservationMode {

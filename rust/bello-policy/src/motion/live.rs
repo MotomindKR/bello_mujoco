@@ -55,6 +55,7 @@ enum Phase {
     Standing,
     ToMotion(Transition),
     Motion(Instant),
+    ToNeutral,
     ToStanding(Transition),
 }
 
@@ -91,10 +92,19 @@ impl Live {
     }
 
     pub async fn connect_tracking(
-        tracking: crate::tracking::Tracking,
+        mut tracking: crate::tracking::Tracking,
         standing: &Locomotion,
         config: &crate::tracking::Config,
     ) -> Result<Self> {
+        tracking.configure_neutral(
+            &standing
+                .policy
+                .metadata
+                .default_position
+                .iter()
+                .map(|&v| f64::from(v))
+                .collect::<Vec<_>>(),
+        )?;
         Self::connect_backend(
             Backend::Sonic(Box::new(tracking)),
             standing,
@@ -245,7 +255,7 @@ impl Live {
     pub fn target_limits(&self) -> &TargetLimits {
         match self.phase {
             Phase::Standing => &self.standing_limits,
-            Phase::Motion(_) => self.motion_limits(),
+            Phase::Motion(_) | Phase::ToNeutral => self.motion_limits(),
             Phase::ToMotion(_) | Phase::ToStanding(_) => &self.transition_limits,
         }
     }
@@ -274,6 +284,7 @@ impl Live {
                 self.config.start_time_seconds
                     + now.saturating_duration_since(*started).as_secs_f64(),
             ),
+            Phase::ToNeutral => self.reference_tilt(0.),
             Phase::ToMotion(t) => t.initial_tilt.blend(
                 self.reference_tilt(self.config.start_time_seconds),
                 t.step as f64 / t.steps as f64,
@@ -337,7 +348,7 @@ impl Live {
     fn motor_gains(&self, standing: &Locomotion) -> Vec<[f32; 2]> {
         let (destination, transition) = match &self.phase {
             Phase::Standing => (&standing.policy.metadata, None),
-            Phase::Motion(_) => (&self.motion.policy().metadata, None),
+            Phase::Motion(_) | Phase::ToNeutral => (&self.motion.policy().metadata, None),
             Phase::ToStanding(t) => (&standing.policy.metadata, Some(t)),
             Phase::ToMotion(t) => (&self.motion.policy().metadata, Some(t)),
         };
@@ -380,15 +391,36 @@ impl Live {
         previous_target: &[f64],
         tilt: Envelope,
     ) {
-        self.phase = Phase::ToStanding(self.transition(
+        let mut transition = self.transition(
             previous_target,
             standing,
             standing.policy.metadata.control_timestep,
             tilt,
-        ));
+        );
+        transition.steps = (self
+            .motion
+            .standing_transition_seconds(self.config.transition_seconds)
+            / standing.policy.metadata.control_timestep)
+            .ceil() as usize;
+        self.phase = Phase::ToStanding(transition);
         self.interrupt.0.store(0, Ordering::SeqCst);
         standing.reset();
         eprintln!("Transitioning back to standing.");
+    }
+
+    fn request_return(
+        &mut self,
+        standing: &mut Locomotion,
+        previous_target: &[f64],
+        tilt: Envelope,
+    ) {
+        if matches!(self.phase, Phase::Motion(_)) && self.motion.begin_neutral_return() {
+            self.phase = Phase::ToNeutral;
+            self.interrupt.0.store(0, Ordering::SeqCst);
+            eprintln!("SONIC returning to neutral.");
+        } else {
+            self.return_to_standing(standing, previous_target, tilt);
+        }
     }
 
     pub fn step(
@@ -415,7 +447,20 @@ impl Live {
             );
             eprintln!("Motion failed; returning to Stand: {failure}");
             self.failure = Some(failure);
-            self.return_to_standing(standing, previous_target, tilt);
+            self.request_return(standing, previous_target, tilt);
+        }
+        if matches!(self.phase, Phase::ToNeutral) {
+            match self
+                .motion
+                .neutral_return_complete(&feedback.motor_position)
+            {
+                Ok(false) => {}
+                Ok(true) => self.return_to_standing(standing, previous_target, tilt),
+                Err(error) => {
+                    self.failure = Some(error.to_string());
+                    self.return_to_standing(standing, previous_target, tilt);
+                }
+            }
         }
         let standing_period = standing.policy.metadata.control_timestep;
         // A scheduled blend can finish before step limiting reaches the destination.
@@ -461,10 +506,19 @@ impl Live {
         let complete = matches!(self.phase, Phase::Motion(started)
             if self.config.start_time_seconds + now.saturating_duration_since(started).as_secs_f64() >= self.motion.duration());
         if complete || self.interrupt.0.load(Ordering::SeqCst) == 2 {
-            self.return_to_standing(standing, previous_target, tilt);
+            self.request_return(standing, previous_target, tilt);
+        }
+        if matches!(self.phase, Phase::Motion(_))
+            && self.motion.tracking_status().is_some_and(|s| !s.ready)
+        {
+            self.failure = self.motion.tracking_status().map(|s| s.message.clone());
+            self.request_return(standing, previous_target, tilt);
         }
         let mut motion_step = None;
-        if matches!(self.phase, Phase::ToMotion(_) | Phase::Motion(_)) {
+        if matches!(
+            self.phase,
+            Phase::ToMotion(_) | Phase::Motion(_) | Phase::ToNeutral
+        ) {
             sample.reference_time = self.config.start_time_seconds
                 + match self.phase {
                     Phase::Motion(started) => now.saturating_duration_since(started).as_secs_f64(),
@@ -506,10 +560,12 @@ impl Live {
                     standing_period,
                 )
             }
-            Phase::ToMotion(_) | Phase::Motion(_) => {
+            Phase::ToMotion(_) | Phase::Motion(_) | Phase::ToNeutral => {
                 let step = motion_step.expect("motion phase produced a validated step");
                 let name = if matches!(self.phase, Phase::ToMotion(_)) {
                     "transition_to_motion"
+                } else if matches!(self.phase, Phase::ToNeutral) {
+                    "returning_to_neutral"
                 } else {
                     "motion"
                 };
@@ -524,7 +580,7 @@ impl Live {
         };
         let destination = match self.phase {
             Phase::Standing | Phase::ToStanding(_) => &self.standing_limits,
-            Phase::Motion(_) | Phase::ToMotion(_) => self.motion_limits(),
+            Phase::Motion(_) | Phase::ToMotion(_) | Phase::ToNeutral => self.motion_limits(),
         };
         let mut target: Vec<f64> = target.iter().map(|v| *v as f64).collect();
         let mut destination_target_limited = false;

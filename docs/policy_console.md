@@ -201,7 +201,8 @@ Before acquisition, connection loss leaves the runner Disarmed. Hold retains
 its current target (a ramp pauses). Locomotion zeros its velocity command and
 returns to Stand. A healthy named motion finishes and returns to Stand even if
 the console disappears. Tracking blends back to Stand if the controller session or
-retargeted reference is lost. Control has no run-duration limit. Abort and feedback/lease faults
+retargeted reference is lost, first returning its reference to neutral within SONIC.
+Control has no run-duration limit. Abort and feedback/lease faults
 take priority. Remove `control.max_duration_seconds` from older hardware profiles. The first Ctrl-C during a motion requests a blended return;
 another Ctrl-C or SIGTERM stops control. Stop cleanup damps and
 releases leases automatically. A group already in Fault retains its daemon safety
@@ -234,6 +235,10 @@ tracking:
   max_sample_gap_seconds: 0.1
   delay_seconds: 1.05
   transition_seconds: 1.0
+  neutral_return_seconds: 1.0
+  neutral_joint_tolerance_radians: 0.15
+  neutral_settle_timeout_seconds: 2.0
+  standing_transition_seconds: 0.2
   max_tilt_error_radians: 0.5
   max_raw_action_abs: 5.0
 ```
@@ -253,8 +258,31 @@ It never extrapolates, and the retained window is bounded. Input age includes
 producer age and time since the request began. Duplicate sequences do not extend
 the buffer; stale data, gaps or producer restarts require a fresh full window.
 
-Reference loss, malformed references, inference failure and motion tilt deviation
-blend back to Stand without releasing control. Reconnection cannot automatically
+On a normal return, console/reference loss, malformed reference, or motion tilt
+deviation, active SONIC first follows a locally generated neutral reference.
+The last consumed reference joint positions interpolate to the standing bundle's
+nominal joint pose with cubic smoothstep over `neutral_return_seconds`; reference
+velocities are the derivative of that curve. Root roll/pitch return to upright
+while retaining reference yaw. The ten future frames come from this same curve,
+so Pico is no longer required. SONIC history, actions, alignment and full gains
+remain active throughout; there is no standing-policy output blend in this phase.
+
+After the reference reaches neutral and all measured joints are within
+`neutral_joint_tolerance_radians`, the runner switches to a short target/gain blend
+to the standing policy over `standing_transition_seconds`. It preserves the
+standing history built during this handover. The original `transition_seconds`
+controls entry into Tracking only. These four return fields are required in an
+existing `tracking` configuration when upgrading.
+
+Neutral settling is bounded by `neutral_settle_timeout_seconds` after interpolation.
+A timeout or SONIC inference failure uses the short direct Stand recovery and
+records the reason. A return requested before entry completes also uses that
+direct recovery. Hardware feedback,
+lease, target limits and final upright checks remain active; explicit abort still
+damps immediately. Reference interpolation is not a guarantee of physical tracking.
+These changes require HIL and supported-robot commissioning before physical use.
+
+Returns keep control leases. Reconnection cannot automatically
 reenter Tracking. L1+R1 held for one second still damps the robot and latches Fault;
 hardware feedback and lease faults retain that priority. Physical deployment and
 live headset quality require separate commissioning; synthetic lifecycle and

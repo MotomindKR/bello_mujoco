@@ -70,6 +70,12 @@ test("instructions follow runner phases and transition restrictions", () => {
 test("buffered Tracking offers entry only when the runner is ready", () => {
   assert.equal(
     operatorGuide(
+      state({ mode: "MODE_TRACKING", phase: "returning to neutral" }),
+    ).title,
+    "Returning to neutral",
+  );
+  assert.equal(
+    operatorGuide(
       state({
         mode: "MODE_STAND",
         selected: "Tracking",

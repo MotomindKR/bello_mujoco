@@ -473,3 +473,19 @@ include damping-to-Idle recovery followed by re-entry to Hold and Stand.
 All 25 console unit tests and the macOS Electron smoke passed, including short
 holds, action changes during a held button, recovery failure/retry and Back-down
 selection. These are synthetic control checks, not physical stability tests.
+
+## SONIC neutral return (console 0.2.4)
+
+The runner now generates a bounded smoothstep reference to the standing bundle's
+nominal pose inside SONIC, followed by an independently timed Stand handover.
+Synthetic tests cover normal return, stale/malformed/missing references, console
+loss, settling timeout, abort during return, rebuffering and explicit re-entry.
+They check reference convergence, retained SONIC observation history, full SONIC
+targets/gains during neutral return and the short handover duration. Three
+existing named-motion/connection-loss cases remain passing.
+
+Validation: 61 Rust unit tests, strict Clippy, 10 native lifecycle/regression cases,
+25 console unit tests and the macOS Electron smoke test. One expanded native run
+hit the existing hardware-freshness guard before Tracking entry; that isolated
+case passed on rerun without changing freshness limits. These checks validate
+control flow and synthetic observations, not physical SONIC balance or tracking.

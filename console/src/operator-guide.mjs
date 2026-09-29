@@ -57,10 +57,15 @@ export function operatorGuide(state) {
         duration: "1 s · Stand",
       };
     case "MODE_TRACKING":
+      if (operator.phase === "returning to neutral")
+        return { title: "Returning to neutral" };
+      if (
+        operator.phase?.startsWith("returning") ||
+        operator.phase === "transition_to_standing"
+      )
+        return { title: "Returning to Stand" };
       return {
-        title: operator.phase?.startsWith("returning")
-          ? "Returning to Stand"
-          : "Body tracking",
+        title: "Body tracking",
         keys: ["A"],
         duration: "1 s · Stand",
       };
