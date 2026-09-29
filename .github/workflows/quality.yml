@@ -84,7 +84,7 @@ jobs:
 
           import mujoco
 
-          from bello_mujoco.evaluation.render import VideoWriter
+          from bello_mujoco.evaluation.video import VideoWriter
 
           validate_software_renderer()
           output_path = Path("/tmp/bello-render-smoke.mp4")
