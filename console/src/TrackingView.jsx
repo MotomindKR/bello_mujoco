@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Focus } from "lucide-react";
 import { number } from "./format.mjs";
+import { trackingStatus } from "./tracking-status.mjs";
 
 const parts = [
   ["body", "Body"],
@@ -150,6 +151,7 @@ export function TrackingView({ state, dark }) {
   }, [dark]);
   const service = state.services.tracking || {};
   const tracking = state.tracking;
+  const status = trackingStatus(service, tracking);
   return (
     <section className="card tracking-view" aria-label="XRoboToolkit 3D pose">
       <div
@@ -159,14 +161,12 @@ export function TrackingView({ state, dark }) {
       />
       <div className="tracking-toolbar">
         <div
-          className={"service " + (service.fresh ? "online" : "offline")}
+          className={"service " + status.tone}
           title={service.error || state.endpoints?.tracking}
         >
           <span className="service-dot" />
           <strong>XRoboToolkit</strong>
-          <span>
-            {service.fresh ? "Live" : service.connected ? "Stale" : "Waiting"}
-          </span>
+          <span>{status.label}</span>
         </div>
         <button
           className="icon-button"

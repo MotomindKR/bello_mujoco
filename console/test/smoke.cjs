@@ -299,7 +299,7 @@ async function serve(service, implementation) {
     StreamPoses(call) {
       trackingCalls.push(call.request);
       repeating(call, () => ({
-        sequence: "1",
+        sequence: trackingAge === -1 ? "0" : "1",
         deviceId: "Synthetic headset",
         upstreamConnected: true,
         packetAgeSeconds: trackingAge,
@@ -1060,7 +1060,7 @@ async function serve(service, implementation) {
     const verifyTrackingInset = async () => {
       const inset = await page.locator(".tracking-view").evaluate((element) => {
         const rect = element.getBoundingClientRect();
-        return [rect.left, innerWidth - rect.right];
+        return [rect.left, document.documentElement.clientWidth - rect.right];
       });
       assert.deepEqual(
         inset,
@@ -1091,11 +1091,21 @@ async function serve(service, implementation) {
         ?.textContent.startsWith("Stale"),
     );
     await trackingBadge.getByText("Stale", { exact: true }).waitFor();
+    assert.match(await trackingBadge.getAttribute("class"), /pending/);
+    trackingAge = -1;
+    await trackingBadge.getByText("Waiting", { exact: true }).waitFor();
+    await page.locator(".tracking-toolbar .service.pending").waitFor();
+    await page
+      .getByText("Waiting for body or hand tracking.", { exact: true })
+      .waitFor();
+    assert.equal(await trackingBadge.locator('[role="tooltip"]').count(), 0);
     assert.equal(
       await page.locator(".header-status strong").textContent(),
       "Stand",
     );
     trackingAge = 0;
+    await trackingBadge.getByText("Live", { exact: true }).waitFor();
+    assert.match(await trackingBadge.getAttribute("class"), /online/);
     await page.getByRole("tab", { name: "Hardware", exact: true }).click();
     await page
       .getByRole("heading", { name: "Component health", exact: true })
@@ -1319,12 +1329,23 @@ async function serve(service, implementation) {
         const top = document
           .querySelector(".topbar")
           .getBoundingClientRect().top;
+        const barBottom = document
+          .querySelector(".topbar")
+          .getBoundingClientRect().bottom;
+        const tabsTop = document
+          .querySelector(".status-tabs")
+          .getBoundingClientRect().top;
         const distance = scrollY;
         window.scrollTo(0, 0);
-        return { top, distance };
+        return { top, distance, barBottom, tabsTop };
       });
       assert(scrolled.distance > 0, "Exercise a view that actually scrolls");
       assert.equal(scrolled.top, 0, "Top bar must stay visible when scrolling");
+      assert.equal(
+        scrolled.tabsTop,
+        scrolled.barBottom,
+        "Tabs must stay pinned below the top bar",
+      );
     };
     await verifyPinnedHeader();
     for (const name of [

@@ -36,6 +36,7 @@ function displaySnapshot(snapshot, config, now = Date.now()) {
     if (state.tracking.packetAgeMs != null) state.tracking.packetAgeMs += age;
     state.services.tracking.fresh &&=
       state.tracking.upstreamConnected &&
+      state.tracking.packetAgeMs !== null &&
       state.tracking.packetAgeMs < config.freshnessMs;
     for (const key of ["body", "leftHand", "rightHand"]) {
       const part = state.tracking[key];

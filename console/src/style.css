@@ -14,6 +14,7 @@
   --red600: #2272eb;
   --red50: #e8f3ff;
   --green500: #03b26c;
+  --yellow500: #ffc342;
   --error500: #f04452;
   --background: var(--white);
   --surface: var(--white);
@@ -96,11 +97,13 @@ button {
 main {
   min-height: 100vh;
 }
-.topbar {
+.console-header {
   position: sticky;
   top: 0;
   z-index: 30;
   background: var(--background);
+}
+.topbar {
   padding: 6px 12px;
   display: flex;
   flex-wrap: wrap;
@@ -147,6 +150,9 @@ main {
 }
 .service.online .service-dot {
   background: var(--green500);
+}
+.service.pending .service-dot {
+  background: var(--yellow500);
 }
 .service strong {
   display: block;
@@ -1252,8 +1258,7 @@ kbd.pressed {
     height: 100dvh;
     min-height: 700px;
   }
-  .overview > .topbar,
-  .overview > .status-tabs {
+  .overview > .console-header {
     flex-shrink: 0;
   }
   .overview > .layout {

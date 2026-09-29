@@ -90,8 +90,11 @@ function component(value, hand = false) {
   return { joints, parents, ageMs: value.ageSeconds * 1000 };
 }
 function trackingFrame(value) {
+  const waiting =
+    value.packetAgeSeconds === -1 && String(value.sequence) === "0";
   if (
     value.upstreamConnected &&
+    !waiting &&
     (!Number.isFinite(value.packetAgeSeconds) || value.packetAgeSeconds < 0)
   )
     throw new Error("Invalid XRoboToolkit packet age.");
@@ -100,10 +103,13 @@ function trackingFrame(value) {
     deviceId: value.deviceId,
     frame: frameName,
     upstreamConnected: value.upstreamConnected,
-    packetAgeMs: value.upstreamConnected ? value.packetAgeSeconds * 1000 : null,
-    body: component(value.xrobotBody),
-    leftHand: component(value.xrobotLeftHand, true),
-    rightHand: component(value.xrobotRightHand, true),
+    packetAgeMs:
+      value.upstreamConnected && !waiting
+        ? value.packetAgeSeconds * 1000
+        : null,
+    body: waiting ? null : component(value.xrobotBody),
+    leftHand: waiting ? null : component(value.xrobotLeftHand, true),
+    rightHand: waiting ? null : component(value.xrobotRightHand, true),
   };
 }
 module.exports = { trackingFrame, bodyNames, handNames };

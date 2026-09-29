@@ -4,6 +4,21 @@ module.exports = {
   packagerConfig: {
     name: "Bello Mini Console",
     appBundleId: "kr.motomind.bello-mini-console",
+    extendInfo: {
+      NSLocalNetworkUsageDescription:
+        "Connect to Bello robots and tracking services on your local network.",
+    },
+    osxSign: {
+      identity: "-",
+      identityValidation: false,
+      preAutoEntitlements: false,
+      preEmbedProvisioningProfile: false,
+      gatekeeperAssess: false,
+      optionsForFile: () => ({
+        entitlements: ["com.apple.security.cs.allow-jit"],
+        hardenedRuntime: false,
+      }),
+    },
     icon: path.join(
       __dirname,
       process.platform === "darwin"
@@ -13,6 +28,7 @@ module.exports = {
     ignore: [/^\/test(?:\/|$)/, /^\/src(?:\/|$)/, /^\/scripts(?:\/|$)/],
     executableName: "bello-mini-console",
     asar: { unpackDir: "node_modules/@kmamal/sdl" },
+    afterAsar: [require("./scripts/mac-identity.cjs").afterAsar],
     extraResource: [
       path.join(root, "rust/bello-policy/proto/operator.proto"),
       path.join(root, "deps/pico-smplx-bridge/pose_stream.proto"),

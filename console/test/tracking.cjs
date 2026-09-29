@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { trackingFrame, bodyNames, handNames } = require("../tracking.cjs");
+const { displaySnapshot, emptyTelemetry } = require("../snapshot.cjs");
 const part = (names, hand = false) => ({
   frame: "pico_native_y_up",
   valid: true,
@@ -53,4 +54,35 @@ test("invalid hand joints and unavailable body frames are hidden", () => {
   assert.equal(result.body, null);
   assert.equal(result.leftHand.joints[0].position, null);
   assert.equal(result.leftHand.joints[0].orientation, null);
+});
+
+test("the bridge's pre-packet sentinel is connected but never fresh", () => {
+  const tracking = trackingFrame({
+    sequence: "0",
+    upstreamConnected: true,
+    packetAgeSeconds: -1,
+  });
+  assert.equal(tracking.packetAgeMs, null);
+  assert.equal(tracking.body, null);
+  const state = displaySnapshot(
+    {
+      ...emptyTelemetry(),
+      tracking,
+      services: { tracking: { connected: true, last: 1000 } },
+    },
+    { freshnessMs: 250 },
+    1010,
+  );
+  assert.equal(state.services.tracking.connected, true);
+  assert.equal(state.services.tracking.fresh, false);
+  for (const age of [-1, -2, NaN])
+    assert.throws(
+      () =>
+        trackingFrame({
+          sequence: "1",
+          upstreamConnected: true,
+          packetAgeSeconds: age,
+        }),
+      /Invalid XRoboToolkit packet age/,
+    );
 });

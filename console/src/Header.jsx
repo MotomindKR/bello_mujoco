@@ -2,6 +2,7 @@ import React from "react";
 import { Settings2, Maximize, Minimize } from "lucide-react";
 import { PowerStatus } from "./PowerStatus.jsx";
 import { MotorTemperature } from "./MotorTemperature.jsx";
+import { trackingStatus } from "./tracking-status.mjs";
 
 const modeName = (value) =>
   ({
@@ -14,12 +15,12 @@ const modeName = (value) =>
     MODE_FAULT: "Fault",
   })[value] || "Waiting";
 
-function Badge({ name, service }) {
+function Badge({ name, service, status }) {
   const live = service.fresh;
   const errorId = `service-error-${name.toLowerCase()}`;
   return (
     <div
-      className={"service " + (live ? "online" : "offline")}
+      className={"service " + (status?.tone || (live ? "online" : "offline"))}
       tabIndex={service.error ? 0 : undefined}
       aria-describedby={service.error ? errorId : undefined}
     >
@@ -27,15 +28,17 @@ function Badge({ name, service }) {
       <div>
         <strong>{name}</strong>
         <small>
-          {live
-            ? `Live · ${service.ageMs} ms`
-            : service.busy
-              ? "In use"
-              : service.error
-                ? "Error"
-                : service.connected
-                  ? "Stale"
-                  : "Waiting"}
+          {status
+            ? status.label
+            : live
+              ? `Live · ${service.ageMs} ms`
+              : service.busy
+                ? "In use"
+                : service.error
+                  ? "Error"
+                  : service.connected
+                    ? "Stale"
+                    : "Waiting"}
         </small>
       </div>
       {service.error && (
@@ -70,14 +73,8 @@ export function Header({ state, fault, onSettings }) {
           <Badge name="Runner" service={state.services.runner} />
           <Badge
             name="Tracking"
-            service={{
-              ...state.services.tracking,
-              fresh:
-                state.services.tracking.fresh && state.tracking?.body?.fresh,
-              ageMs: state.tracking?.body
-                ? Math.round(state.tracking.body.ageMs)
-                : state.services.tracking.ageMs,
-            }}
+            service={state.services.tracking}
+            status={trackingStatus(state.services.tracking, state.tracking)}
           />
           <button
             type="button"

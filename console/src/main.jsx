@@ -61,61 +61,67 @@ function App() {
     <GamepadTheme.Provider value={dark}>
       <GamepadStyle.Provider value={state.controllerStyle || "xbox"}>
         <main className={tab === "Overview" ? "overview" : undefined}>
-          <Header
-            state={state}
-            fault={fault}
-            onSettings={() => setSettingsOpen(true)}
-          />
-          {settingsOpen && (
-            <Settings
-              endpoints={state.endpoints}
-              controllerStyle={state.controllerStyle}
-              theme={state.theme}
-              onClose={() => setSettingsOpen(false)}
+          <div className="console-header">
+            <Header
+              state={state}
+              fault={fault}
+              onSettings={() => setSettingsOpen(true)}
             />
-          )}
-          <nav
-            className="status-tabs"
-            role="tablist"
-            aria-label="Console views"
-          >
-            {statusTabs.map((name, index) => (
-              <button
-                key={name}
-                type="button"
-                role="tab"
-                id={`tab-${name}`}
-                aria-controls={`panel-${name}`}
-                aria-selected={tab === name}
-                tabIndex={tab === name ? 0 : -1}
-                onClick={() => setTab(name)}
-                onKeyDown={(event) => {
-                  const direction =
-                    event.key === "ArrowRight"
-                      ? 1
-                      : event.key === "ArrowLeft"
-                        ? -1
-                        : 0;
-                  if (!direction && event.key !== "Home" && event.key !== "End")
-                    return;
-                  event.preventDefault();
-                  const next =
-                    event.key === "Home"
-                      ? statusTabs[0]
-                      : event.key === "End"
-                        ? statusTabs.at(-1)
-                        : statusTabs[
-                            (index + direction + statusTabs.length) %
-                              statusTabs.length
-                          ];
-                  setTab(next);
-                  document.getElementById(`tab-${next}`).focus();
-                }}
-              >
-                {name}
-              </button>
-            ))}
-          </nav>
+            {settingsOpen && (
+              <Settings
+                endpoints={state.endpoints}
+                controllerStyle={state.controllerStyle}
+                theme={state.theme}
+                onClose={() => setSettingsOpen(false)}
+              />
+            )}
+            <nav
+              className="status-tabs"
+              role="tablist"
+              aria-label="Console views"
+            >
+              {statusTabs.map((name, index) => (
+                <button
+                  key={name}
+                  type="button"
+                  role="tab"
+                  id={`tab-${name}`}
+                  aria-controls={`panel-${name}`}
+                  aria-selected={tab === name}
+                  tabIndex={tab === name ? 0 : -1}
+                  onClick={() => setTab(name)}
+                  onKeyDown={(event) => {
+                    const direction =
+                      event.key === "ArrowRight"
+                        ? 1
+                        : event.key === "ArrowLeft"
+                          ? -1
+                          : 0;
+                    if (
+                      !direction &&
+                      event.key !== "Home" &&
+                      event.key !== "End"
+                    )
+                      return;
+                    event.preventDefault();
+                    const next =
+                      event.key === "Home"
+                        ? statusTabs[0]
+                        : event.key === "End"
+                          ? statusTabs.at(-1)
+                          : statusTabs[
+                              (index + direction + statusTabs.length) %
+                                statusTabs.length
+                            ];
+                    setTab(next);
+                    document.getElementById(`tab-${next}`).focus();
+                  }}
+                >
+                  {name}
+                </button>
+              ))}
+            </nav>
+          </div>
           {statusTabs.slice(1).map((name) => (
             <section
               key={name}

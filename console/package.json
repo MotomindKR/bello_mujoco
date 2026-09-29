@@ -1,6 +1,7 @@
 {
   "name": "bello-mini-console",
-  "version": "0.2.1",
+  "desktopName": "bello-mini-console.desktop",
+  "version": "0.2.2",
   "private": true,
   "description": "Read-only hardware and pose display with a runner-owned gamepad session",
   "main": "main.cjs",
@@ -12,7 +13,7 @@
     "test": "npm run test:unit && npm run build:ui && node test/smoke.cjs",
     "format": "prettier --write \"*.{cjs,json}\" \"src/**/*.{jsx,mjs,css}\" \"test/*.{cjs,mjs}\" \"scripts/*.cjs\"",
     "format:check": "prettier --check \"*.{cjs,json}\" \"src/**/*.{jsx,mjs,css}\" \"test/*.{cjs,mjs}\" \"scripts/*.cjs\"",
-    "test:unit": "node --test test/controller.cjs test/operator-guide.mjs test/motor-temperature.mjs test/settings.cjs test/tracking.cjs test/snapshot.cjs"
+    "test:unit": "node --test test/controller.cjs test/operator-guide.mjs test/motor-temperature.mjs test/settings.cjs test/tracking.cjs test/snapshot.cjs test/mac-identity.cjs"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.0",

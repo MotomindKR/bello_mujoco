@@ -16,12 +16,13 @@ expandable motor readout sit at the bottom-right of the 3D view.
 The top bar keeps only the runner mode on the left, with power, temperature,
 services, and settings grouped at the right. The mode appears as one large word; its tooltip carries phase
 and fault details. Service indicators report freshness, including XRoboToolkit
-body tracking. Tracking shows Live only while body poses are fresh; receiving
-service packets alone does not make it Live. It also shows battery percentage and
+tracking. Tracking is green and Live while body or hand poses are fresh. It is
+yellow when the server is connected but samples are missing (Waiting) or Stale;
+receiving service packets alone does not make it Live. It also shows battery percentage and
 motor-rail voltage/current on every tab. Full power-board readings remain in
 Hardware status.
 An icon-only fullscreen toggle beside Settings enters and exits fullscreen.
-The top bar stays visible while scrolling any view. Tracking uses the same
+The top bar and view tabs stay visible while scrolling any view. Tracking uses the same
 small edge inset as Overview.
 Missing readings remain `--`; outdated readings retain their values with a stale
 label. Power alerts appear beside the header readings; critical power flags and

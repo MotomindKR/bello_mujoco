@@ -85,6 +85,13 @@ jobs:
           prepare_software_renderer node_modules/electron/dist/Electron.app
           npm test
           npm run make:mac
+          console_app="out/Bello Mini Console-darwin-$(node -p process.arch)/Bello Mini Console.app"
+          codesign --verify --deep --strict "$console_app"
+          codesign -dv --verbose=2 "$console_app" 2>&1 | grep -Fx 'Identifier=kr.motomind.bello-mini-console'
+          /usr/libexec/PlistBuddy -c 'Print :NSLocalNetworkUsageDescription' "$console_app/Contents/Info.plist"
+          stock_uuid=$(dwarfdump --uuid node_modules/electron/dist/Electron.app/Contents/MacOS/Electron | awk '{print $2}')
+          app_uuid=$(dwarfdump --uuid "$console_app/Contents/MacOS/bello-mini-console" | awk '{print $2}')
+          test -n "$app_uuid" && test "$app_uuid" != "$stock_uuid"
           prepare_software_renderer "out/Bello Mini Console-darwin-$(node -p process.arch)/Bello Mini Console.app"
           BELLO_CONSOLE_EXECUTABLE="$PWD/out/Bello Mini Console-darwin-$(node -p process.arch)/Bello Mini Console.app/Contents/MacOS/bello-mini-console" node test/smoke.cjs
       - if: runner.os == 'Linux'
@@ -96,6 +103,8 @@ jobs:
           test -n "$appimage"
           mkdir -p out/appimage-smoke
           (cd out/appimage-smoke && "$appimage" --appimage-extract)
+          cmp assets/bello-face.png out/appimage-smoke/squashfs-root/.DirIcon
+          grep -Fx 'Icon=bello-mini-console' out/appimage-smoke/squashfs-root/bello-mini-console.desktop
           BELLO_CONSOLE_EXECUTABLE="$PWD/out/appimage-smoke/squashfs-root/AppRun" xvfb-run -a node test/smoke.cjs
       - uses: actions/upload-artifact@v4
         with:
