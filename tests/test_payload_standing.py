@@ -142,6 +142,38 @@ def test_proxy_arm_bank_native_reset_keeps_robot_root_intact(tmp_path):
     )
     assert np.isfinite(data.qpos).all()
     assert len(env.observed_indices) == 28
+    held_qpos = env.model.actuator_qpos_indices[env.model.hold_ctrl_indices]
+    expected = dict(profile.env_config.arm_reset_joint_positions)
+    np.testing.assert_allclose(
+        data.qpos[held_qpos],
+        [
+            expected[name]
+            for name in (
+                env.model.actuator_joint_names[i] for i in env.model.hold_ctrl_indices
+            )
+        ],
+    )
+    # Reset randomization must not overwrite the physical arm pose with PD commands.
+    import chex
+    import jax
+    import jax.numpy as jnp
+
+    @chex.dataclass(frozen=True)
+    class SpawnData:
+        qpos: jax.Array
+        qvel: jax.Array
+
+    state = SpawnData(
+        qpos=jnp.asarray(env.model.default_qpos),
+        qvel=jnp.asarray(env.model.default_qvel),
+    )
+    randomized = jax.jit(env._apply_reset_randomization)(state, jax.random.PRNGKey(1))
+    np.testing.assert_allclose(
+        randomized.qpos[held_qpos], data.qpos[held_qpos], atol=1e-6
+    )
+    assert (
+        np.max(np.abs(data.qpos[held_qpos] - env.model.default_qpos[held_qpos])) > 0.3
+    )
 
 
 def test_checkpoint_records_resolved_arm_bank_hash(tmp_path):
@@ -165,3 +197,41 @@ def test_checkpoint_records_resolved_arm_bank_hash(tmp_path):
     )
     assert metadata.env.arm_pose_path == resolved.arm_pose_path
     assert metadata.env.arm_pose_sha256 == resolved.arm_pose_sha256
+
+
+def test_arm_pd_rig_preserves_home_geometry_and_preload_holds_without_self_contact():
+    from bello_mujoco.evaluation.payload_standing import arm_pd_model, screen_arm_pd
+
+    profile = locomotion_training_profile("bello_mini_payload_standing")
+    robot = load_model(profile.asset_config, terrain=FLAT_TERRAIN, load_mjx=False)
+    model = robot.mj_model
+    data = mujoco.MjData(model)
+    data.qpos[:] = robot.default_qpos
+    mujoco.mj_forward(model, data)
+    rig = arm_pd_model(robot)
+    rig_data = mujoco.MjData(rig)
+    for index in robot.hold_ctrl_indices:
+        name = robot.actuator_joint_names[index]
+        rig_data.qpos[int(rig.joint(name).qposadr[0])] = data.qpos[
+            robot.actuator_qpos_indices[index]
+        ]
+    mujoco.mj_forward(rig, rig_data)
+    assert rig.nv == 14
+    for body_id in range(1, model.nbody):
+        name = model.body(body_id).name
+        np.testing.assert_allclose(
+            rig_data.xpos[rig.body(name).id], data.xpos[body_id], atol=1e-5
+        )
+    report, positions, *_ = screen_arm_pd(
+        robot,
+        np.tile(robot.default_ctrl, (100, 1)),
+        15.0,
+        reset_positions=profile.env_config.arm_reset_joint_positions,
+    )
+    assert report["passed"] and report["startup_contact_frames"] == 0
+    target = dict(profile.env_config.arm_reset_joint_positions)
+    np.testing.assert_allclose(
+        positions[-1],
+        [target[robot.actuator_joint_names[i]] for i in robot.hold_ctrl_indices],
+        atol=0.005,
+    )

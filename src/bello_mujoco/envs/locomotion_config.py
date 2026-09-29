@@ -168,6 +168,7 @@ class BelloEnvConfig:
 
     arm_pose_path: Path | None = None
     arm_pose_sha256: str | None = None
+    arm_reset_joint_positions: tuple[tuple[str, float], ...] = ()
     decimation: int = CONTROL_DECIMATION
     max_episode_steps: int = MAX_EPISODE_STEPS
     action_clip: float = BELLO_ACTION_CLIP

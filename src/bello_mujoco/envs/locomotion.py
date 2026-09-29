@@ -101,6 +101,7 @@ class BelloLocomotionEnv:
             physics_dt=float(self.model.mj_model.opt.timestep),
         )
         self._validate_model_metadata()
+        _ = self.initial_qpos
         if self.config.arm_pose_path is not None:
             if self.model.bar_body_id < 0 and not self.model.payload_body_ids.size:
                 raise ValueError("arm pose bank requires a bar or EEF payload scene")
@@ -129,6 +130,30 @@ class BelloLocomotionEnv:
             for name in ("stand_foot_foreaft", "stand_foot_width", "foot_crossing")
         ):
             _ = self._sole_reward_geometry
+
+    @cached_property
+    def initial_qpos(self) -> np.ndarray:
+        qpos = self.model.default_qpos.copy()
+        overrides = self.config.arm_reset_joint_positions
+        if not overrides:
+            return qpos
+        if self.config.arm_pose_path is None or self.model.bar_body_id >= 0:
+            raise ValueError("arm reset overrides require an EEF-load arm bank")
+        positions = dict(overrides)
+        held = {
+            self.model.actuator_joint_names[i] for i in self.model.hold_ctrl_indices
+        }
+        if len(positions) != len(overrides) or set(positions) != held:
+            raise ValueError(
+                "arm reset positions must name each held joint exactly once"
+            )
+        for index in self.model.hold_ctrl_indices:
+            value = positions[self.model.actuator_joint_names[index]]
+            limits = self.model.mj_model.jnt_range[self.model.actuator_joint_ids[index]]
+            if not np.isfinite(value) or not limits[0] <= value <= limits[1]:
+                raise ValueError("arm reset position violates a physical joint limit")
+            qpos[self.model.actuator_qpos_indices[index]] = value
+        return qpos
 
     @property
     def task(self) -> Literal["locomotion"]:
@@ -572,7 +597,7 @@ class BelloLocomotionEnv:
             )
         data = self.model.make_data()
         data = data.replace(
-            qpos=jnp.asarray(self.model.default_qpos),
+            qpos=jnp.asarray(self.initial_qpos),
             qvel=jnp.asarray(self.model.default_qvel),
             ctrl=self.action_to_ctrl(jnp.zeros(self.action_size, dtype=jnp.float32)),
         )
@@ -788,6 +813,11 @@ class BelloLocomotionEnv:
         data = randomize_spawn(
             self.model, self.config.spawn, self._terrain_height, data, rng, world_id
         )
+        if self.config.arm_reset_joint_positions:
+            indices = self.model.actuator_qpos_indices[self.model.hold_ctrl_indices]
+            data = data.replace(
+                qpos=data.qpos.at[indices].set(self.initial_qpos[indices])
+            )
         if self.config.arm_pose_path is not None and self.model.bar_body_id >= 0:
             data = coherent_bar_reset(self.model, data, world_id)
         return data
@@ -1567,6 +1597,7 @@ class BelloLocomotionEnv:
         foot_linear_velocity: jax.Array,
         foot_angular_speed: jax.Array,
         world_id: jax.Array | int = 0,
+        self_collision: jax.Array = 0.0,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
         command = next_state.command
         qpos_idx = jnp.asarray(self.model.actuator_qpos_indices)
@@ -1595,6 +1626,7 @@ class BelloLocomotionEnv:
             self.reward_config,
             RewardInputs(
                 command=command,
+                self_collision=self_collision,
                 lin_vel_xy=lin_vel_xy,
                 yaw_vel_z=yaw_vel_z,
                 lin_vel_z=lin_vel_z,

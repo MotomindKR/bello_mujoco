@@ -51,6 +51,7 @@ asset_config:
   # unclipped servo demand before this physical limit is applied.
   enforce_policy_effort_limits: true
 env_config:
+  arm_reset_joint_positions: []
   decimation: 4
   max_episode_steps: 1000
   action_clip: 1.0
@@ -164,6 +165,8 @@ reward_config:
     joint_force_peak: -4.0
     touchdown_impact: -4.0
     joint_pose: -0.1
+    stand_body_still: 0.0
+    stand_self_contact: 0.0
     stand_still: 1.0
     stand_foot_motion: -1.0
     stand_foot_heading: -0.5
@@ -194,6 +197,8 @@ reward_config:
     ang_vel_z_error_delta: 0.25
     ang_vel_z_lpf_cutoff_hz: 5.0
   standing:
+    body_linear_speed_scale: 0.05
+    body_angular_speed_scale: 0.15
     foot_linear_speed_scale: 0.15
     foot_angular_speed_scale: 1.0
     foot_angular_weight: 0.25

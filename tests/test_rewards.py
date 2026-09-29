@@ -1295,6 +1295,15 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         ),
     )
 
+    quiet = reward_inputs(swing_progress=jnp.zeros(2))
+    _, quiet_terms = compute(config, quiet)
+    _, quiet_fine = compute(config, quiet.replace(control_timestep=jnp.asarray(0.005)))
+    contact = quiet.replace(self_collision=jnp.asarray(1.0))
+    _, contact_terms = compute(config, contact)
+    _, contact_fine = compute(
+        config, contact.replace(control_timestep=jnp.asarray(0.005))
+    )
+
     assert jnp.isfinite(reward)
     assert all(bool(jnp.isfinite(term)) for term in moving_terms.values())
     assert set(moving_terms) == {
@@ -1315,6 +1324,10 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         if coarse == 0.0:
             coarse = healthy_terms[name]
             fine = healthy_fine[name]
+        if coarse == 0.0:
+            coarse, fine = quiet_terms[name], quiet_fine[name]
+        if coarse == 0.0:
+            coarse, fine = contact_terms[name], contact_fine[name]
         assert coarse != 0.0, name
         assert coarse == pytest.approx(4.0 * fine), name
 
@@ -1414,3 +1427,39 @@ def test_standing_motor_penalty_covers_held_motors_and_half_rated_thresholds():
         compute(overloaded.replace(motor_continuous_torque=None))
     with pytest.raises(ValueError, match="cover all actuator"):
         compute(overloaded.replace(motor_continuous_torque=jnp.ones(1)))
+
+
+def test_body_stillness_rejects_rocking_with_stationary_feet_and_self_support():
+    config = reward_config(stand_body_still=2.0, stand_self_contact=-4.0)
+    quiet = reward_inputs()
+    compute = jax.jit(lambda inputs: compute_locomotion_reward(config, inputs))
+    quiet_reward, _ = compute(quiet)
+    assert float(quiet_reward) == pytest.approx(0.04)
+    rocking = quiet.replace(ang_vel_xy=jnp.asarray([0.0, 0.5]))
+    moving = quiet.replace(lin_vel_xy=jnp.asarray([0.1, 0.0]))
+    assert float(compute(rocking)[0]) < 0.001
+    assert float(compute(moving)[0]) < 0.001
+    supported, terms = compute(quiet.replace(self_collision=jnp.asarray(2.0)))
+    assert float(terms["reward/stand_body_still"]) == 0
+    assert float(supported) == pytest.approx(-0.16)
+    walking = quiet.replace(
+        command=jnp.asarray([0.3, 0, 0]), gait_active=jnp.asarray(True)
+    )
+    assert float(compute(walking)[0]) == 0
+    batched = jax.tree.map(lambda *xs: jnp.stack(xs), quiet, rocking, moving)
+    rewards = jax.jit(jax.vmap(lambda x: compute_locomotion_reward(config, x)[0]))(
+        batched
+    )
+    np.testing.assert_allclose(
+        rewards, [float(compute(x)[0]) for x in (quiet, rocking, moving)], atol=1e-7
+    )
+
+
+@pytest.mark.parametrize(
+    "field", ["body_linear_speed_scale", "body_angular_speed_scale"]
+)
+def test_body_stillness_scales_must_be_positive(field):
+    with pytest.raises(ValueError, match=field):
+        validate_reward_config(
+            reward_config(standing=StandingRewardConfig(**{field: 0.0}))
+        )

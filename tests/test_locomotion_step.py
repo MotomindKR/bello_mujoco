@@ -61,7 +61,7 @@ class ToyEnv(BelloLocomotionEnv):
             "done/nonfinite": jnp.asarray(False),
         }
 
-    def reward(self, state, next_state, action, *args, world_id=0):
+    def reward(self, state, next_state, action, *args, world_id=0, self_collision=0):
         return jnp.sum(action), {"reward/track_lin_vel_xy": jnp.asarray(0.25)}
 
     def sanitize_nonfinite_reward(self, reward, info, flags):

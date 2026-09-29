@@ -10,8 +10,40 @@ asset_config:
   # Per hand, at the reviewed hand-local -Z grip point (center is already -25 mm).
   end_effector_payload_mass_kg: 7.5
   end_effector_payload_offset_m: [0.0, 0.0, -0.065]
+  # Nominal 15 kg gravity preload in position commands, with unchanged gains.
+  joint_default_positions:
+    left_shoulder_pitch_joint: -0.263734630
+    left_shoulder_roll_joint: 0.000765211
+    left_shoulder_yaw_joint: -0.019368666
+    left_elbow_pitch_joint: -1.497903394
+    left_wrist_yaw_joint: 0.006956925
+    left_wrist_pitch_joint: 0.394665701
+    left_wrist_roll_joint: 0.017850634
+    right_shoulder_pitch_joint: -0.263734630
+    right_shoulder_roll_joint: -0.000765211
+    right_shoulder_yaw_joint: 0.019368666
+    right_elbow_pitch_joint: -1.497903394
+    right_wrist_yaw_joint: -0.006956925
+    right_wrist_pitch_joint: 0.394665701
+    right_wrist_roll_joint: -0.017850634
 env_config:
-  arm_pose_path: outputs/payload-standing-15kg/standing.npz
+  # Physical reset pose differs from the preloaded position commands.
+  arm_reset_joint_positions:
+    - [left_shoulder_pitch_joint, 0.000367519]
+    - [left_shoulder_roll_joint, -0.013369513]
+    - [left_shoulder_yaw_joint, -0.006997438]
+    - [left_elbow_pitch_joint, -1.048458276]
+    - [left_wrist_yaw_joint, 0.004661893]
+    - [left_wrist_pitch_joint, 0.786308457]
+    - [left_wrist_roll_joint, 0.018025604]
+    - [right_shoulder_pitch_joint, 0.000367519]
+    - [right_shoulder_roll_joint, 0.013369513]
+    - [right_shoulder_yaw_joint, 0.006997438]
+    - [right_elbow_pitch_joint, -1.048458276]
+    - [right_wrist_yaw_joint, -0.004661893]
+    - [right_wrist_pitch_joint, 0.786308457]
+    - [right_wrist_roll_joint, -0.018025604]
+  arm_pose_path: outputs/payload-standing-15kg-v2/standing.npz
   model_randomization:
     payload_distribution: standing
     payload_mass_range_kg: [5.0, 15.0]
@@ -20,12 +52,23 @@ env_config:
     friction_range: [0.6, 1.2]
   random_push:
     enabled: true
-    curriculum_steps: 200000
+    curriculum_steps: 500000
     initial_scale: 0.2
     lin_vel_x: [-0.2, 0.2]
     lin_vel_y: [-0.15, 0.15]
 reward_config:
+  tracking:
+    lin_vel_xy_still_std: 0.06
+    ang_vel_z_still_std: 0.08
+    torso_orientation_std: 0.20
+  standing:
+    body_linear_speed_scale: 0.05
+    body_angular_speed_scale: 0.15
   weights:
+    stand_body_still: 2.0
+    stand_self_contact: -4.0
+    ang_vel_xy: -0.8
+    track_torso_orientation: 2.0
     stand_still: 1.0
     stand_contact: -1.0
     stand_foot_motion: -1.0
@@ -36,14 +79,14 @@ reward_config:
     track_ang_vel_z: 1.0
 checkpoint_config:
   every_updates: 1000
-  name: bello_mini_payload_standing_15kg_seed0
-  wandb_artifact_name: bello_mini_payload_standing_15kg_seed0
+  name: bello_mini_payload_standing_15kg_v2_seed0
+  wandb_artifact_name: bello_mini_payload_standing_15kg_v2_seed0
 wandb_config:
   group: bello-mini-payload-standing
-  run_name: bello_mini_payload_standing_15kg_seed0
+  run_name: bello_mini_payload_standing_15kg_v2_seed0
   tags: [standing, bello-mini, eef-load-proxy, randomized-0-15kg]
 video_config:
-  filename_prefix: bello_mini_payload_standing_15kg
+  filename_prefix: bello_mini_payload_standing_15kg_v2
   every_updates: 5000
   steps: 1500
-  standing_suite_enabled: false
+  standing_suite_enabled: true

@@ -610,7 +610,7 @@ def mujoco_policy_observation(
 
 def reset_mujoco_data(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> None:
     mujoco.mj_resetData(env.model.mj_model, mj_data)
-    mj_data.qpos[:] = env.model.default_qpos
+    mj_data.qpos[:] = env.initial_qpos
     mj_data.qvel[:] = env.model.default_qvel
     mj_data.ctrl[:] = mujoco_action_to_ctrl(
         env, np.zeros(env.action_size, dtype=np.float32)

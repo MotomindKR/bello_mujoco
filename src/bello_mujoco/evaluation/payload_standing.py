@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
+import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
@@ -15,7 +17,137 @@ from bello_mujoco.evaluation.barbell import foot_support
 from bello_mujoco.evaluation.barbell_reference import smoothstep
 from bello_mujoco.evaluation.statics import static_equilibrium
 from bello_mujoco.sim import load_model
-from bello_mujoco.terrain import FLAT_TERRAIN
+from bello_mujoco.terrain import FLAT_TERRAIN, format_vec
+from bello_mujoco.models.urdf import end_effector_payload_body_ids
+
+
+def arm_pd_model(robot, pitch: float = 0.0):
+    """Native arm rig with the root/legs fixed at home; never used for training."""
+    if robot.bar_body_id >= 0 or not robot.payload_body_ids.size:
+        raise ValueError("arm PD screening requires independent EEF payloads")
+    model = robot.mj_model
+    data = mujoco.MjData(model)
+    data.qpos[:] = robot.default_qpos
+    mujoco.mj_forward(model, data)
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "arms.xml"
+        mujoco.mj_saveLastXML(str(path), model)
+        root = ET.parse(path).getroot()
+    held = {robot.actuator_joint_names[i] for i in robot.hold_ctrl_indices}
+    for body in root.iter("body"):
+        joints = list(body.findall("joint"))
+        if not joints or all(joint.get("name") in held for joint in joints):
+            continue
+        body_id = model.body(body.get("name")).id
+        parent = model.body_parentid[body_id]
+        rotation = data.xmat[parent].reshape(3, 3).T
+        body.set("pos", format_vec(rotation @ (data.xpos[body_id] - data.xpos[parent])))
+        quaternion = np.zeros(4)
+        mujoco.mju_mat2Quat(
+            quaternion, (rotation @ data.xmat[body_id].reshape(3, 3)).ravel()
+        )
+        body.set("quat", format_vec(quaternion))
+        for joint in joints:
+            body.remove(joint)
+    for tag in ("keyframe", "tendon"):
+        element = root.find(tag)
+        if element is not None:
+            root.remove(element)
+    actuators = root.find("actuator")
+    for actuator in list(actuators):
+        if actuator.get("joint") not in held:
+            actuators.remove(actuator)
+    probe = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    # Rotated gravity gives the same arm loads as pitching the fixed rig.
+    gravity = np.linalg.norm(probe.opt.gravity)
+    probe.opt.gravity[:] = [gravity * np.sin(pitch), 0, -gravity * np.cos(pitch)]
+    return probe
+
+
+def screen_arm_pd(robot, commands, mass, pitch=0.0, strength=1.0, reset_positions=()):
+    model = arm_pd_model(robot, pitch)
+    payload = end_effector_payload_body_ids(model)
+    ratio = mass / model.body_mass[payload].sum()
+    model.body_mass[payload] *= ratio
+    model.body_inertia[payload] *= ratio
+    model.actuator_gainprm[:, 0] *= strength
+    model.actuator_biasprm[:, 1:3] *= strength
+    data = mujoco.MjData(model)
+    mujoco.mj_setConst(model, data)
+    names = [model.joint(int(j)).name for j in model.actuator_trnid[:, 0]]
+    indices = np.array([robot.actuator_joint_names.index(name) for name in names])
+    qpos_ids = model.jnt_qposadr[model.actuator_trnid[:, 0]]
+    qvel_ids = model.jnt_dofadr[model.actuator_trnid[:, 0]]
+    data.qpos[qpos_ids] = robot.default_qpos[robot.actuator_qpos_indices[indices]]
+    for name, value in reset_positions:
+        data.qpos[int(model.joint(name).qposadr[0])] = value
+    substeps = round(0.02 / model.opt.timestep)
+    if not np.isclose(substeps * model.opt.timestep, 0.02):
+        raise ValueError("arm PD screen requires an integral 50 Hz control period")
+    warmup = 100
+    targets = np.r_[np.repeat(commands[:1], warmup, axis=0), commands]
+    positions, velocities, accelerations = [], [], []
+    peak_contact = peak_startup_contact = peak_effort = 0.0
+    contact_frames = startup_contact_frames = 0
+    max_joint_violation = 0.0
+    force_limits = np.max(np.abs(model.actuator_forcerange), axis=1)
+    robot_geoms = {i for i in range(model.ngeom) if model.geom_bodyid[i] != 0}
+    for frame, target in enumerate(targets):
+        data.ctrl[:] = target[indices]
+        frame_contact = 0.0
+        for _ in range(substeps):
+            mujoco.mj_step(model, data)
+            for contact_id, contact in enumerate(data.contact):
+                if (
+                    int(contact.geom1) not in robot_geoms
+                    or int(contact.geom2) not in robot_geoms
+                ):
+                    continue
+                wrench = np.zeros(6)
+                mujoco.mj_contactForce(model, data, contact_id, wrench)
+                frame_contact = max(frame_contact, abs(wrench[0]))
+        if frame < warmup:
+            peak_startup_contact = max(peak_startup_contact, frame_contact)
+            startup_contact_frames += frame_contact > 1.0
+            continue
+        peak_contact = max(peak_contact, frame_contact)
+        contact_frames += frame_contact > 1.0
+        peak_effort = max(
+            peak_effort, float(np.max(np.abs(data.actuator_force) / force_limits))
+        )
+        actual = data.qpos[qpos_ids]
+        limits = model.jnt_range[model.actuator_trnid[:, 0]]
+        max_joint_violation = max(
+            max_joint_violation,
+            float(np.max(np.maximum(limits[:, 0] - actual, actual - limits[:, 1]))),
+        )
+        positions.append(actual.copy())
+        velocities.append(data.qvel[qvel_ids].copy())
+        accelerations.append(data.qacc[qvel_ids].copy())
+    report = dict(
+        mass_kg=mass,
+        pitch_radians=pitch,
+        actuator_strength=strength,
+        contact_frames=int(contact_frames),
+        peak_contact_force_n=peak_contact,
+        startup_contact_frames=int(startup_contact_frames),
+        startup_peak_contact_force_n=peak_startup_contact,
+        maximum_effort_fraction=peak_effort,
+        max_joint_violation_radians=max_joint_violation,
+    )
+    report["passed"] = (
+        contact_frames == 0
+        and startup_contact_frames == 0
+        and peak_effort < 0.99
+        and max_joint_violation < 0.001
+    )
+    return (
+        report,
+        np.asarray(positions),
+        np.asarray(velocities),
+        np.asarray(accelerations),
+        indices,
+    )
 
 
 def prepare(output: Path) -> None:
@@ -72,9 +204,6 @@ def prepare(output: Path) -> None:
     for name, endpoint, is_loaded in variants:
         model.body_mass[:] = nominal_mass
         model.body_inertia[:] = nominal_inertia
-        if not is_loaded:
-            model.body_mass[robot.payload_body_ids] = 0
-            model.body_inertia[robot.payload_body_ids] = 0
         mujoco.mj_setConst(model, data)
         positions = np.repeat(robot.default_qpos[None], len(phase), axis=0)
         positions[:, robot.actuator_qpos_indices] += phase[:, None] * (endpoint - home)
@@ -84,12 +213,30 @@ def prepare(output: Path) -> None:
         )
         for command in commands:
             robot.target_limits.validate_reference(command)
-        velocities = np.zeros((len(phase), model.nv))
-        for i in range(1, len(phase) - 1):
-            mujoco.mj_differentiatePos(
-                model, velocities[i], 0.04, positions[i - 1], positions[i + 1]
-            )
-        accelerations = np.gradient(velocities, 0.02, axis=0)
+        screens = []
+        for mass in [0.0, 5.0, 10.0, 15.0] if is_loaded else [0.0]:
+            for pitch, strength in [(0.0, 1.0), (-0.15, 0.95), (0.15, 1.05)]:
+                screen, actual, velocity, acceleration, indices = screen_arm_pd(
+                    robot,
+                    commands,
+                    mass,
+                    pitch,
+                    strength,
+                    profile.env_config.arm_reset_joint_positions,
+                )
+                screens.append(screen)
+                if mass == (15.0 if is_loaded else 0.0) and pitch == 0:
+                    positions[:, robot.actuator_qpos_indices[indices]] = actual
+                    velocities = np.zeros((len(phase), model.nv))
+                    accelerations = np.zeros_like(velocities)
+                    velocities[:, robot.actuator_qvel_indices[indices]] = velocity
+                    accelerations[:, robot.actuator_qvel_indices[indices]] = (
+                        acceleration
+                    )
+        if not is_loaded:
+            model.body_mass[robot.payload_body_ids] = 0
+            model.body_inertia[robot.payload_body_ids] = 0
+            mujoco.mj_setConst(model, data)
         worst = penetration = 0.0
         failed = []
         peak = np.zeros(model.nu)
@@ -141,7 +288,11 @@ def prepare(output: Path) -> None:
         result = dict(
             name=name,
             loaded=is_loaded,
-            passed=not failed and worst <= 1 and penetration <= 0.001,
+            passed=not failed
+            and worst <= 0.98
+            and penetration <= 0.001
+            and all(item["passed"] for item in screens),
+            pd_screens=screens,
             maximum_effort_fraction=worst,
             max_unintended_penetration_m=penetration,
             no_equilibrium_frames=failed,
@@ -168,6 +319,6 @@ def prepare(output: Path) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--output", type=Path, default=Path("outputs/payload-standing-15kg")
+        "--output", type=Path, default=Path("outputs/payload-standing-15kg-v2")
     )
     prepare(parser.parse_args().output)

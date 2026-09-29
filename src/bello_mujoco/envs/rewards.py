@@ -266,6 +266,8 @@ class RewardWeights:
     joint_force_peak: float = -4.0
     touchdown_impact: float = -4.0
     joint_pose: float = -0.1
+    stand_body_still: float = 0.0
+    stand_self_contact: float = 0.0
     stand_still: float = 1.0
     stand_foot_motion: float = -1.0
     stand_foot_heading: float = -0.5
@@ -313,6 +315,8 @@ class TrackingRewardConfig:
 
 @dataclass(frozen=True)
 class StandingRewardConfig:
+    body_linear_speed_scale: float = 0.05
+    body_angular_speed_scale: float = 0.15
     foot_linear_speed_scale: float = 0.15
     foot_angular_speed_scale: float = 1.0
     foot_angular_weight: float = 0.25
@@ -491,6 +495,7 @@ class RewardInputs:
     foot_lateral_clearance: jax.Array = 0.0
     foot_clearance_samples: jax.Array | None = None
     swing_progress: jax.Array | None = None
+    self_collision: jax.Array = 0.0
     motor_continuous_torque: jax.Array | None = None
 
 
@@ -684,6 +689,17 @@ def compute_locomotion_reward(
         standing_stillness,
         0.0,
     )
+    body_motion = (
+        jnp.sum(inputs.lin_vel_xy**2) + inputs.lin_vel_z**2
+    ) / config.standing.body_linear_speed_scale**2 + (
+        jnp.sum(inputs.ang_vel_xy**2) + inputs.yaw_vel_z**2
+    ) / config.standing.body_angular_speed_scale**2
+    stand_body_still = jnp.where(
+        standing_double_support & ~inputs.done & (inputs.self_collision == 0),
+        jnp.exp(-body_motion),
+        0.0,
+    )
+    stand_self_contact = jnp.where(standing_command, inputs.self_collision, 0.0)
     hip_deviation = jnp.sum(jnp.abs(inputs.joint_pos_rel[inputs.hip_joint_indices]))
     hip_deviation_commands = inputs.command[
         jnp.asarray(config.limits_pose.hip_deviation_command_indices, dtype=jnp.int32)
@@ -811,6 +827,8 @@ def compute_locomotion_reward(
         "joint_force_peak": joint_force_peak,
         "touchdown_impact": touchdown_impact,
         "joint_pose": joint_pose,
+        "stand_body_still": stand_body_still,
+        "stand_self_contact": stand_self_contact,
         "stand_still": stand_still,
         "stand_foot_motion": stand_foot_motion,
         "stand_foot_heading": stand_foot_heading,
@@ -871,6 +889,8 @@ def validate_reward_config(config: RewardConfig) -> None:
     for name, value in {
         "tracking.torso_orientation_std": config.tracking.torso_orientation_std,
         "standing.position_scale": config.standing.position_scale,
+        "standing.body_linear_speed_scale": config.standing.body_linear_speed_scale,
+        "standing.body_angular_speed_scale": config.standing.body_angular_speed_scale,
         "gait.crossing_scale": config.gait.crossing_scale,
         "gait.stumble_load_body_weights": config.gait.stumble_load_body_weights,
         "gait.stumble_speed_scale": config.gait.stumble_speed_scale,

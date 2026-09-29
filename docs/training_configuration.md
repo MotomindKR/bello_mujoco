@@ -201,7 +201,7 @@ Native derived inertial constants are rebuilt per world before GPU rollout.
 Generic robot randomization does not alter these payload bodies.
 
 Prepare the bank with `uv run python -m bello_mujoco.evaluation.payload_standing`.
-This writes `outputs/payload-standing-15kg/standing.npz` and a JSON report.
+This writes `outputs/payload-standing-15kg-v2/standing.npz` and a JSON report.
 Symmetric arm excursions use four-second quintic transitions and endpoint holds.
 Collision and target-limit checks cover every 50 Hz frame; inverse dynamics with
 foot friction cones screens 5 Hz samples and the endpoint against peak torque.
@@ -214,7 +214,35 @@ load compensation. Periodic training videos use the nominal fixed 15 kg proxy;
 final evaluation must separately cover 0, 5, 10 and 15 kg and robot/sensor seeds.
 
 The proxy has no bar collision geometry or two-hand mechanical coupling. It is
-balance pretraining, with episode resets at the reviewed handover posture, not
+balance pretraining, with physical arm resets at the reviewed handover posture, not
 pickup/release or motion-endpoint training. Validate the resulting policy on the
 continuous rigid-bar cycle and fine-tune there if necessary. Preserve live
 outputs from both controllers during handoff; hardware remains separately gated.
+
+
+The corrected payload-standing profile distinguishes physical reset joint angles
+(`env_config.arm_reset_joint_positions`, named held joints in radians) from the
+position commands. Fixed nominal-15 kg gravity preload is included in the arm
+command defaults. This is the same command bank for all positive payloads; no
+exact mass input or online gravity compensation was added to the actor/runtime.
+All held joints must be listed exactly once; overrides require an EEF arm bank
+and are rejected for rigid-bar scenes. Native and GPU resets share this pose.
+
+`stand_body_still` rewards double-support standing with low linear and angular
+body velocity, and is zero during robot self-contact. Its exponential scales are
+`standing.body_linear_speed_scale` and `standing.body_angular_speed_scale`.
+`stand_self_contact` penalizes forceful robot/robot contact counts using the
+existing contact classifier. Both weights default to zero for walking recipes.
+The payload profile uses weights +2 and -4, tighter velocity/torso tracking and
+stronger torso angular-velocity cost. Contact is penalized; no grip-error
+termination has been added. Push curriculum now ramps over 500,000 policy steps.
+
+Reference preparation now integrates the actual arm PD response at 0/5/10/15 kg,
+with pitch and actuator-strength variations, before inverse-dynamics screening.
+A fixed root/leg rig isolates arm response; it is only a screening fixture, never
+the training simulator. The screen rejects any forceful self-contact during
+startup or the trajectory, joint-limit violations, arm saturation, and nominal
+whole-body inverse-dynamics demand above 98% of peak. The preparation output is
+`outputs/payload-standing-15kg-v2`. Full floating-body policy evaluation is still
+required. Periodic fixed-camera quiet and four-direction push videos now record
+settling, drift, self-contact and torque diagnostics in JSONL files.

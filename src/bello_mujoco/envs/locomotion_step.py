@@ -196,6 +196,7 @@ def step_outcome(
         foot_linear_velocity,
         foot_angular_speed,
         world_id=world_id,
+        self_collision=self_collision,
     )
     reward, reward_info = env.sanitize_nonfinite_reward(reward, reward_info, done_flags)
     episode_return = state.episode_return + reward
