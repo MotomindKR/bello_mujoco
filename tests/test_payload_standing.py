@@ -142,3 +142,26 @@ def test_proxy_arm_bank_native_reset_keeps_robot_root_intact(tmp_path):
     )
     assert np.isfinite(data.qpos).all()
     assert len(env.observed_indices) == 28
+
+
+def test_checkpoint_records_resolved_arm_bank_hash(tmp_path):
+    from bello_mujoco.training.locomotion import checkpoint_metadata
+
+    profile = locomotion_training_profile("bello_mini_payload_standing")
+    resolved = replace(
+        profile.env_config,
+        arm_pose_path=tmp_path / "standing.npz",
+        arm_pose_sha256="a" * 64,
+    )
+    env = SimpleNamespace(
+        config=resolved,
+        action_size=14,
+        observation_layout=(),
+        critic_observation_layout=(),
+        action_layout=(),
+    )
+    metadata = checkpoint_metadata(
+        profile, env, policy_obs_size=1020, critic_policy_obs_size=1020
+    )
+    assert metadata.env.arm_pose_path == resolved.arm_pose_path
+    assert metadata.env.arm_pose_sha256 == resolved.arm_pose_sha256

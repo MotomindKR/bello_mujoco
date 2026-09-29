@@ -294,7 +294,7 @@ def checkpoint_metadata(
         reward=run_config.reward_config,
         command=run_config.command_config,
         done=run_config.done_config,
-        env=run_config.env_config,
+        env=env.config,
         warp=run_config.warp,
         obs_size=policy_obs_size,
         critic_obs_size=critic_policy_obs_size,
