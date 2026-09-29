@@ -191,6 +191,7 @@ def test_sit_completion_requires_separate_support_confirmations(
     client.wait(lambda s: not s.neutral_required)
     client.press(dpad_right=True)
     client.wait(lambda s: s.selected_startup == "Back-down")
+    client.wait(lambda s: not s.fault and not s.neutral_required)
     client.press(2.1, back=True, start=True)
     client.wait(lambda s: s.phase == "awaiting lift")
     assert fake.state == hardware_proto.GROUP_STATE_RUNNING
