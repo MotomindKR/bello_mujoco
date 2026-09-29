@@ -632,7 +632,7 @@ def test_native_operator_lifecycle_and_failure_cleanup(
                     transcript.extend(os.read(master, 65536))
                 except OSError:
                     break
-        assert process.poll() is not None, transcript.decode(errors="replace")
+        # PTY EOF can arrive before waitpid observes process exit.
         code = process.wait(timeout=3)
         assert code != 0, transcript.decode(errors="replace")
         assert fake.calls[-1] == "release"

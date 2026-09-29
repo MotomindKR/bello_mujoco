@@ -390,9 +390,12 @@ Validation:
   boundaries. Synthetic Tracking lifecycle passed for lost, stale and malformed
   references, console lease expiry, reconnect neutrality, rebuffering/re-entry,
   return to Stand, and abort damping.
+- Across native SONIC/control/motion integration, 90 cases passed and one skipped
+  after correcting the new fixture and replacing a racy PTY-EOF/process-poll
+  assertion with `wait()`. The six initially failing cases passed on rerun.
 - Console unit tests and macOS SDL/WebGL smoke passed with four modes and stable
   controller geometry. Source format, protobuf consistency and lockfile checks
-  passed. The full default CPU suite passed.
+  passed. The full default CPU suite passed: 790 passed, five skipped.
 - Requested W&B run `7qvvdxi1`, display name
   `sonic-amass-upright-v1-kr-20260928-r5-sampler`, exported from update 6000,
   artifact `gyungmin/bello-mujoco/sonic-amass-upright-v1-kr-20260928-r5-sampler_20260928_132430_423700:v59`.
@@ -405,3 +408,7 @@ Validation:
 These checks do not establish live-headset retargeting quality or physical SONIC
 stability. No physical motor commands were sent. Checkpoints, observations,
 source snapshots and generated installers remain ignored local artifacts.
+Read-only preflight against the existing Lima stack loaded the locomotion,
+named-motion and real SONIC bundles together, but stopped at hardwared's existing
+`control lease lost; damping applied` fault. No trained-policy physics HIL run
+is claimed by this record.
