@@ -236,6 +236,19 @@ impl TargetLimits {
         Ok(result)
     }
 
+    /// Minimum number of control steps along a feasible straight-line segment.
+    /// One shared interpolation rate keeps joints synchronized without target lag.
+    pub fn transition_steps(&self, start: &[f64], end: &[f64]) -> Result<f64> {
+        self.validate(start)?;
+        self.validate(end)?;
+        Ok(start
+            .iter()
+            .zip(end)
+            .zip(&self.steps)
+            .map(|((a, b), step)| (b - a).abs() / step)
+            .fold(0., f64::max))
+    }
+
     pub fn constrain(&self, target: &[f64], previous: &[f64]) -> Result<LimitedTarget> {
         self.validate(previous)?;
         let mut result = self.project(target)?;

@@ -163,7 +163,7 @@ new owner must release all controls before operating.
 | State | Input | Result |
 | --- | --- | --- |
 | Disarmed | Release all sticks/buttons, then Back + Start for 2 seconds | Acquire control and ramp to Hold |
-| Hold, ramp complete | A for 1 second | Stand |
+| Crane Hold, ramp complete | A for 1 second | Stand |
 | Stand | D-pad left/right | Select Stand, Locomotion, Motion, or configured Tracking |
 | Stand, Motion selected | D-pad up/down | Select a named motion in the dropdown |
 | Motion dropdown open | Press A | Accept the highlighted motion and close the menu |
@@ -268,7 +268,9 @@ Artifacts go to ignored `console/out/make`. macOS packages are unsigned local
 commissioning builds. Release signing/notarization requires deployment credentials.
 CI builds all four OS/architecture combinations on native runners. Pushing a
 `console-v<version>` tag triggers the build; its version must match
-`console/package.json`. Installers are downloadable Actions artifacts. See the
+`console/package.json`. After all four packaged smoke tests pass, CI publishes
+the installers and `SHA256SUMS` to a GitHub Release using
+`console/RELEASE_NOTES.md`. Installers also remain downloadable Actions artifacts. See the
 [console README](../console/README.md) for tag commands and required deploy keys.
 `npm test` launches Electron against loopback mock services, checks direct
 read-only hardware calls, stream independence, native SDL loading, GLB loading,
@@ -394,3 +396,51 @@ Small arrow hints light up with their corresponding D-pad presses. Entry,
 confirm, and shoulder-abort prompts fill using runner-reported hold progress.
 Releasing either shoulder or losing samples resets an unfinished abort timer.
 The on-screen abort button keeps its separate one-second pointer/keyboard hold.
+
+## Assisted front-down startup
+
+The runner supports two startup choices, selected with D-pad left/right or the
+console's **Startup** buttons while Disarmed. **Crane** remains the default:
+Back+Start for two seconds ramps to nominal Hold, then A for one second enters
+Stand.
+
+Enable **Front-down** by setting `control.lying_start` in the hardware YAML. Its
+angles are logical joint radians, resolved through the bundle's motor mapping,
+including differential ankles. This example is a commissioning preset, not a
+validated physical lift pose:
+
+```yaml
+control:
+  lying_start:
+    hip_pitch_radians: -1.0
+    knee_radians: 2.0
+    straighten_speed_rps: 0.1
+    ankle_engage_seconds: 2.0
+```
+
+Merge this into the full configuration. `null` leaves only Crane available.
+Both hips must be more flexed and both knees more bent than the policy's nominal
+pose. Configuration is rejected before lease acquisition if required Mini joints
+are missing, mappings are invalid, or the pose exceeds policy/hardware limits.
+The maximum configured straightening speed is 0.5 rad/s; ankle engagement takes
+1 to 60 seconds.
+
+| Phase | Operator action | Runner behavior |
+| --- | --- | --- |
+| Disarmed | Select Front-down; hold Back+Start for 2 s | Acquire control; ramp to bent hips/knees over `ramp_seconds`. |
+| Lift | Lift and balance the supported robot upright | Hold bent legs. All ankle actuators have zero position gain, damping gain and feedforward torque. |
+| Confirm balance | Release sticks; hold A for 1 s | Accept only while torso tilt is within the normal hardware limit. IMU tilt does not measure foot contact or balance; the operator confirms support. |
+| Straighten | Push left stick up; release to pause | Move toward nominal hips/knees at up to the configured joint speed. Stick deflection scales speed; tighter motor step limits reduce it further. Other axes and downward input do not move the pose. Ankles remain free. |
+| Upright | Release sticks; hold A for 1 s | Gradually restore ankle gains and targets from measured ankle positions, then enter the standing policy. |
+
+The initial lying ramp and supported lift defer only the absolute upright-tilt
+check. The normal tilt limit resumes after balance confirmation. Motor/IMU
+freshness, velocity/acceleration limits, command bounds, lease checks and damping
+abort remain active throughout. A tilted balance confirmation keeps the robot in
+bent Hold. A held A cannot skip from balance confirmation into Stand.
+
+Operator loss freezes startup progress and retains the current target/gains.
+Reconnect requires neutral input. No display connection drives this sequence.
+L1+R1 for one second, or the console's hold-to-abort button, damps the robot in
+any startup phase. These are assisted setup positions; the runner does not
+perform an autonomous get-up from the floor.

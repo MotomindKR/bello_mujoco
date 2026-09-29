@@ -22,6 +22,7 @@ pub mod operator;
 pub mod power;
 pub mod reference;
 pub mod sonic;
+pub mod startup;
 pub mod target_limits;
 pub mod torso;
 pub mod tracking;

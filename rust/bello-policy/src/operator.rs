@@ -35,6 +35,7 @@ pub enum RequestMode {
 }
 
 pub struct Snapshot {
+    pub lying_start: bool,
     pub axes: [f32; 3],
     pub lost: bool,
     pub request: Option<RequestMode>,
@@ -84,6 +85,8 @@ impl State {
             status: OperatorStatus {
                 mode: Mode::Disarmed as i32,
                 selected: "Stand".into(),
+                startups: vec!["Crane".into()],
+                selected_startup: "Crane".into(),
                 active_motion: String::new(),
                 phase: "disarmed".into(),
                 progress: 0.,
@@ -214,6 +217,17 @@ impl State {
             self.status.confirm_progress = 0.;
             self.confirm_consumed = sample.a;
             self.pending = None;
+            if !self.aborted
+                && self.status.mode == Mode::Disarmed as i32
+                && self.status.phase == "disarmed"
+                && let Some(proto::selection::Choice::Startup(name)) = &selection.choice
+                && self.status.startups.contains(name)
+            {
+                self.status.selected_startup.clone_from(name);
+                self.hold_since = None;
+                self.hold_consumed = sample.back || sample.start;
+                self.status.hold_progress = 0.;
+            }
             if !self.aborted && self.status.mode == Mode::Stand as i32 {
                 match &selection.choice {
                     Some(proto::selection::Choice::Mode(name))
@@ -278,12 +292,35 @@ impl State {
             if self.status.phase != "disarmed" {
                 return Ok(());
             }
+            let navigation = if sample.dpad_right && !sample.dpad_left && !self.previous_right {
+                1
+            } else if sample.dpad_left && !sample.dpad_right && !self.previous_left {
+                -1
+            } else {
+                0
+            };
+            self.previous_left = sample.dpad_left;
+            self.previous_right = sample.dpad_right;
+            if navigation != 0 {
+                cycle_selection(
+                    &self.status.startups,
+                    &mut self.status.selected_startup,
+                    navigation,
+                );
+                self.hold_since = None;
+                self.status.hold_progress = 0.;
+                self.hold_consumed = sample.back || sample.start;
+            }
             if !(sample.back && sample.start) {
                 self.hold_consumed = false;
             }
             self.hold_since = if sample.back
                 && sample.start
                 && !self.hold_consumed
+                && !sample.dpad_left
+                && !sample.dpad_right
+                && !sample.dpad_up
+                && !sample.dpad_down
                 && axes.iter().all(|v| v.abs() <= NEUTRAL)
             {
                 Some(self.hold_since.unwrap_or(now))
@@ -347,7 +384,9 @@ impl State {
             Mode::try_from(self.status.mode),
             Ok(Mode::Stand | Mode::Locomotion | Mode::Tracking)
         ) || (self.status.mode == Mode::Hold as i32
-            && self.status.phase == "holding");
+            && (self.status.phase == "holding"
+                || (self.status.startup_ready
+                    && matches!(self.status.phase.as_str(), "awaiting lift" | "upright"))));
         if !sample.a {
             self.confirm_consumed = false;
         }
@@ -487,6 +526,7 @@ impl Source {
             state.pending.take()
         };
         Snapshot {
+            lying_start: state.status.selected_startup == "Front-down",
             axes: if lost { [0.; 3] } else { state.axes },
             lost,
             request,
@@ -495,13 +535,16 @@ impl Source {
 
     pub fn set_mode(&self, mode: Mode, phase: &str, active_motion: &str, progress: f64) {
         let mut state = self.state.lock().unwrap();
-        if state.status.mode != mode as i32 {
+        if state.status.mode != mode as i32 || state.status.phase != phase {
             state.hold_since = None;
             state.confirm_since = None;
             state.status.hold_progress = 0.;
             state.status.confirm_progress = 0.;
             state.confirm_consumed = true;
             state.pending = None;
+        }
+        if mode != Mode::Hold {
+            state.status.startup_ready = false;
         }
         if mode != Mode::Locomotion {
             state.status.velocity_command = None;
@@ -513,6 +556,23 @@ impl Source {
         state.status.phase = phase.into();
         state.status.active_motion = active_motion.into();
         state.status.progress = progress.clamp(0., 1.);
+    }
+
+    pub fn set_startups(&self, lying: bool) {
+        let mut state = self.state.lock().unwrap();
+        state.status.startups = vec!["Crane".into()];
+        if lying {
+            state.status.startups.push("Front-down".into());
+        }
+    }
+
+    pub fn set_startup_ready(&self, ready: bool) {
+        let mut state = self.state.lock().unwrap();
+        state.status.startup_ready = ready;
+        if !ready {
+            state.confirm_since = None;
+            state.status.confirm_progress = 0.;
+        }
     }
 
     pub fn set_velocity_command(&self, [forward, right, yaw]: [f32; 3]) {
@@ -555,6 +615,7 @@ impl Source {
         state.confirm_since = None;
         state.status.hold_progress = 0.;
         state.status.confirm_progress = 0.;
+        state.status.startup_ready = false;
         state.status.mode = Mode::Fault as i32;
         state.status.phase = "fault".into();
         state.status.fault = message.into();
@@ -580,6 +641,7 @@ impl Source {
         state.disconnect();
         state.aborted = false;
         state.clear_requested = false;
+        state.status.startup_ready = false;
         state.status.mode = Mode::Disarmed as i32;
         state.status.phase = "disarmed".into();
         state.status.selected = "Stand".into();
@@ -723,6 +785,88 @@ mod tests {
         controller.send(&mut state, ControllerSample::default(), 20);
         (state, controller)
     }
+    #[test]
+    fn startup_selection_requires_a_new_chord_and_balance_requires_readiness() {
+        let (mut state, mut controller) = fixture();
+        state.status.startups.push("Front-down".into());
+        controller.send(
+            &mut state,
+            ControllerSample {
+                back: true,
+                start: true,
+                ..Default::default()
+            },
+            1000,
+        );
+        controller.send(
+            &mut state,
+            ControllerSample {
+                back: true,
+                start: true,
+                dpad_right: true,
+                ..Default::default()
+            },
+            1200,
+        );
+        assert_eq!(state.status.selected_startup, "Front-down");
+        assert!(state.pending.is_none());
+        controller.send(&mut state, ControllerSample::default(), 20);
+        controller.send(
+            &mut state,
+            ControllerSample {
+                back: true,
+                start: true,
+                ..Default::default()
+            },
+            2040,
+        );
+        assert_eq!(state.pending.take(), Some(RequestMode::Hold));
+        state.status.mode = Mode::Hold as i32;
+        state.status.phase = "awaiting lift".into();
+        controller.send(
+            &mut state,
+            ControllerSample {
+                a: true,
+                ..Default::default()
+            },
+            1200,
+        );
+        assert!(state.pending.is_none());
+        state.status.startup_ready = true;
+        controller.send(&mut state, ControllerSample::default(), 20);
+        controller.send(
+            &mut state,
+            ControllerSample {
+                a: true,
+                ..Default::default()
+            },
+            1020,
+        );
+        assert_eq!(state.pending.take(), Some(RequestMode::Stand));
+        state.status.phase = "straightening".into();
+        controller.send(
+            &mut state,
+            ControllerSample {
+                a: true,
+                ..Default::default()
+            },
+            1200,
+        );
+        assert!(state.pending.is_none());
+        // Configuration selection cannot change during Hold.
+        controller.send(
+            &mut state,
+            ControllerSample {
+                selection: Some(proto::Selection {
+                    choice: Some(proto::selection::Choice::Startup("Crane".into())),
+                }),
+                ..Default::default()
+            },
+            20,
+        );
+        assert_eq!(state.status.selected_startup, "Front-down");
+    }
+
     #[test]
     fn tracking_needs_a_ready_window_and_a_full_confirm_hold() {
         let (mut state, mut controller) = fixture();

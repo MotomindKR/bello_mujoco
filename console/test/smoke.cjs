@@ -59,6 +59,8 @@ const runnerStatus = {
   selectedMotion: "Wave",
   phase: "standing",
   modes: ["Stand", "Locomotion", "Motion", "Tracking"],
+  startups: ["Crane", "Front-down"],
+  selectedStartup: "Crane",
   sonicReady: true,
   sonicBufferedMs: 1100,
   sonicDelayMs: 1050,
@@ -228,6 +230,12 @@ async function serve(service, implementation) {
       }
       call.on("data", (sample) => {
         samples.push(sample);
+        if (
+          sample.selection &&
+          runnerStatus.mode === "MODE_DISARMED" &&
+          runnerStatus.startups.includes(sample.selection.startup)
+        )
+          runnerStatus.selectedStartup = sample.selection.startup;
         if (sample.selection && runnerStatus.mode === "MODE_STAND") {
           if (runnerStatus.modes.includes(sample.selection.mode)) {
             runnerStatus.selected = sample.selection.mode;
@@ -378,6 +386,27 @@ async function serve(service, implementation) {
         console.error(await page.locator(".model").getAttribute("data-error"));
         throw error;
       });
+    {
+      const saved = structuredClone(runnerStatus);
+      Object.assign(runnerStatus, { mode: "MODE_DISARMED", phase: "disarmed" });
+      await page
+        .getByRole("button", { name: "Front-down", exact: true })
+        .click();
+      await page.waitForFunction(
+        () =>
+          document.querySelector('.mode-option[aria-pressed="true"]')
+            ?.textContent === "Front-down",
+      );
+      assert(
+        samples.some((sample) => sample.selection?.startup === "Front-down"),
+      );
+      assert.equal(runnerStatus.mode, "MODE_DISARMED");
+      await capture(page, {
+        path: path.join(root, "console/out/front-down-startup.png"),
+      });
+      Object.assign(runnerStatus, saved);
+      await page.getByRole("button", { name: "Motion", exact: true }).waitFor();
+    }
     const verifyStableOperatorCard = async () => {
       const original = structuredClone(runnerStatus);
       const bounds = () =>
@@ -395,6 +424,17 @@ async function serve(service, implementation) {
           { mode: "MODE_DISARMED", phase: "disarmed" },
           { mode: "MODE_HOLD", phase: "ramping", progress: 0.25 },
           { mode: "MODE_HOLD", phase: "holding", progress: 1 },
+          {
+            mode: "MODE_HOLD",
+            selectedStartup: "Front-down",
+            phase: "bending",
+            progress: 0.2,
+          },
+          { mode: "MODE_HOLD", phase: "awaiting lift", startupReady: false },
+          { mode: "MODE_HOLD", phase: "awaiting lift", startupReady: true },
+          { mode: "MODE_HOLD", phase: "straightening", progress: 0.5 },
+          { mode: "MODE_HOLD", phase: "upright", progress: 1 },
+          { mode: "MODE_HOLD", phase: "engaging ankles", progress: 0.5 },
           { mode: "MODE_LOCOMOTION", phase: "locomotion" },
           {
             mode: "MODE_TRACKING",
@@ -582,11 +622,18 @@ async function serve(service, implementation) {
       samples
         .filter((sample) => sample.selection)
         .map((sample) =>
-          sample.selection.mode != null
-            ? { mode: sample.selection.mode }
-            : { motion: sample.selection.motion },
+          sample.selection.startup != null
+            ? { startup: sample.selection.startup }
+            : sample.selection.mode != null
+              ? { mode: sample.selection.mode }
+              : { motion: sample.selection.motion },
         ),
-      [{ mode: "Locomotion" }, { mode: "Motion" }, { motion: "Bow" }],
+      [
+        { startup: "Front-down" },
+        { mode: "Locomotion" },
+        { mode: "Motion" },
+        { motion: "Bow" },
+      ],
     );
     await page.locator(".motion-picker-trigger").click();
     await page.locator(".motion-choices").waitFor();

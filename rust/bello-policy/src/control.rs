@@ -27,6 +27,7 @@ pub struct Config {
     pub acknowledgement_timeout_seconds: f64,
     pub rpc_timeout_seconds: f64,
     pub ramp_seconds: f64,
+    pub lying_start: Option<crate::startup::LyingConfig>,
     pub gain_scale: f64,
     pub joystick_command_scale: f32,
     #[serde(default)]
@@ -198,7 +199,9 @@ async fn recover_groups(hardware: &Hardware, config: &Config) -> Result<()> {
         result.with_context(|| format!("{} recovery failed", group.name()))?;
         cleanup?;
     }
-    hardware.feedback(proto::GroupState::Idle).await?;
+    hardware
+        .feedback_with_tilt(proto::GroupState::Idle, None)
+        .await?;
     Ok(())
 }
 
@@ -226,6 +229,13 @@ pub async fn run(
         .zip(&policy.policy.metadata.kd)
         .map(|(&kp, &kd)| [kp, kd])
         .collect();
+    let lying_pose = config
+        .lying_start
+        .as_ref()
+        .map(|settings| {
+            crate::startup::LyingPose::new(settings, &policy.policy, &hardware.target_limits)
+        })
+        .transpose()?;
     let rpc = Duration::from_secs_f64(config.rpc_timeout_seconds);
     let operator = operator::Source::bind(
         config.operator_listen,
@@ -235,6 +245,7 @@ pub async fn run(
             .cloned()
             .collect(),
     )?;
+    operator.set_startups(lying_pose.is_some());
     operator.set_tracking(config.following.enabled, false, false);
     if let Some(status) = motions.get("Tracking").and_then(|m| m.tracking_status()) {
         operator.set_sonic(status);
@@ -247,7 +258,13 @@ pub async fn run(
     let power = log
         .as_ref()
         .map(|_| crate::power::Source::start(&hardware.robot, rpc));
-    let preflight = hardware.ready_feedback().await?;
+    let preflight = hardware
+        .ready_feedback_with_tilt(if lying_pose.is_some() {
+            None
+        } else {
+            Some(hardware.config.max_tilt_radians)
+        })
+        .await?;
     let limits = hardware.target_limits.clone();
     let startup_margin = hardware.config.startup_feedback_margin_radians;
     limits.startup_target(&preflight.motor_position, startup_margin)?;
@@ -282,16 +299,23 @@ pub async fn run(
         let mut controls = Vec::new();
         let motion_interrupt = Arc::new(Mutex::new(None::<crate::motion::live::Interrupt>));
         let operation = async {
-            let (startup_target, measured_startup) = loop {
-                loop {
+            let (startup_target, measured_startup, lying) = loop {
+                let lying = loop {
                     let input = operator.snapshot();
                     ensure!(input.request != Some(RequestMode::Abort), "operator abort");
                     if !input.lost && input.request == Some(RequestMode::Hold) {
-                        break;
+                        break input.lying_start;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                let initial = hardware.ready_feedback().await?;
+                };
+                operator.set_mode(Mode::Disarmed, "acquiring", "", 0.);
+                let initial = hardware
+                    .ready_feedback_with_tilt(if lying {
+                        None
+                    } else {
+                        Some(hardware.config.max_tilt_radians)
+                    })
+                    .await?;
                 let startup_target =
                     limits.startup_target(&initial.motor_position, startup_margin)?;
                 for group in &hardware.groups {
@@ -323,13 +347,14 @@ pub async fn run(
                     operator.set_mode(Mode::Disarmed, "disarmed", "", 0.);
                     continue;
                 }
-                break (startup_target, initial.motor_position);
+                break (startup_target, initial.motor_position, lying);
             };
             if let Some(log) = &mut log {
                 serde_json::to_writer(
                     &mut *log,
                     &serde_json::json!({"event": "startup_target",
                 "motor_target": startup_target, "measured_motor_position": measured_startup,
+                "startup": if lying { "front_down" } else { "crane" },
                 "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}),
                 )?;
                 log.write_all(b"\n")?;
@@ -340,6 +365,27 @@ pub async fn run(
                 previous: startup_target.clone(),
                 limited_count: 0,
             };
+            let mut startup = crate::startup::Sequence::new(
+                if lying {
+                    Some(
+                        lying_pose
+                            .as_ref()
+                            .context("lying start is not configured")?,
+                    )
+                } else {
+                    None
+                },
+                startup_target.clone(),
+                policy
+                    .policy
+                    .metadata
+                    .default_position
+                    .iter()
+                    .map(|v| *v as f64)
+                    .collect(),
+                standing_gains.clone(),
+                config.ramp_seconds,
+            );
             let frames = controls
                 .iter()
                 .map(|control| {
@@ -347,7 +393,7 @@ pub async fn run(
                         control.group(),
                         &targets.coordinates,
                         &startup_target,
-                        &standing_gains,
+                        &startup.gains,
                         config.gain_scale,
                     )
                 })
@@ -362,69 +408,58 @@ pub async fn run(
             {
                 result.context("motor start timed out")??;
             }
-            operator.set_mode(Mode::Hold, "ramping", "", 0.);
             let period = Duration::from_secs_f64(policy.policy.metadata.control_timestep);
             let lag = Duration::from_secs_f64(config.max_loop_lag_seconds);
-            let target: Vec<f64> = policy
-                .policy
-                .metadata
-                .default_position
-                .iter()
-                .map(|v| *v as f64)
-                .collect();
-            let steps = (config.ramp_seconds / period.as_secs_f64()).ceil() as usize;
             let mut deadline = tokio::time::Instant::now();
-            let mut step = 0;
-            while step < steps {
-                let input = operator.snapshot();
-                ensure!(input.request != Some(RequestMode::Abort), "operator abort");
-                hardware.feedback(proto::GroupState::Running).await?;
-                let ramp = if input.lost {
-                    targets.previous.clone()
-                } else {
-                    step += 1;
-                    startup_target
-                        .iter()
-                        .zip(&target)
-                        .map(|(a, b)| a + step as f64 / steps as f64 * (b - a))
-                        .collect()
-                };
-                send(
-                    &mut controls,
-                    &ramp,
-                    &standing_gains,
-                    &config,
-                    &mut targets,
-                    &limits,
-                    &mut log,
-                )
-                .await?;
-                operator.set_mode(Mode::Hold, "ramping", "", step as f64 / steps as f64);
-                pace(&mut deadline, period, lag).await?;
-            }
-            operator.set_mode(Mode::Hold, "holding", "", 1.);
+            operator.set_mode(Mode::Hold, startup.phase().as_str(), "", startup.progress);
             loop {
                 let input = operator.snapshot();
                 ensure!(input.request != Some(RequestMode::Abort), "operator abort");
-                hardware.feedback(proto::GroupState::Running).await?;
-                let held = if input.lost {
+                let feedback = hardware
+                    .feedback_with_tilt(
+                        proto::GroupState::Running,
+                        startup
+                            .requires_upright()
+                            .then_some(hardware.config.max_tilt_radians),
+                    )
+                    .await?;
+                let gravity = crate::locomotion::projected_gravity(feedback.orientation_xyzw)?;
+                let upright =
+                    (-gravity[2]).clamp(-1., 1.).acos() <= hardware.config.max_tilt_radians;
+                let confirmed =
+                    input.request == Some(RequestMode::Stand) && startup.can_confirm(upright);
+                let measured = if confirmed && startup.phase() == crate::startup::Phase::Upright {
+                    limits.startup_target(&feedback.motor_position, startup_margin)?
+                } else {
+                    feedback.motor_position.clone()
+                };
+                if startup.tick(
+                    period.as_secs_f64(),
+                    !input.lost,
+                    confirmed,
+                    input.axes[0],
+                    &measured,
+                    &targets.previous,
+                ) {
+                    break;
+                }
+                let target = if input.lost {
                     targets.previous.clone()
                 } else {
-                    target.clone()
+                    startup.target.clone()
                 };
                 send(
                     &mut controls,
-                    &held,
-                    &standing_gains,
+                    &target,
+                    &startup.gains,
                     &config,
                     &mut targets,
                     &limits,
                     &mut log,
                 )
                 .await?;
-                if input.request == Some(RequestMode::Stand) {
-                    break;
-                }
+                operator.set_startup_ready(startup.can_confirm(upright));
+                operator.set_mode(Mode::Hold, startup.phase().as_str(), "", startup.progress);
                 pace(&mut deadline, period, lag).await?;
             }
             policy.reset();

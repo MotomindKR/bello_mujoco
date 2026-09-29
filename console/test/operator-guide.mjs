@@ -90,3 +90,16 @@ test("buffered Tracking offers entry only when the runner is ready", () => {
     /Stand/,
   );
 });
+
+test("assisted startup guidance follows balance and ankle phases", () => {
+  const hold = (phase, startupReady = false) =>
+    operatorGuide(state({ mode: "MODE_HOLD", phase, startupReady }));
+  assert.equal(hold("bending").keys, undefined);
+  assert.equal(hold("awaiting lift").keys, undefined);
+  assert.match(hold("awaiting lift").title, /Lift/);
+  assert.match(hold("awaiting lift", true).duration, /Balanced/);
+  assert.equal(hold("straightening").keys, undefined);
+  assert.match(hold("straightening").title, /Left stick/);
+  assert.match(hold("upright", true).duration, /Stand/);
+  assert.equal(hold("engaging ankles").keys, undefined);
+});

@@ -88,7 +88,11 @@ It performs no lease acquisition or motor writes.
 
 For isolated emulator validation, add `--arm`. The runner hosts the operator
 stream on `control.operator_listen` (port 50055). A neutral controller sample and
-a two-second Back+Start chord enter Hold; a one-second A press enters Stand.
+a two-second Back+Start chord enter Hold. The default Crane startup ramps to
+nominal Hold; a one-second A press enters Stand. Optional `control.lying_start`
+adds Front-down startup, with free ankles, balance confirmation and left-stick
+straightening. See [assisted startup](../../docs/policy_console.md#assisted-front-down-startup)
+for configuration and controller phases.
 From Stand, D-pad left/right selects Stand, Locomotion, or Motion. Within Motion,
 D-pad up/down selects a preloaded named motion; holding A for one second confirms.
 See the [console guide](../../docs/policy_console.md) for transitions, connection
@@ -167,7 +171,7 @@ A differently named pose frame is accepted only if the bundled model proves
 it is rigidly fixed to and coincident with the floating base, including rotation.
 Offset, rotated, or articulated frames are rejected rather than reinterpreted.
 
-Hold ramps to the standing bundle's nominal pose. Confirm Stand, select a named
+Crane Hold ramps to the standing bundle's nominal pose. Confirm Stand, select a named
 motion, press A to accept and close its menu, then release and hold A for one
 second to blend into it. Completion or the first
 Ctrl-C blends back to Stand; another Ctrl-C, SIGTERM or holding L1 + R1 for one second stops control.

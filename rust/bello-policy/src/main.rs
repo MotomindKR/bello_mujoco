@@ -156,7 +156,28 @@ async fn main() -> Result<()> {
             )
             .await;
         }
-        let sample = hardware.feedback(GroupState::Idle).await?;
+        let lying = control
+            .as_ref()
+            .and_then(|c| c.lying_start.as_ref())
+            .map(|settings| {
+                bello_policy::startup::LyingPose::new(
+                    settings,
+                    &runtime.policy,
+                    &hardware.target_limits,
+                )
+            })
+            .transpose()?
+            .is_some();
+        let sample = hardware
+            .feedback_with_tilt(
+                GroupState::Idle,
+                if lying {
+                    None
+                } else {
+                    Some(hardware.config.max_tilt_radians)
+                },
+            )
+            .await?;
         let startup_target = hardware.target_limits.startup_target(
             &sample.motor_position,
             hardware.config.startup_feedback_margin_radians,

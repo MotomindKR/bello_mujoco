@@ -22,10 +22,20 @@ export function OperatorCard({ state, children }) {
   const sample = state.controllerSample || {};
   const guide = operatorGuide(state);
   const live = state.services.runner.fresh;
-  const choosing = live && operator.mode === "MODE_STAND";
+  const startup =
+    operator.mode === "MODE_DISARMED" || operator.mode === "MODE_HOLD";
+  const choosing =
+    live &&
+    (operator.mode === "MODE_STAND" ||
+      (operator.mode === "MODE_DISARMED" && operator.phase === "disarmed"));
+  const choices = startup ? operator.startups || [] : operator.modes || [];
+  const selected = startup ? operator.selectedStartup : operator.selected;
   const progressing =
     operator.mode === "MODE_MOTION" ||
-    (operator.mode === "MODE_HOLD" && operator.phase === "ramping");
+    (operator.mode === "MODE_HOLD" &&
+      ["ramping", "bending", "straightening", "engaging ankles"].includes(
+        operator.phase,
+      ));
   const progress = Math.min(
     100,
     Math.max(0, Number(operator.progress || 0) * 100),
@@ -93,23 +103,23 @@ export function OperatorCard({ state, children }) {
           title={selectionError}
           role={selectionError ? "alert" : undefined}
         >
-          {selectionError || (choosing ? "Mode" : "Modes · Stand only")}
+          {selectionError ||
+            (startup ? "Startup" : choosing ? "Mode" : "Modes · Stand only")}
         </span>
       </div>
       <div className="mode-picker">
         <div className="mode-row">
           <DirectionHint direction="Left" sample={sample} />
           <div className={"mode-list" + (choosing ? "" : " unavailable")}>
-            {(operator.modes || []).map((name) => (
+            {choices.map((name) => (
               <button
                 type="button"
                 disabled={!choosing}
-                aria-pressed={operator.selected === name}
+                aria-pressed={selected === name}
                 title={name}
-                onClick={() => selectChoice("mode", name)}
+                onClick={() => selectChoice(startup ? "startup" : "mode", name)}
                 className={
-                  "mode-option" +
-                  (operator.selected === name ? " selected" : "")
+                  "mode-option" + (selected === name ? " selected" : "")
                 }
                 key={name}
               >
@@ -120,7 +130,16 @@ export function OperatorCard({ state, children }) {
           <DirectionHint direction="Right" sample={sample} />
         </div>
         <div className="mode-detail">
-          {operator.selected === "Tracking" && (
+          {startup && operator.selectedStartup === "Front-down" && (
+            <div className="tracking-toggle">
+              <span>
+                {operator.phase === "engaging ankles"
+                  ? "Restoring ankle control"
+                  : "Ankles free until Stand"}
+              </span>
+            </div>
+          )}
+          {!startup && operator.selected === "Tracking" && (
             <div
               className="tracking-toggle tracking-reference"
               role="status"
@@ -142,7 +161,7 @@ export function OperatorCard({ state, children }) {
               </span>
             </div>
           )}
-          {operator.selected === "Motion" && (
+          {!startup && operator.selected === "Motion" && (
             <MotionPicker
               operator={operator}
               sample={sample}
@@ -151,7 +170,7 @@ export function OperatorCard({ state, children }) {
               onToggle={(open) => selectChoice("motionMenuOpen", open)}
             />
           )}
-          {operator.selected === "Locomotion" && (
+          {!startup && operator.selected === "Locomotion" && (
             <button
               type="button"
               role="switch"
