@@ -31,5 +31,5 @@ control:
   gain_scale: 1.0
   joystick_command_scale: 1.0
   max_loop_lag_seconds: 0.1
-  # The launcher creates a unique working directory for each armed run.
+  # Both service and manual launchers create a unique working directory per run.
   policy_log_path: policy.jsonl

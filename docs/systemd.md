@@ -2,19 +2,21 @@
 
 Use the same operator account for installation and `systemctl --user` commands.
 These targets **start automatically at boot**, without login, using user
-lingering. They survive SSH logout. The policy runner and **Bello visualizer
-stay manual**. No PICO viewer is installed. Both targets can run on the Jetson;
+lingering. They survive SSH logout. The policy runner starts Disarmed and waits
+for the console's gamepad Hold chord. The **Bello visualizer stays manual**.
+No PICO viewer is installed. Both targets can run on the Jetson;
 a separate tracking PC remains an explicit deployment option.
 
 | Host | Target | Services |
 | --- | --- | --- |
 | Jetson (or a separate tracking PC) | `bello-tracking.target` | `xrobotoolkit`, `pico-smplx` |
-| `nvidia@192.168.0.229` | `bello-robot.target` | `bello-hardwared`, `bello-state-estimatord`, `bello-reference`, **`bello-hands`** |
+| `nvidia@192.168.0.229` | `bello-robot.target` | `bello-hardwared`, `bello-state-estimatord`, `bello-reference`, **`bello-hands`**, `bello-policy` |
 
 Starting the robot target starts **armed hand control**, independently of the
 body policy, including after reboot. Keep hands clear of people and objects
 before powering on or rebooting. Hardwared starts body
-groups IDLE; it does not launch or arm a policy. Stopping hands suspends CAN
+groups IDLE; the policy service acquires no motor lease until Back+Start is held
+for two seconds. Stopping hands suspends CAN
 writes; it does **not** open or release the fingers.
 
 ## Daily checks and manual start
@@ -42,13 +44,13 @@ systemctl status onboard-can.service --no-pager
 ip -details link show can0
 ip -details link show can1
 systemctl --user start bello-robot.target
-systemctl --user is-active bello-hardwared bello-state-estimatord bello-reference bello-hands
+systemctl --user is-active bello-hardwared bello-state-estimatord bello-reference bello-hands bello-policy
 systemctl --user --failed
 ```
 
-**All four robot services are required operationally.** An active target only
+**Check all five robot services.** An active target only
 means startup was requested, not that every daemon is healthy or tracking is
-valid. Check each service and fresh telemetry before running a policy. The
+valid. Check each service and fresh telemetry before entering Hold. The
 root-owned `onboard-can.service` calls the pinned bello-stack
 `scripts/setup-can.sh` at boot. Hardwared and hands use its read-only `--check`
 before starting; user services never reconfigure buses or require root.
@@ -67,7 +69,7 @@ unauthenticated services on the trusted robot LAN. Body GMR and hand control do 
 licensed SMPL-X model or bridge reference-pose calibration. `bello-reference` is the
 GMR server, not an additional process to launch.
 
-## Manual console and policy
+## Console and policy service
 
 On the Ubuntu tracking PC, open the packaged Bello Mini console with a gamepad.
 Configure its hardware, estimator and runner endpoints to the Jetson ports
@@ -77,39 +79,64 @@ The optional `bello-run-visualizer` launcher remains a Kiss3d diagnostic tool.
 Keep **Commanding OFF** while the policy owns motors. Its configuration is
 `~/.config/bello/ubuntu-visualizer.yaml`; it hosts no gamepad service.
 
-On the Jetson, run read-only preflight:
+The installer generates `bello-policy.service` with the selected locomotion
+bundle, its exact clean source checkout, and the runner hardware/control YAML.
+It runs the current `bello-policy` binary with `--arm`, which enables the operator
+server on port 50055; it does not acquire control until the gamepad Hold chord.
+Named motions, buffered SONIC Tracking, upper-body following and assisted
+Front-down startup remain configured in that YAML. Use absolute bundle/source
+paths in its `motions` and `tracking` entries.
+
+Support the robot before entering Hold. Use Back+Start for two seconds to enter
+Hold, then A for one second to enter Stand. Select modes with D-pad left/right
+and confirm with A. Hold L1 + R1 for one second to abort and damp. Reconnection
+requires neutral controller input. See [console controls](policy_console.md).
+
+The service starts after the four supporting daemons and stops before them.
+Ordering does not imply telemetry readiness: the runner validates feedback at
+startup. Startup/process failures retry with systemd's rate limit; each new
+process starts Disarmed and requires a new neutral input and Hold chord.
+Runtime faults remain visible in the console for explicit fault clearing.
+Reference or console connection loss does not trigger a systemd restart.
+
+Each service invocation creates a unique run directory inside systemd's
+`LogsDirectory=bello-policy`. Set `control.policy_log_path: policy.jsonl` for
+separate, non-overwriting logs. Other paths in the runner YAML must be absolute.
+The journal prints the run directory. No builds, policy downloads or dependency
+installs happen on service start. Policy/source compatibility is still validated
+by the runner; the installer never rewrites checkpoint metadata.
+
+For status and an explicit stop:
 
 ```bash
-~/.local/bin/bello-run-policy
+systemctl --user status bello-policy --no-pager
+systemctl --user stop bello-policy
 ```
 
-For approved physical operation, support the robot and run:
+The existing `~/.local/bin/bello-run-policy` manual launcher remains available
+for the separately installed `deploy/jetson-policy.yaml` profile and its pinned
+061440 / 2973427 bundle. It is not used by the service installer. Stop the policy
+service before using this manual alternative; do not run two policy processes:
 
 ```bash
-~/.local/bin/bello-run-policy --arm
+~/.local/bin/bello-run-policy         # Read-only preflight
+~/.local/bin/bello-run-policy --arm   # Manual operator server
 ```
 
-Use Back+Start for two seconds to enter Hold, then A for one second to enter
-Stand. Select modes with D-pad left/right and confirm with A. L1 + R1 aborts; cleanup damps and
-releases leases. The launcher checks all four robot daemons and
-refuses a second policy process. It uses `~/.config/bello/jetson-policy.yaml`
-with GMR enabled locally. Reconnection requires neutral controller input.
-
-Each armed run gets a unique `~/bello_mujoco/outputs/policy_logs/` directory;
-the unchanged YAML's relative `policy_log_path` resolves there. Logs are never
-overwritten. The launcher selects the explicit deployed 061440 / 2973427 bundle,
-not an automatically discovered newest file. Policy bundles still require their
-exact clean source revision. Launchers do not change commit metadata or start
-daemons. See [hardware deployment](hardware.md) for commissioning constraints.
+Manual runs still log under `~/bello_mujoco/outputs/policy_logs/` and check the
+four supporting daemons. See [hardware deployment](hardware.md) for
+commissioning constraints.
 
 ## Stop, logs, and recovery
 
-First stop the manual policy and wait for damping and lease cleanup. Verify it has released body control. Then, with hands clear:
+First stop the policy service (or interrupt a manual runner) and wait for damping
+and lease cleanup. Verify it has released body control. Then, with hands clear:
 
 ```bash
 # Jetson
+systemctl --user stop bello-policy
 systemctl --user stop bello-robot.target \
-  bello-hardwared bello-state-estimatord bello-reference bello-hands
+  bello-policy bello-hardwared bello-state-estimatord bello-reference bello-hands
 # Tracking host
 systemctl --user stop bello-tracking.target xrobotoolkit pico-smplx
 ```
@@ -123,7 +150,8 @@ systemctl --user status bello-hands --no-pager
 journalctl _UID="$(id -u)" _SYSTEMD_USER_UNIT=bello-hands.service -n 80 --no-pager
 journalctl _UID="$(id -u)" _SYSTEMD_USER_UNIT=bello-hardwared.service \
   _SYSTEMD_USER_UNIT=bello-state-estimatord.service \
-  _SYSTEMD_USER_UNIT=bello-reference.service -f
+  _SYSTEMD_USER_UNIT=bello-reference.service \
+  _SYSTEMD_USER_UNIT=bello-policy.service -f
 # Tracking host:
 journalctl --user -u xrobotoolkit -u pico-smplx -f
 ```
@@ -157,6 +185,8 @@ are `scripts/run_jetson_policy.sh` and `scripts/run_ubuntu_visualizer.sh`; the
 machine profiles live in `deploy/jetson-policy.yaml` and
 `deploy/ubuntu-visualizer.yaml`. Install the matching script and YAML on each
 host; these are deployment files, not changes to the pinned policy checkout.
+The policy service instead uses `scripts/run_policy_service.sh` from the
+installer's `--checkout`; no manual launcher installation is needed for it.
 
 ### Jetson CAN setup
 
@@ -263,8 +293,12 @@ cd /home/nvidia/bello_mujoco
 nix develop .#rust-runtime --command cargo build --locked --release \
   --manifest-path deps/bello-stack/Cargo.toml \
   -p bello-hardwared -p bello-state-estimatord
+nix develop .#rust-runtime --command cargo build --locked --release -p bello-policy
 python3 scripts/install_systemd.py robot \
   --checkout /home/nvidia/bello_mujoco \
+  --policy /home/nvidia/bello_mujoco/outputs/locomotion.zip \
+  --policy-source /home/nvidia/policy-source \
+  --policy-config /home/nvidia/.config/bello/jetson-policy.yaml \
   --tracking-endpoint 127.0.0.1:50052 \
   --human-height 1.73 --confirm-hand-calibration
 sudo loginctl enable-linger "$USER"
@@ -273,6 +307,10 @@ sudo loginctl enable-linger "$USER"
 Set height to the operator's actual height. The calibration flag asserts that
 O6 endpoints in `configs/commands/hands.yaml` were physically checked; this
 deployment uses O6 on `can1`. Do not reuse it blindly for another hand model.
+Supply the actual deployed bundle, its matching clean source checkout, and the
+reviewed runner YAML; all three policy options are required. `--checkout` is the
+current runtime checkout and can differ from the older `--policy-source`.
+The `--runtime-bin` directory must contain all three Rust binaries.
 Pass `--hardware-config` / `--estimator-config` for machine-local YAMLs,
 `--runtime-bin` for a different binary directory, or `--dry-run` to inspect
 without installing or invoking sudo; the preview includes the CAN system files.

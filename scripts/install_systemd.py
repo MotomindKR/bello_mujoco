@@ -21,6 +21,7 @@ ROBOT_SERVICES = (
     "bello-state-estimatord",
     "bello-reference",
     "bello-hands",
+    "bello-policy",
 )
 
 XROBOT_RELEASE_URL = (
@@ -346,6 +347,18 @@ def main() -> None:
     robot.add_argument("--human-height", type=float, required=True)
     robot.add_argument("--hardware-config", type=Path)
     robot.add_argument("--estimator-config", type=Path)
+    robot.add_argument(
+        "--policy", type=Path, required=True, help="locomotion bundle ZIP"
+    )
+    robot.add_argument(
+        "--policy-source",
+        type=Path,
+        required=True,
+        help="exact clean bundle source checkout",
+    )
+    robot.add_argument(
+        "--policy-config", type=Path, required=True, help="runner hardware/control YAML"
+    )
     robot.add_argument("--confirm-hand-calibration", action="store_true", required=True)
     tracking_parser.add_argument(
         "--uv", type=Path, help="uv executable for setup (default: PATH)"
@@ -462,6 +475,34 @@ def main() -> None:
             ],
             restart=False,
             preflight=can_check,
+        )
+        policy_source = args.policy_source.resolve(strict=True)
+        if not policy_source.is_dir():
+            raise ValueError(f"not a source directory: {policy_source}")
+        files["bello-policy.service"] = (
+            service(
+                target,
+                "Bello policy operator service (gamepad Hold chord required)",
+                checkout,
+                [
+                    nix,
+                    "develop",
+                    ".#rust-runtime",
+                    "--command",
+                    "bash",
+                    require_file(checkout / "scripts/run_policy_service.sh"),
+                    require_file(args.runtime_bin / "bello-policy"),
+                    require_file(args.policy),
+                    policy_source,
+                    require_file(args.policy_config),
+                ],
+                after=tuple(
+                    f"{name}.service"
+                    for name in ROBOT_SERVICES
+                    if name != "bello-policy"
+                ),
+            )
+            + "LogsDirectory=bello-policy\nLogsDirectoryMode=0700\n"
         )
         system_files = robot_system_files(checkout, os.getuid())
 

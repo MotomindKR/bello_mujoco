@@ -3,7 +3,9 @@
 import importlib.util
 import hashlib
 import io
+import os
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -44,6 +46,10 @@ def robot_checkout(monkeypatch, tmp_path):
         ".venv/bin/bello-run-hands",
         "runtime/bello-hardwared",
         "runtime/bello-state-estimatord",
+        "runtime/bello-policy",
+        "scripts/run_policy_service.sh",
+        "policy.zip",
+        "policy.yaml",
         "nix",
     ):
         path = checkout / relative
@@ -65,6 +71,12 @@ def robot_checkout(monkeypatch, tmp_path):
             "--human-height",
             "1.7",
             "--confirm-hand-calibration",
+            "--policy",
+            str(checkout / "policy.zip"),
+            "--policy-source",
+            str(checkout),
+            "--policy-config",
+            str(checkout / "policy.yaml"),
         ],
     )
     return checkout
@@ -202,6 +214,98 @@ def test_robot_dry_run_previews_system_files_without_mutations(
     assert "/etc/systemd/system/user@1234.service.d/50-bello-can.conf" in preview
     assert not (tmp_path / ".config").exists()
     assert calls == []
+
+
+def test_policy_unit_uses_explicit_bundle_and_orders_cleanup(
+    installer, robot_checkout, tmp_path
+):
+    module, _ = installer
+    module.main()
+    units = tmp_path / ".config/systemd/user"
+    target = (units / "bello-robot.target").read_text()
+    policy = (units / "bello-policy.service").read_text()
+    assert "bello-policy.service" in target
+    assert "PartOf=bello-robot.target\n" in policy
+    for prefix in ("After=", "Wants="):
+        assert (
+            prefix
+            + " ".join(
+                f"{name}.service"
+                for name in module.ROBOT_SERVICES
+                if name != "bello-policy"
+            )
+            + "\n"
+            in policy
+        )
+    assert "Requires=" not in policy
+    for relative in ("runtime/bello-policy", "policy.zip", "policy.yaml"):
+        assert module.quote(robot_checkout / relative, executable=True) in policy
+    assert module.quote(robot_checkout, executable=True) in policy
+    assert "run_policy_service.sh" in policy
+    assert "Restart=on-failure\n" in policy
+    assert "KillSignal=SIGINT\n" in policy
+    assert "KillMode=control-group\n" in policy
+    assert "LogsDirectory=bello-policy\nLogsDirectoryMode=0700\n" in policy
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "runtime/bello-policy",
+        "policy.zip",
+        "policy.yaml",
+        "scripts/run_policy_service.sh",
+    ],
+)
+def test_policy_missing_prerequisite_never_installs(
+    installer, robot_checkout, tmp_path, relative
+):
+    module, calls = installer
+    (robot_checkout / relative).unlink()
+    with pytest.raises(ValueError, match="not a file"):
+        module.main()
+    assert calls == []
+    assert not (tmp_path / ".config").exists()
+
+
+def test_policy_launcher_preserves_arguments_and_never_overwrites_logs(tmp_path):
+    launcher = Path(__file__).parents[1] / "scripts/run_policy_service.sh"
+    binary = tmp_path / "fake runner"
+    binary.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$@" > arguments\n'
+        "test ! -e policy.jsonl || exit 1\n"
+        'printf "sample\\n" > policy.jsonl\n'
+        "exit 23\n"
+    )
+    binary.chmod(0o755)
+    logs = tmp_path / "service logs"
+    logs.mkdir()
+    paths = [
+        str(tmp_path / name)
+        for name in ("bundle % $.zip", "source tree", "hardware.yaml")
+    ]
+    for _ in range(2):
+        result = subprocess.run(
+            ["bash", str(launcher), str(binary), *paths],
+            env={**os.environ, "LOGS_DIRECTORY": str(logs)},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 23, result.stderr
+    runs = list(logs.iterdir())
+    assert len(runs) == 2
+    for run in runs:
+        assert (run / "arguments").read_text().splitlines() == [
+            "--policy",
+            paths[0],
+            "--source",
+            paths[1],
+            "--hardware-config",
+            paths[2],
+            "--arm",
+        ]
+        assert (run / "policy.jsonl").read_text() == "sample\n"
 
 
 def test_robot_missing_prerequisite_does_not_mutate(
