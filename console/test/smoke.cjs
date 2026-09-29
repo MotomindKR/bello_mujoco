@@ -8,6 +8,19 @@ const { _electron: electron } = require("playwright");
 const root = path.resolve(__dirname, "../..");
 const capture = (page, options) =>
   page.screenshot({ timeout: process.env.CI ? 120000 : 30000, ...options });
+async function closeApp(app) {
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    app.process().kill("SIGKILL");
+  }, 10000);
+  try {
+    await app.close();
+    assert(!timedOut, "Electron did not exit within 10 seconds");
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const load = (source) =>
   grpc.loadPackageDefinition(
     loader.loadSync(path.join(root, source), {
@@ -1362,7 +1375,7 @@ async function serve(service, implementation) {
       ),
       false,
     );
-    await app.close();
+    await closeApp(app);
     app = await electron.launch(launchOptions);
     const restarted = await app.firstWindow();
     restarted.setDefaultTimeout(30000);
@@ -1441,9 +1454,15 @@ async function serve(service, implementation) {
         screenshot: "console/out/console-smoke.png",
       }),
     );
+  } catch (error) {
+    console.error(error);
+    throw error;
   } finally {
-    if (app) await app.close();
-    for (const server of servers) server.forceShutdown();
+    try {
+      if (app) await closeApp(app);
+    } finally {
+      for (const server of servers) server.forceShutdown();
+    }
   }
 })().catch((error) => {
   console.error(error);
