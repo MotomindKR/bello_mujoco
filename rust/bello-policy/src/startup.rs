@@ -1,4 +1,4 @@
-//! Assisted, operator-paced startup. No policy inference runs during this sequence.
+//! Assisted, operator-paced raising/lowering. No policy inference runs in a sequence.
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 
@@ -182,6 +182,13 @@ pub enum Phase {
     Upright,
     EngagingAnkles,
     Holding,
+    Settling,
+    ReleasingAnkles,
+    Crouching,
+    Bent,
+    Lowering,
+    Unloading,
+    Idle,
 }
 
 impl Phase {
@@ -194,6 +201,13 @@ impl Phase {
             Self::Upright => "upright",
             Self::EngagingAnkles => "engaging ankles",
             Self::Holding => "holding",
+            Self::Settling => "settling to hold",
+            Self::ReleasingAnkles => "releasing ankles",
+            Self::Crouching => "crouching",
+            Self::Bent => "bent",
+            Self::Lowering => "lowering onto back",
+            Self::Unloading => "unloading",
+            Self::Idle => "idle",
         }
     }
 }
@@ -208,6 +222,7 @@ pub struct Sequence<'a> {
     phase: Phase,
     pub progress: f64,
     ramp_seconds: f64,
+    descending: bool,
 }
 
 impl<'a> Sequence<'a> {
@@ -232,9 +247,24 @@ impl<'a> Sequence<'a> {
             },
             progress: 0.,
             ramp_seconds,
+            descending: false,
         };
         result.free_ankles();
         result
+    }
+
+    pub fn sit(
+        lying: &'a LyingPose,
+        initial: Vec<f64>,
+        nominal: Vec<f64>,
+        gains: Vec<[f32; 2]>,
+        ramp_seconds: f64,
+    ) -> Self {
+        let mut sequence = Self::new(None, initial, nominal, gains, ramp_seconds);
+        sequence.lying = Some(lying);
+        sequence.descending = true;
+        sequence.phase = Phase::Settling;
+        sequence
     }
 
     pub fn phase(&self) -> Phase {
@@ -250,15 +280,19 @@ impl<'a> Sequence<'a> {
     }
 
     pub fn requires_upright(&self) -> bool {
-        !matches!(self.phase, Phase::Bending | Phase::AwaitingLift)
+        !matches!(
+            self.phase,
+            Phase::Bending | Phase::AwaitingLift | Phase::Lowering | Phase::Unloading | Phase::Idle
+        )
     }
 
     pub fn can_confirm(&self, upright: bool) -> bool {
-        upright
-            && matches!(
-                self.phase,
-                Phase::AwaitingLift | Phase::Upright | Phase::Holding
-            )
+        self.phase == Phase::Lowering
+            || (upright
+                && matches!(
+                    self.phase,
+                    Phase::AwaitingLift | Phase::Upright | Phase::Holding | Phase::Bent
+                ))
     }
 
     /// Returns true only after the final confirmation and ankle engagement.
@@ -279,7 +313,74 @@ impl<'a> Sequence<'a> {
             .iter()
             .zip(applied)
             .all(|(a, b)| (a - b).abs() < 1e-7);
+        if self.descending
+            && matches!(self.phase, Phase::Upright | Phase::Crouching | Phase::Bent)
+            && !(confirm && matches!(self.phase, Phase::Upright | Phase::Bent))
+        {
+            let pose = self.lying.unwrap();
+            self.progress = (self.progress
+                - f64::from(forward.clamp(-1., 1.)) * dt / pose.duration)
+                .clamp(0., 1.);
+            self.target = blend(&self.nominal, &pose.bent, self.progress);
+            let reached = self
+                .target
+                .iter()
+                .zip(applied)
+                .all(|(a, b)| (a - b).abs() < 1e-7);
+            self.phase = if self.progress == 0. && reached {
+                Phase::Upright
+            } else if self.progress == 1. && reached {
+                Phase::Bent
+            } else {
+                Phase::Crouching
+            };
+            return false;
+        }
         match self.phase {
+            Phase::Settling => {
+                if self.progress == 1. && reached {
+                    self.phase = Phase::ReleasingAnkles;
+                    self.progress = 0.;
+                } else {
+                    self.progress = (self.progress + dt / self.ramp_seconds).min(1.);
+                    self.target = blend(&self.initial, &self.nominal, self.progress);
+                }
+            }
+            Phase::ReleasingAnkles => {
+                if self.progress == 1. {
+                    self.phase = Phase::Upright;
+                    self.progress = 0.;
+                } else {
+                    self.progress =
+                        (self.progress + dt / self.lying.unwrap().engage_seconds).min(1.);
+                    for &i in &self.lying.unwrap().ankles {
+                        self.gains[i] =
+                            self.standing_gains[i].map(|g| g * (1. - self.progress as f32));
+                    }
+                }
+            }
+            Phase::Bent if confirm => {
+                self.phase = Phase::Lowering;
+                self.progress = 0.;
+            }
+            Phase::Lowering if confirm => {
+                self.phase = Phase::Unloading;
+                self.progress = 0.;
+            }
+            Phase::Unloading => {
+                if self.progress == 1. {
+                    self.phase = Phase::Idle;
+                } else {
+                    self.progress =
+                        (self.progress + dt / self.lying.unwrap().engage_seconds).min(1.);
+                    self.gains = self
+                        .standing_gains
+                        .iter()
+                        .map(|g| g.map(|v| v * (1. - self.progress as f32)))
+                        .collect();
+                    self.free_ankles();
+                }
+            }
             Phase::Bending | Phase::Ramping => {
                 if self.progress == 1. && reached {
                     self.phase = if self.lying.is_some() {
@@ -330,7 +431,13 @@ impl<'a> Sequence<'a> {
                 }
             }
             Phase::Holding if confirm => return true,
-            Phase::AwaitingLift | Phase::Upright | Phase::Holding => {}
+            Phase::AwaitingLift
+            | Phase::Upright
+            | Phase::Holding
+            | Phase::Bent
+            | Phase::Lowering
+            | Phase::Crouching
+            | Phase::Idle => {}
         }
         false
     }
@@ -347,6 +454,61 @@ fn blend(start: &[f64], end: &[f64], t: f64) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sit_reverses_pauses_and_unloads_only_after_floor_confirmation() {
+        let pose = LyingPose {
+            bent: vec![-0.6, 1.1, 0.],
+            ankles: vec![2],
+            duration: 2.,
+            engage_seconds: 2.,
+        };
+        let mut s = Sequence::sit(&pose, vec![0.1; 3], vec![0.; 3], vec![[10., 1.]; 3], 1.);
+        let tick = |s: &mut Sequence<'_>, dt, connected, confirm, forward| {
+            let applied = s.target.clone();
+            s.tick(dt, connected, confirm, forward, &[0., 0., 0.2], &applied)
+        };
+        assert_eq!(s.gains[2], [10., 1.]);
+        tick(&mut s, 1., true, false, 0.);
+        tick(&mut s, 0.02, true, false, 0.);
+        assert_eq!(s.phase, Phase::ReleasingAnkles);
+        tick(&mut s, 1., true, false, 0.);
+        assert_eq!(s.gains[2], [5., 0.5]);
+        tick(&mut s, 1., false, false, 0.);
+        assert_eq!(s.gains[2], [5., 0.5]);
+        tick(&mut s, 1., true, false, 0.);
+        tick(&mut s, 0.02, true, false, 0.);
+        assert_eq!(s.phase, Phase::Upright);
+        tick(&mut s, 1., true, false, -0.5);
+        assert_eq!(s.progress, 0.25);
+        let held = s.target.clone();
+        tick(&mut s, 1., true, false, 0.);
+        tick(&mut s, 1., false, true, -1.);
+        assert_eq!(s.target, held);
+        tick(&mut s, 0.5, true, false, 1.);
+        tick(&mut s, 0.02, true, false, 0.);
+        assert_eq!(s.phase, Phase::Upright);
+        tick(&mut s, 2., true, false, -1.);
+        tick(&mut s, 0.02, true, false, 0.);
+        assert_eq!(s.phase, Phase::Bent);
+        assert!(s.requires_upright());
+        tick(&mut s, 0.02, true, true, 0.);
+        assert_eq!(s.phase, Phase::Lowering);
+        assert!(!s.requires_upright());
+        assert!(s.can_confirm(false));
+        tick(&mut s, 10., true, false, 0.);
+        assert_eq!(s.gains[0], [10., 1.]);
+        tick(&mut s, 0.02, true, true, 0.);
+        tick(&mut s, 1., true, false, 0.);
+        assert_eq!(s.gains, vec![[5., 0.5], [5., 0.5], [0., 0.]]);
+        tick(&mut s, 10., false, false, 0.);
+        assert_eq!(s.phase, Phase::Unloading);
+        assert_eq!(s.progress, 0.5);
+        tick(&mut s, 1., true, false, 0.);
+        tick(&mut s, 0.02, true, false, 0.);
+        assert_eq!(s.phase, Phase::Idle);
+        assert_eq!(s.gains, vec![[0., 0.]; 3]);
+    }
 
     #[test]
     fn assisted_lift_requires_confirmation_pauses_and_restores_ankles_gradually() {

@@ -1214,6 +1214,7 @@ kbd.pressed {
   text-overflow: ellipsis;
 }
 .operator-card .sticks {
+  height: 100%;
   margin: 0;
   display: grid;
   grid-template-rows: 22px minmax(0, 1fr);
@@ -1221,6 +1222,24 @@ kbd.pressed {
 }
 .sticks .mode-heading {
   margin: 0;
+}
+.stick-actions,
+.stick-actions > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.stick-actions {
+  gap: 8px;
+}
+.stick-grid.assisted {
+  grid-template-columns: minmax(0, 1fr);
+}
+.stick-actions .gamepad-button,
+.stick-actions .gamepad-button picture,
+.stick-actions .gamepad-button img {
+  width: 20px;
+  height: 20px;
 }
 .operator-card .stick-indicator {
   padding: 8px 12px;

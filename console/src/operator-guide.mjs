@@ -32,7 +32,7 @@ export function operatorGuide(state) {
             }
           : { title: "Lift and balance upright" };
       if (operator.phase === "straightening")
-        return { title: "Left stick up · Straighten" };
+        return { title: "Straighten legs" };
       if (operator.phase === "upright")
         return { title: "Upright", keys: ["A"], duration: "1 s · Stand" };
       if (operator.phase === "engaging ankles")
@@ -56,6 +56,42 @@ export function operatorGuide(state) {
         keys: ["A"],
         duration: "1 s · Stand",
       };
+    case "MODE_SIT": {
+      const phase = operator.phase;
+      if (phase === "awaiting support")
+        return {
+          title: "Support robot",
+          keys: ["A"],
+          duration: "1 s · Supported",
+        };
+      if (phase === "settling to hold") return { title: "Settling to Hold" };
+      if (phase === "releasing ankles")
+        return { title: "Releasing ankle control" };
+      if (phase === "upright")
+        return {
+          title: "Upright",
+          ...(operator.startupReady
+            ? { keys: ["A"], duration: "1 s · Stand" }
+            : {}),
+        };
+      if (phase === "crouching") return { title: "Move legs" };
+      if (phase === "bent")
+        return {
+          title: "Bent",
+          ...(operator.startupReady
+            ? { keys: ["A"], duration: "1 s · Lower onto back" }
+            : {}),
+        };
+      if (phase === "lowering onto back")
+        return {
+          title: "Lower onto back",
+          keys: ["A"],
+          duration: "1 s · Supported on floor",
+        };
+      if (phase === "engaging ankles")
+        return { title: "Restoring ankle control" };
+      return { title: "Unloading motors" };
+    }
     case "MODE_TRACKING":
       if (operator.phase === "returning to neutral")
         return { title: "Returning to neutral" };

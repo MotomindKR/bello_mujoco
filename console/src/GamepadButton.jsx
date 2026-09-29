@@ -19,6 +19,10 @@ const fields = {
   Up: "dpadUp",
   Down: "dpadDown",
 };
+const stickLabels = {
+  LeftStickUp: "Left stick up",
+  LeftStickDown: "Left stick down",
+};
 const labels = {
   playstation: {
     A: "Cross",
@@ -34,12 +38,22 @@ const labels = {
 export function GamepadButton({ name, sample = {}, progress = 0 }) {
   const style = useContext(GamepadStyle);
   const dark = useContext(GamepadTheme);
-  const label = labels[style][name] || `D-pad ${name.toLowerCase()}`;
+  // Stick arrows sit outside the circle and use the opposite pack palette.
+  const lightAsset = stickLabels[name] ? !dark : dark;
+  const label =
+    stickLabels[name] || labels[style][name] || `D-pad ${name.toLowerCase()}`;
+  const pressed =
+    sample.connected &&
+    (name === "LeftStickUp"
+      ? sample.forward > 0.05
+      : name === "LeftStickDown"
+        ? sample.forward < -0.05
+        : sample[fields[name]]);
   const asset = (variant) =>
     images[`./assets/input-prompts/${style}/${variant}/${name}.png`];
   return (
     <kbd
-      className={`gamepad-button${sample.connected && sample[fields[name]] ? " pressed" : ""}`}
+      className={`gamepad-button${pressed ? " pressed" : ""}`}
       title={label}
       aria-label={label}
       data-controller-style={style}
@@ -50,7 +64,11 @@ export function GamepadButton({ name, sample = {}, progress = 0 }) {
         aria-hidden="true"
       />
       <picture aria-hidden="true">
-        <img src={asset(dark ? "light" : "default")} alt="" draggable="false" />
+        <img
+          src={asset(lightAsset ? "light" : "default")}
+          alt=""
+          draggable="false"
+        />
       </picture>
     </kbd>
   );

@@ -409,9 +409,37 @@ async function serve(service, implementation) {
     }
     const verifyStableOperatorCard = async () => {
       const original = structuredClone(runnerStatus);
+      // Display a connected controller without sending synthetic control inputs.
+      await app.evaluate(({ BrowserWindow }) => {
+        const contents = BrowserWindow.getAllWindows()[0].webContents;
+        const send = contents.send.bind(contents);
+        contents.send = (channel, ...args) => {
+          if (channel === "snapshot") {
+            const state = args[0];
+            args[0] = {
+              ...state,
+              controller: { ...state.controller, connected: true },
+              controllerSample: {
+                ...state.controllerSample,
+                connected: true,
+                forward: globalThis.controllerDisplayForward || 0,
+              },
+              operator: {
+                ...state.operator,
+                controllerConnected: true,
+                neutralRequired: false,
+              },
+            };
+          }
+          send(channel, ...args);
+        };
+        globalThis.restoreControllerDisplay = () => {
+          contents.send = send;
+        };
+      });
       const bounds = () =>
         page
-          .locator(".operator-card, .stick-dial, .abort-button")
+          .locator(".operator-card, .stick-slot, .abort-button")
           .evaluateAll((elements) =>
             elements.map((element) => {
               const r = element.getBoundingClientRect();
@@ -436,6 +464,23 @@ async function serve(service, implementation) {
           { mode: "MODE_HOLD", phase: "upright", progress: 1 },
           { mode: "MODE_HOLD", phase: "engaging ankles", progress: 0.5 },
           { mode: "MODE_LOCOMOTION", phase: "locomotion" },
+          ...[
+            "awaiting support",
+            "settling to hold",
+            "releasing ankles",
+            "upright",
+            "crouching",
+            "bent",
+            "lowering onto back",
+            "unloading",
+          ].map((phase) => ({
+            mode: "MODE_SIT",
+            selected: "Sit",
+            phase,
+            progress: 0.5,
+            startupReady: true,
+            modes: ["Stand", "Locomotion", "Motion", "Tracking", "Sit"],
+          })),
           {
             mode: "MODE_TRACKING",
             phase: "motion",
@@ -467,14 +512,89 @@ async function serve(service, implementation) {
                 MODE_LOCOMOTION: "Locomotion",
                 MODE_TRACKING: "Tracking",
                 MODE_MOTION: "Motion",
+                MODE_SIT: "Sit",
                 MODE_FAULT: "Fault",
               }[mode],
             update.mode,
           );
+          if (update.mode === "MODE_SIT") {
+            const titles = {
+              "awaiting support": "Support robot",
+              "settling to hold": "Settling to Hold",
+              "releasing ankles": "Releasing ankle control",
+              upright: "Upright",
+              crouching: "Move legs",
+              bent: "Bent",
+              "lowering onto back": "Lower onto back",
+              unloading: "Unloading motors",
+            };
+            await page
+              .getByRole("heading", { name: titles[update.phase], exact: true })
+              .waitFor();
+            assert(
+              await page
+                .locator(".next-action strong")
+                .evaluateAll((elements) =>
+                  elements.every(
+                    (element) => element.scrollWidth <= element.clientWidth,
+                  ),
+                ),
+              `Sit confirmation must remain readable in ${update.phase}`,
+            );
+            if (update.phase === "crouching") {
+              for (const [forward, direction] of [
+                [-1, "down"],
+                [1, "up"],
+                [0, null],
+              ]) {
+                await app.evaluate((_, value) => {
+                  globalThis.controllerDisplayForward = value;
+                }, forward);
+                await page.waitForFunction((direction) => {
+                  const pressed = document.querySelector(
+                    ".stick-actions .pressed",
+                  );
+                  return direction
+                    ? pressed?.getAttribute("aria-label") ===
+                        `Left stick ${direction}`
+                    : !pressed;
+                }, direction);
+              }
+              assert(
+                await page
+                  .locator(".stick-actions img")
+                  .evaluateAll(
+                    (images) =>
+                      images.length === 2 &&
+                      images.every(
+                        (image) => image.complete && image.naturalWidth > 0,
+                      ),
+                  ),
+              );
+            }
+            if (update.phase === "bent") {
+              const width = await page.evaluate(() => innerWidth);
+              await capture(page, {
+                path: path.join(root, `console/out/sit-${width}.png`),
+              });
+            }
+          }
           assert.deepEqual(
             await bounds(),
             baseline,
             `Controller card and stick geometry must stay fixed in ${update.mode}`,
+          );
+          const assisted =
+            (update.mode === "MODE_HOLD" && update.phase === "straightening") ||
+            (update.mode === "MODE_SIT" &&
+              ["upright", "crouching", "bent"].includes(update.phase));
+          await page.waitForFunction(
+            (visible) => Boolean(document.querySelector(".sticks")) === visible,
+            update.mode === "MODE_LOCOMOTION" || assisted,
+          );
+          assert.equal(
+            await page.locator(".stick-dial").count(),
+            assisted ? 1 : update.mode === "MODE_LOCOMOTION" ? 2 : 0,
           );
           if (update.mode === "MODE_FAULT") {
             assert(
@@ -508,6 +628,11 @@ async function serve(service, implementation) {
           }
         }
       } finally {
+        await app.evaluate(() => {
+          globalThis.restoreControllerDisplay();
+          delete globalThis.restoreControllerDisplay;
+          delete globalThis.controllerDisplayForward;
+        });
         for (const key of Object.keys(runnerStatus)) delete runnerStatus[key];
         Object.assign(runnerStatus, original);
         await page.waitForTimeout(120);
@@ -829,7 +954,7 @@ async function serve(service, implementation) {
         .count(),
       0,
     );
-    assert.equal(await page.locator(".stick-dial").count(), 2);
+    assert.equal(await page.locator(".stick-dial").count(), 0);
     assert.equal(await page.locator(".operator-guide p").count(), 0);
     runnerStatus.mode = "MODE_LOCOMOTION";
     runnerStatus.velocityCommand = {
@@ -849,15 +974,13 @@ async function serve(service, implementation) {
       .locator(".sticks")
       .getByText("0.4 rad/s", { exact: true })
       .waitFor();
+    assert.equal(await page.locator(".stick-dial").count(), 2);
     await capture(page, {
       path: path.join(root, "console/out/console-sticks.png"),
     });
     runnerStatus.mode = "MODE_STAND";
     runnerStatus.velocityCommand = null;
-    await page
-      .locator(".sticks")
-      .getByText("Inactive", { exact: true })
-      .waitFor();
+    await page.locator(".sticks").waitFor({ state: "detached" });
     assert.equal(
       await page
         .locator(".sticks")

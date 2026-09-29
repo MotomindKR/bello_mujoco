@@ -105,7 +105,20 @@ test("assisted startup guidance follows balance and ankle phases", () => {
   assert.match(hold("awaiting lift").title, /Lift/);
   assert.match(hold("awaiting lift", true).duration, /Balanced/);
   assert.equal(hold("straightening").keys, undefined);
-  assert.match(hold("straightening").title, /Left stick/);
+  assert.equal(hold("straightening").title, "Straighten legs");
   assert.match(hold("upright", true).duration, /Stand/);
   assert.equal(hold("engaging ankles").keys, undefined);
+});
+
+test("Sit distinguishes support, movement, lowering and unloading", () => {
+  const sit = (phase, startupReady = true) =>
+    operatorGuide(state({ mode: "MODE_SIT", phase, startupReady }));
+  assert.equal(sit("awaiting support").duration, "1 s · Supported");
+  assert.equal(sit("releasing ankles").keys, undefined);
+  assert.equal(sit("crouching").title, "Move legs");
+  assert.equal(sit("upright").duration, "1 s · Stand");
+  assert.equal(sit("bent", false).keys, undefined);
+  assert.equal(sit("bent").duration, "1 s · Lower onto back");
+  assert.equal(sit("lowering onto back").duration, "1 s · Supported on floor");
+  assert.equal(sit("unloading").keys, undefined);
 });

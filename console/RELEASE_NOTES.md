@@ -1,24 +1,26 @@
-## Bello Mini Console 0.2.4
+## Bello Mini Console 0.2.5
 
 ### Changes
 
-- Show **Returning to neutral** while SONIC brings its reference back to the nominal standing pose; hide the Stand prompt during recovery.
-- Keep SONIC in control through reference interpolation, preserving its observation history, alignment and gains. Use a separate short handover to the standing policy after settling.
-- Use the same neutral return for operator requests and console/Pico reference loss. Bound settling time; keep direct Stand recovery for inference failures and explicit damping for abort/hardware faults.
-- Preserve standing-policy history at the end of the handover.
+- Add assisted **Sit** from Stand: confirm support, bend with the left stick, confirm lowering onto the back, then confirm floor support before unloading motors and entering Idle.
+- Share the bent pose, joint-speed limits and ankle-gain handling with Back-down startup. Push the stick up to reverse before lowering; return to nominal and confirm to restore ankle control and Stand.
+- Pause assisted targets, gains and phase on console/network or gamepad loss. Retain motor control without damping or disabling; require neutral input after reconnecting. Explicit aborts and hardware/lease faults retain their damping response.
+- Show velocity sticks only during Locomotion and one left-stick widget during assisted leg movement. Highlight up/down glyphs from the selected PlayStation, Xbox or Switch prompt set.
+- Keep the controller card and abort control fixed across phases. Show confirmation prompts without competing progress text.
 
 ### Runner configuration
 
-Upgrade the runner to this release's source revision and add these required fields under `tracking`:
+Upgrade the runner with the console. A configured `control.lying_start` enables both Back-down startup and Sit. The deployment preset uses:
 
 ```yaml
-neutral_return_seconds: 1.0
-neutral_joint_tolerance_radians: 0.15
-neutral_settle_timeout_seconds: 2.0
-standing_transition_seconds: 0.2
+lying_start:
+  hip_pitch_radians: -0.8
+  knee_radians: 1.2
+  straighten_speed_rps: 0.1
+  ankle_engage_seconds: 2.0
 ```
 
-`transition_seconds` remains the entry duration. The new return path has synthetic/native lifecycle coverage; physical tracking quality requires commissioning.
+The runner validates these joint angles against the selected policy and hardware limits before acquiring control. The operator supports the torso throughout the assisted sequence and explicitly confirms floor support. The runner does not lower the torso autonomously. Native loopback tests cover completion, reversal, reconnect neutrality, gamepad loss, aborts and hardware faults; physical lowering remains an operator commissioning step.
 
 ### Installers
 

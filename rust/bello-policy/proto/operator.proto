@@ -55,6 +55,7 @@ enum Mode {
   MODE_MOTION = 4;
   MODE_FAULT = 5;
   MODE_TRACKING = 6;
+  MODE_SIT = 7;
 }
 
 message OperatorStatus {
@@ -91,6 +92,7 @@ message OperatorStatus {
   string sonic_status = 27;
   repeated string startups = 28;
   string selected_startup = 29;
+  // Assisted startup/Sit phase can accept a fresh one-second A confirmation.
   bool startup_ready = 30;
 }
 

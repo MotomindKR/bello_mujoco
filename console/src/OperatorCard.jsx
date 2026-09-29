@@ -32,6 +32,8 @@ export function OperatorCard({ state, children }) {
   const selected = startup ? operator.selectedStartup : operator.selected;
   const progressing =
     operator.mode === "MODE_MOTION" ||
+    (operator.mode === "MODE_SIT" &&
+      !["awaiting support", "lowering onto back"].includes(operator.phase)) ||
     (operator.mode === "MODE_HOLD" &&
       ["ramping", "bending", "straightening", "engaging ankles"].includes(
         operator.phase,
@@ -76,10 +78,15 @@ export function OperatorCard({ state, children }) {
               <strong>{guide.duration}</strong>
             </div>
           )}
-          {progressing && (
+          {progressing && !guide.keys && (
             <div className="motion-status">
               <div className="stat-pair">
-                <span>{operator.activeMotion || "Hold pose"}</span>
+                <span>
+                  {operator.activeMotion ||
+                    (operator.mode === "MODE_SIT"
+                      ? "Sit sequence"
+                      : "Hold pose")}
+                </span>
                 <strong>
                   {operator.phase} · {number(progress)}%{!live && " · Stale"}
                 </strong>
@@ -215,7 +222,9 @@ export function OperatorCard({ state, children }) {
           )}
         </div>
       </div>
-      <StickIndicators state={state} />
+      <div className="stick-slot">
+        <StickIndicators state={state} />
+      </div>
       <AbortButton
         key={operator.mode === "MODE_FAULT" ? "idle" : "abort"}
         idle={operator.mode === "MODE_FAULT"}

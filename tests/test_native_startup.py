@@ -33,6 +33,7 @@ class AssistedHardware(SyntheticHardware):
     "scenario",
     [
         "complete",
+        "controller_disconnect",
         "tight_steps",
         "abort_lift",
         "tilt_after_balance",
@@ -173,12 +174,20 @@ def test_back_down_startup(rust_policy, hardware_proto, tmp_path, scenario):
             assert 0 < progress < 0.2
             time.sleep(0.3)
             np.testing.assert_allclose(fake.positions, before)
-            operator.close()
+            if scenario == "controller_disconnect":
+                operator.connected = False
+            else:
+                operator.close()
             time.sleep(0.4)
-            assert "release" not in fake.calls
-            operator = OperatorClient(
-                address, buttons={"forward": 1.0}, wait_neutral=False
-            )
+            assert not {"stop", "disable", "release"}.intersection(fake.calls)
+            assert fake.state == hardware_proto.GROUP_STATE_RUNNING
+            if scenario == "controller_disconnect":
+                operator.buttons = {"forward": 1.0}
+                operator.connected = True
+            else:
+                operator = OperatorClient(
+                    address, buttons={"forward": 1.0}, wait_neutral=False
+                )
             operator.wait(lambda s: s.neutral_required)
             time.sleep(0.3)
             np.testing.assert_allclose(fake.positions, before)

@@ -167,10 +167,11 @@ new owner must release all controls before operating.
 | --- | --- | --- |
 | Disarmed | Release all sticks/buttons, then Back + Start for 2 seconds | Acquire control and ramp to Hold |
 | Crane Hold, ramp complete | A for 1 second | Stand |
-| Stand | D-pad left/right | Select Stand, Locomotion, Motion, or configured Tracking |
+| Stand | D-pad left/right | Select Stand, Locomotion, Motion, or configured Tracking/Sit |
 | Stand, Motion selected | D-pad up/down | Select a named motion in the dropdown |
 | Motion dropdown open | Press A | Accept the highlighted motion and close the menu |
 | Stand | A for 1 second with neutral sticks | Enter the selected mode or motion |
+| Sit | Separate A holds and left stick up/down | Operator-assisted lowering; see the Sit sequence below |
 | Locomotion | Left stick and right horizontal stick | Forward/lateral velocity and yaw command |
 | Locomotion, following configured | Press Y (Triangle on PlayStation) | Toggle upper-body tracking |
 | Locomotion | A for 1 second with neutral sticks | Stand |
@@ -200,7 +201,9 @@ command/gait transition; a controller disconnect uses the same stopping path.
 Before acquisition, connection loss leaves the runner Disarmed. Hold retains
 its current target (a ramp pauses). Locomotion zeros its velocity command and
 returns to Stand. A healthy named motion finishes and returns to Stand even if
-the console disappears. Tracking blends back to Stand if the controller session or
+the console disappears. Sit freezes its assisted target, gains and phase until
+neutral input is received after reconnecting; its initial support prompt keeps
+the standing policy running. Tracking blends back to Stand if the controller session or
 retargeted reference is lost, first returning its reference to neutral within SONIC.
 Control has no run-duration limit. Abort and feedback/lease faults
 take priority. Remove `control.max_duration_seconds` from older hardware profiles. The first Ctrl-C during a motion requests a blended return;
@@ -464,13 +467,14 @@ validated physical lift pose:
 ```yaml
 control:
   lying_start:
-    hip_pitch_radians: -1.0
-    knee_radians: 2.0
+    hip_pitch_radians: -0.8
+    knee_radians: 1.2
     straighten_speed_rps: 0.1
     ankle_engage_seconds: 2.0
 ```
 
-Merge this into the full configuration. `null` leaves only Crane available.
+Merge this into the full configuration. `null` leaves only Crane startup available
+and hides Sit. A configured lying pose enables both Back-down startup and Sit.
 Both hips must be more flexed and both knees more bent than the policy's nominal
 pose. Configuration is rejected before lease acquisition if required Mini joints
 are missing, mappings are invalid, or the pose exceeds policy/hardware limits.
@@ -491,8 +495,45 @@ freshness, velocity/acceleration limits, command bounds, lease checks and dampin
 abort remain active throughout. A tilted balance confirmation keeps the robot in
 bent Hold. A held A cannot skip from balance confirmation into Stand.
 
-Operator loss freezes startup progress and retains the current target/gains.
-Reconnect requires neutral input. No display connection drives this sequence.
+Console/network loss or a disconnected gamepad freezes startup progress and
+retains the current target/gains. It does not stop, disable or release the motor
+groups. Reconnect requires neutral input. No display connection drives this sequence.
 L1+R1 for one second, or the console's hold-to-abort button, damps the robot in
 any startup phase. These are assisted setup positions; the runner does not
 perform an autonomous get-up from the floor.
+
+## Assisted Sit / lowering onto the back
+
+**Sit** reverses the Back-down setup with continuous operator support. It is
+available only with `control.lying_start` configured, and can start only from
+Stand. The runner moves the legs; the operator supports and lowers the torso.
+
+| Phase | Operator action | Runner behavior |
+| --- | --- | --- |
+| Stand | Select Sit; hold A for 1 s | Show **Support robot**; continue the standing policy. |
+| Support robot | Support the robot, release A, then hold A for 1 s | Ramp the last commanded pose to nominal over `ramp_seconds`, then ramp ankle gains to zero over `ankle_engage_seconds`. |
+| Bend | Push left stick down | Bend hips/knees toward the configured Back-down pose. Stick deflection scales the shared `straighten_speed_rps` limit; tighter motor step limits still apply. |
+| Pause / reverse | Release the stick to pause; push up to straighten | Retain the target when paused. Returning to nominal and holding A for 1 s restores ankle control from measured positions and enters Stand. |
+| Bent | Release all controls; hold A for 1 s | Show **Lower onto back**. Keep bent joints held and ankles free; permit the torso to tilt for manual lowering. |
+| Lower onto back | Lower the supported robot onto its back, then release A and hold it for 1 s | Confirm floor support; ramp remaining gains to zero over `ankle_engage_seconds`, stop/disable groups, verify Idle, and release leases. |
+| Disarmed | Release inputs and select a startup | A new Back+Start hold can re-enable control, including Back-down startup from the floor. |
+
+Each confirmation requires neutral sticks, a fresh A press and a continuous
+one-second hold. Holding A across phase changes cannot skip the next confirmation.
+The console shows velocity sticks only during Locomotion. Assisted leg movement
+shows one left-stick widget with up/down glyphs from the selected controller
+style; the active direction highlights beyond the runner's neutral range. Other
+phases hide the stick widgets while keeping the card and abort control fixed.
+Floor support is confirmed by the operator, not inferred from IMU orientation.
+The upright tilt limit stays active until **Lower onto back**. All other hardware
+feedback, command and lease checks remain active throughout; faults or a
+one-second L1+R1/console abort damp the robot.
+
+Console/network loss or a disconnected gamepad freezes the current assisted
+target, gains and phase, including ankle release and motor unloading. It does
+not stop, disable or release the motor groups. Reconnecting with held
+buttons or displaced sticks cannot resume it until inputs are neutral. While
+waiting for the initial support confirmation, the standing policy continues.
+Hardware/estimator display streams do not control this behavior. Policy logs
+include Sit phase, progress, targets and gains, followed by `sit_completed` only
+after successful Idle cleanup.

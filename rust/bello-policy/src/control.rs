@@ -468,6 +468,7 @@ pub async fn run(
             deadline = tokio::time::Instant::now();
             let mut active_period = period;
             let mut mode = Mode::Stand;
+            let mut sit: Option<crate::startup::Sequence<'_>> = None;
             let mut active_motion: Option<String> = None;
             let mut tracking_enabled = false;
             operator.set_tracking(following.is_some(), false, false);
@@ -477,6 +478,7 @@ pub async fn run(
                     operator.set_sonic(tracking.tracking_status().expect("Tracking backend"));
                 }
                 let input = operator.snapshot();
+                let confirm_sit = input.request == Some(RequestMode::ConfirmSit);
                 ensure!(input.request != Some(RequestMode::Abort), "operator abort");
                 if input.lost && mode == Mode::Tracking {
                     motions["Tracking"].interrupt.request_return();
@@ -487,6 +489,28 @@ pub async fn run(
                 }
                 let mut start_motion = false;
                 match input.request {
+                    Some(RequestMode::Sit) if mode == Mode::Stand && lying_pose.is_some() => {
+                        mode = Mode::Sit;
+                        operator.set_mode(mode, "awaiting support", "", 0.);
+                        operator.set_startup_ready(true);
+                    }
+                    Some(RequestMode::ConfirmSit) if mode == Mode::Sit && sit.is_none() => {
+                        sit = Some(crate::startup::Sequence::sit(
+                            lying_pose
+                                .as_ref()
+                                .expect("Sit requires a configured lying pose"),
+                            targets.previous.clone(),
+                            policy
+                                .policy
+                                .metadata
+                                .default_position
+                                .iter()
+                                .map(|&v| f64::from(v))
+                                .collect(),
+                            standing_gains.clone(),
+                            config.ramp_seconds,
+                        ));
+                    }
                     Some(RequestMode::SetTracking(enabled))
                         if mode == Mode::Locomotion && following.is_some() =>
                     {
@@ -536,15 +560,112 @@ pub async fn run(
                     tracking_enabled = false;
                     operator.set_tracking(following.is_some(), false, false);
                 }
-                let max_tilt = active_motion
-                    .as_ref()
-                    .and_then(|name| motions.get(name))
-                    .map_or(Some(hardware.config.max_tilt_radians), |motion| {
-                        motion.absolute_tilt_limit(hardware.config.max_tilt_radians)
-                    });
+                let max_tilt = if let Some(sequence) = &sit {
+                    sequence
+                        .requires_upright()
+                        .then_some(hardware.config.max_tilt_radians)
+                } else {
+                    active_motion
+                        .as_ref()
+                        .and_then(|name| motions.get(name))
+                        .map_or(Some(hardware.config.max_tilt_radians), |motion| {
+                            motion.absolute_tilt_limit(hardware.config.max_tilt_radians)
+                        })
+                };
                 let mut sample = hardware
                     .feedback_with_tilt(proto::GroupState::Running, max_tilt)
                     .await?;
+                if let Some(sequence) = &mut sit {
+                    let gravity = crate::locomotion::projected_gravity(sample.orientation_xyzw)?;
+                    let upright =
+                        (-gravity[2]).clamp(-1., 1.).acos() <= hardware.config.max_tilt_radians;
+                    let confirmed = confirm_sit && sequence.can_confirm(upright);
+                    let measured =
+                        if confirmed && sequence.phase() == crate::startup::Phase::Upright {
+                            limits.startup_target(&sample.motor_position, startup_margin)?
+                        } else {
+                            sample.motor_position.clone()
+                        };
+                    let standing = sequence.tick(
+                        period.as_secs_f64(),
+                        !input.lost,
+                        confirmed,
+                        input.axes[0],
+                        &measured,
+                        &targets.previous,
+                    );
+                    let target = if input.lost {
+                        targets.previous.clone()
+                    } else {
+                        sequence.target.clone()
+                    };
+                    let command = send(
+                        &mut controls,
+                        &target,
+                        &sequence.gains,
+                        &config,
+                        &mut targets,
+                        &limits,
+                        &mut log,
+                    )
+                    .await?;
+                    if let Some(log) = &mut log {
+                        serde_json::to_writer(
+                            &mut *log,
+                            &serde_json::json!({
+                                "elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample,
+                                "sit": {"phase": sequence.phase().as_str(), "progress": sequence.progress,
+                                    "motor_target": sequence.target, "motor_gains": sequence.gains},
+                                "command": command,
+                                "motor_rails": power.as_ref().map(crate::power::Source::snapshot)
+                            }),
+                        )?;
+                        writeln!(log)?;
+                        log.flush()?;
+                    }
+                    operator.set_mode(Mode::Sit, sequence.phase().as_str(), "", sequence.progress);
+                    operator.set_startup_ready(sequence.can_confirm(upright));
+                    if sequence.phase() == crate::startup::Phase::Idle {
+                        ensure!(
+                            operator.snapshot().request != Some(RequestMode::Abort),
+                            "operator abort"
+                        );
+                        for result in join_all(
+                            controls
+                                .iter_mut()
+                                .map(|c| tokio::time::timeout(rpc, c.stop())),
+                        )
+                        .await
+                        {
+                            result.context("Sit stop timed out")??;
+                        }
+                        ensure!(
+                            operator.snapshot().request != Some(RequestMode::Abort),
+                            "operator abort"
+                        );
+                        for result in join_all(
+                            controls
+                                .iter_mut()
+                                .map(|c| tokio::time::timeout(rpc, c.disable())),
+                        )
+                        .await
+                        {
+                            result.context("Sit disable timed out")??;
+                        }
+                        hardware
+                            .feedback_with_tilt(proto::GroupState::Idle, None)
+                            .await?;
+                        return Ok(());
+                    }
+                    if standing {
+                        sit = None;
+                        mode = Mode::Stand;
+                        policy.reset();
+                        operator.set_mode(mode, "standing", "", 0.);
+                    }
+                    pace(&mut deadline, period, lag).await?;
+                    continue;
+                }
                 if let Some(name) = active_motion.as_ref() {
                     let motion = motions
                         .get_mut(name)
@@ -700,6 +821,21 @@ pub async fn run(
                 "control result: {result:?}; cleanup failed: {cleanup_errors:?}"
             ));
         }
+        if result.is_ok() && cleanup_errors.is_empty() && !shutdown_requested {
+            if operator.disarm() {
+                policy.reset();
+                policy.controller_command([0.; 3], config.joystick_command_scale)?;
+                for motion in motions.values_mut() {
+                    motion.reset();
+                }
+                if let Some(log) = &mut log {
+                    writeln!(log, "{{\"event\":\"sit_completed\"}}")?;
+                    log.flush()?;
+                }
+                continue 'sessions;
+            }
+            operator.fault("operator abort during Sit completion");
+        }
         if !shutdown_requested {
             operator.allow_fault_clear("");
             loop {
@@ -713,7 +849,7 @@ pub async fn run(
                 }
                 match recover_groups(&hardware, &config).await {
                     Ok(()) => {
-                        if !operator.disarm_after_recovery() {
+                        if !operator.disarm() {
                             operator.allow_fault_clear("Operator abort during fault recovery.");
                             continue;
                         }

@@ -19,6 +19,7 @@ class OperatorClient:
     def __init__(self, endpoint, fake=None, *, buttons=None, wait_neutral=True):
         self.fake = fake
         self.buttons = buttons or {}
+        self.connected = True
         self.status = None
         self.error = None
         self.closed = threading.Event()
@@ -49,7 +50,7 @@ class OperatorClient:
             yield pb.ControllerSample(
                 sequence=sequence,
                 sample_monotonic_ns=time.monotonic_ns(),
-                connected=True,
+                connected=self.connected,
                 name="synthetic controller",
                 **fields,
             )

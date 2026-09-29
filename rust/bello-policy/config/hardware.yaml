@@ -30,7 +30,7 @@ control:
   acknowledgement_timeout_seconds: 0.5
   rpc_timeout_seconds: 2.0
   ramp_seconds: 10.0
-  # Set explicit bent angles/speed to offer Back-down startup; see the console guide.
+  # Set bent angles/speed to offer Back-down startup and Sit; see the console guide.
   lying_start: null
   gain_scale: 1.0
   joystick_command_scale: 1.0

@@ -30,6 +30,8 @@ pub enum RequestMode {
     Locomotion,
     Motion(String),
     Tracking,
+    Sit,
+    ConfirmSit,
     Abort,
     SetTracking(bool),
 }
@@ -70,7 +72,8 @@ impl State {
                 && name != "Stand"
                 && name != "Locomotion"
                 && name != "Motion"
-                && name != "Tracking")
+                && name != "Tracking"
+                && name != "Sit")
                 && motions
                     .iter()
                     .collect::<std::collections::BTreeSet<_>>()
@@ -414,7 +417,8 @@ impl State {
         ) || (self.status.mode == Mode::Hold as i32
             && (self.status.phase == "holding"
                 || (self.status.startup_ready
-                    && matches!(self.status.phase.as_str(), "awaiting lift" | "upright"))));
+                    && matches!(self.status.phase.as_str(), "awaiting lift" | "upright"))))
+            || (self.status.mode == Mode::Sit as i32 && self.status.startup_ready);
         if !sample.a {
             self.confirm_consumed = false;
         }
@@ -457,11 +461,13 @@ impl State {
         {
             let request = match Mode::try_from(self.status.mode) {
                 Ok(Mode::Hold | Mode::Locomotion | Mode::Tracking) => RequestMode::Stand,
+                Ok(Mode::Sit) => RequestMode::ConfirmSit,
                 Ok(Mode::Stand) => match self.status.selected.as_str() {
                     "Stand" => RequestMode::Stand,
                     "Locomotion" => RequestMode::Locomotion,
                     "Motion" => RequestMode::Motion(self.status.selected_motion.clone()),
                     "Tracking" => RequestMode::Tracking,
+                    "Sit" => RequestMode::Sit,
                     _ => unreachable!("validated mode selection"),
                 },
                 _ => unreachable!(),
@@ -573,7 +579,7 @@ impl Source {
             state.confirm_consumed = true;
             state.pending = None;
         }
-        if mode != Mode::Hold {
+        if !matches!(mode, Mode::Hold | Mode::Sit) {
             state.status.startup_ready = false;
         }
         if mode != Mode::Locomotion {
@@ -591,8 +597,10 @@ impl Source {
     pub fn set_startups(&self, lying: bool) {
         let mut state = self.state.lock().unwrap();
         state.status.startups = vec!["Crane".into()];
+        state.status.modes.retain(|mode| mode != "Sit");
         if lying {
             state.status.startups.push("Back-down".into());
+            state.status.modes.push("Sit".into());
         }
     }
 
@@ -660,7 +668,7 @@ impl Source {
         std::mem::take(&mut self.state.lock().unwrap().clear_requested)
     }
 
-    pub fn disarm_after_recovery(&self) -> bool {
+    pub fn disarm(&self) -> bool {
         let mut state = self.state.lock().unwrap();
         if state.aborted {
             return false;
@@ -813,6 +821,42 @@ mod tests {
         (state, controller)
     }
     #[test]
+    fn sit_requires_stand_and_fresh_neutral_confirmations() {
+        let (mut state, mut controller) = fixture();
+        state.status.mode = Mode::Stand as i32;
+        state.status.modes.push("Sit".into());
+        state.status.selected = "Sit".into();
+        let a = ControllerSample {
+            a: true,
+            ..Default::default()
+        };
+        controller.send(&mut state, a.clone(), 900);
+        assert!(state.pending.is_none());
+        controller.send(&mut state, a.clone(), 140);
+        assert_eq!(state.pending.take(), Some(RequestMode::Sit));
+        state.status.mode = Mode::Sit as i32;
+        state.status.startup_ready = true;
+        controller.send(&mut state, a.clone(), 1200);
+        assert!(state.pending.is_none());
+        controller.send(&mut state, ControllerSample::default(), 20);
+        controller.send(
+            &mut state,
+            ControllerSample {
+                forward: -0.5,
+                ..a.clone()
+            },
+            1200,
+        );
+        assert!(state.pending.is_none());
+        controller.send(&mut state, ControllerSample::default(), 20);
+        controller.send(&mut state, a.clone(), 1040);
+        assert_eq!(state.pending.take(), Some(RequestMode::ConfirmSit));
+        state.status.startup_ready = false;
+        controller.send(&mut state, ControllerSample::default(), 20);
+        controller.send(&mut state, a, 1200);
+        assert!(state.pending.is_none());
+    }
+    #[test]
     fn startup_selection_requires_a_new_chord_and_balance_requires_readiness() {
         let (mut state, mut controller) = fixture();
         state.status.startups.push("Back-down".into());
@@ -954,7 +998,7 @@ mod tests {
         controller.send(&mut source.state.lock().unwrap(), clear, 20);
         assert!(!source.take_fault_clear());
         source.state.lock().unwrap().aborted = true;
-        assert!(!source.disarm_after_recovery());
+        assert!(!source.disarm());
         source.allow_fault_clear("");
         controller.send(
             &mut source.state.lock().unwrap(),
@@ -965,7 +1009,7 @@ mod tests {
             20,
         );
         assert!(source.take_fault_clear());
-        assert!(source.disarm_after_recovery());
+        assert!(source.disarm());
         assert!(source.snapshot().lost);
         assert_eq!(source.snapshot().request, None);
         let chord = ControllerSample {
@@ -1013,7 +1057,7 @@ mod tests {
         controller.send(&mut source.state.lock().unwrap(), shoulders.clone(), 1040);
         assert!(source.take_fault_clear());
         assert_ne!(source.snapshot().request, Some(RequestMode::Abort));
-        assert!(source.disarm_after_recovery());
+        assert!(source.disarm());
         controller.send(&mut source.state.lock().unwrap(), shoulders, 2200);
         assert_ne!(source.snapshot().request, Some(RequestMode::Abort));
         assert!(!source.take_fault_clear());

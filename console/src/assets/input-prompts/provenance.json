@@ -298,5 +298,65 @@
     "source": "SGamepad/Light/T_S_Y_Light.png",
     "file": "switch/light/Y.png",
     "sha256": "622c63e49acc5f008e7778715e937b4ce64b2d3ff2e3da02b91ba84cd4af99cb"
+  },
+  {
+    "source": "P5Gamepad/Default/T_P5_L_UP.png",
+    "file": "playstation/default/LeftStickUp.png",
+    "sha256": "1e2db96af1a81da32c39b0b168ce36453702601bc8e39602cd5b784ec62c0465"
+  },
+  {
+    "source": "P5Gamepad/Default/T_P5_L_Down.png",
+    "file": "playstation/default/LeftStickDown.png",
+    "sha256": "0389416517dfb165e0f5bb07ef79769898a7ef95f5ceea8f1473cf781f85aee9"
+  },
+  {
+    "source": "P5Gamepad/Light/T_P5_L_UP_Light.png",
+    "file": "playstation/light/LeftStickUp.png",
+    "sha256": "3e3b014960791453208ffec9482e5c2923489689bf4bd5517c5500a1508bac43"
+  },
+  {
+    "source": "P5Gamepad/Light/T_P5_L_Down_Light.png",
+    "file": "playstation/light/LeftStickDown.png",
+    "sha256": "902ff1bbf34ae30ce35ed9fb067fed85f819e5556e4a4b9dd2de0ced8cfa43d5"
+  },
+  {
+    "source": "XGamepad/Default/T_X_L_UP.png",
+    "file": "xbox/default/LeftStickUp.png",
+    "sha256": "a828f6f127d312ccf31d5254178ebeb5bde4a9874c056cba0cb6f2d02a79f0ac"
+  },
+  {
+    "source": "XGamepad/Default/T_X_L_Down.png",
+    "file": "xbox/default/LeftStickDown.png",
+    "sha256": "c57529bbffb7ffc140684b96ef50513dd32427a1bdc6f8bc073859b552098b77"
+  },
+  {
+    "source": "XGamepad/Light/T_X_L_UP_Light.png",
+    "file": "xbox/light/LeftStickUp.png",
+    "sha256": "4ad599a607d91b4627db42c75d449a91b65a46cfdfc8662c3c9e2d296fd5f15c"
+  },
+  {
+    "source": "XGamepad/Light/T_X_L_Down_Light.png",
+    "file": "xbox/light/LeftStickDown.png",
+    "sha256": "93d0d1e3df1dfbf79fc97a53066b35365836bf0a4e041ace364ad10a1e15dbca"
+  },
+  {
+    "source": "SGamepad/Default/T_S_L_Up.png",
+    "file": "switch/default/LeftStickUp.png",
+    "sha256": "e93fb5f0d8450169be576e8e7a0fa40f29dc5085e8c66ee1c245dcab982f65fc"
+  },
+  {
+    "source": "SGamepad/Default/T_S_L_Down.png",
+    "file": "switch/default/LeftStickDown.png",
+    "sha256": "0fcd2596c2a00503e566b612a6dacc86a4b72cefef72a54dfbfe3d8cf7506b02"
+  },
+  {
+    "source": "SGamepad/Light/T_S_L_Up_Light.png",
+    "file": "switch/light/LeftStickUp.png",
+    "sha256": "8e1d851299931cee15af7d31ce0ffd4b088b0a9cc7e0824c858170b8618e603a"
+  },
+  {
+    "source": "SGamepad/Light/T_S_L_Down_Light.png",
+    "file": "switch/light/LeftStickDown.png",
+    "sha256": "2cc3676653ce70c0d5d744c3901f0868fe4d3664e627e13739ec797e01ac5dce"
   }
 ]
