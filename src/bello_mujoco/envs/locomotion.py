@@ -102,8 +102,8 @@ class BelloLocomotionEnv:
         )
         self._validate_model_metadata()
         if self.config.arm_pose_path is not None:
-            if self.model.bar_body_id < 0:
-                raise ValueError("arm pose bank requires the rigid bar scene")
+            if self.model.bar_body_id < 0 and not self.model.payload_body_ids.size:
+                raise ValueError("arm pose bank requires a bar or EEF payload scene")
             _ = self.arm_bank
             if any(self.config.model_randomization.joint_origin_range):
                 raise ValueError(
@@ -693,7 +693,7 @@ class BelloLocomotionEnv:
         data = data.replace(
             qpos=data.qpos.at[:, root_qpos + 2].add(clearance_adjustment)
         )
-        if self.config.arm_pose_path is not None:
+        if self.config.arm_pose_path is not None and self.model.bar_body_id >= 0:
             loaded = jnp.asarray(self.model.payload_mass) > 0
             data = data.replace(
                 qpos=data.qpos.at[:, self.model.bar_qpos_adr + 2].add(
@@ -743,7 +743,7 @@ class BelloLocomotionEnv:
         root_qpos = int(self.model.root_qpos_adr)
         adjustment = self._reset_foot_clearance_adjustment(state, world_id)
         qpos = state.data.qpos.at[root_qpos + 2].add(adjustment)
-        if self.config.arm_pose_path is not None:
+        if self.config.arm_pose_path is not None and self.model.bar_body_id >= 0:
             qpos = qpos.at[self.model.bar_qpos_adr + 2].add(
                 jnp.where(
                     jnp.asarray(self.model.payload_mass)[world_id] > 0, adjustment, 0.0
@@ -788,7 +788,7 @@ class BelloLocomotionEnv:
         data = randomize_spawn(
             self.model, self.config.spawn, self._terrain_height, data, rng, world_id
         )
-        if self.config.arm_pose_path is not None:
+        if self.config.arm_pose_path is not None and self.model.bar_body_id >= 0:
             data = coherent_bar_reset(self.model, data, world_id)
         return data
 
@@ -1527,7 +1527,7 @@ class BelloLocomotionEnv:
         bar_support = (
             (bar_contact_force(self.model, state.data, world_id) > 1.0)
             & (jnp.asarray(self.model.payload_mass)[world_id] > 0)
-            if self.config.arm_pose_path is not None
+            if self.config.arm_pose_path is not None and self.model.bar_body_id >= 0
             else jnp.asarray(False)
         )
         terminal = bad_pose | nonfinite | unstable | bar_support

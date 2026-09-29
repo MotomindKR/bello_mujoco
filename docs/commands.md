@@ -22,6 +22,8 @@ Use the default `nix develop` shell for CPU evaluation and development.
 uv run --group training bello-train experiment=bello_mini_locomotion seed=1
 uv run --group training bello-train experiment=bello_mini_standing
 uv run --group training bello-train experiment=bello_mini_loaded_standing # requires screened arm bank
+uv run python -m bello_mujoco.evaluation.payload_standing
+uv run --group training bello-train experiment=bello_mini_payload_standing
 uv run --group training bello-train experiment=motion motion_path=motions/asap_fixed_head/CLIP.npz
 uv run --group training bello-train experiment=bello_mini_motion motion_path=/path/to/mini/CLIP.npz
 uv run --group training bello-train experiment=bello_mini_locomotion resume_path=checkpoints/RUN

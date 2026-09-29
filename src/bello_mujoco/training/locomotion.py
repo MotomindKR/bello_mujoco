@@ -158,7 +158,18 @@ def run_training(run_config: TrainingRunConfig) -> None:
                 asset_config,
                 warp=warp,
                 batch_size=1,
-                env_config=env_config,
+                env_config=(
+                    replace(
+                        env_config,
+                        model_randomization=replace(
+                            env_config.model_randomization,
+                            enabled=False,
+                            payload_distribution="fixed",
+                        ),
+                    )
+                    if asset_config.end_effector_payload_mass_kg > 0
+                    else env_config
+                ),
                 reward_config=reward_config,
                 command_config=command_config,
                 done_config=done_config,

@@ -228,14 +228,17 @@ def attach_bar_to_model(path, config):
     ET.ElementTree(root).write(path)
 
 
-def sample_payloads(seed, count):
-    """Fixed per-world 25% unloaded, 25% 30 kg, 50% U[5,30] mixture."""
+def sample_payloads(seed, count, mass_range=(5.0, 30.0)):
+    """Fixed per-world 25% unloaded, 25% maximum, 50% uniform mixture."""
+    low, high = mass_range
+    if not 0 < low <= high or not np.isfinite([low, high]).all():
+        raise ValueError("payload mass range must be positive and ordered")
     values = []
     for world in range(count):
         rng = np.random.default_rng(np.random.SeedSequence((seed, world, 741)))
         choice = rng.random()
         values.append(
-            0.0 if choice < 0.25 else 30.0 if choice < 0.5 else rng.uniform(5, 30)
+            0.0 if choice < 0.25 else high if choice < 0.5 else rng.uniform(low, high)
         )
     return np.asarray(values, dtype=np.float32)
 

@@ -331,6 +331,10 @@ def render_policy_rollout(
                 stats["push_applied"] = 1
             previous_ctrl = mj_data.ctrl.copy()
             requested_ctrl = mujoco_action_to_ctrl(env, action)
+            if env.config.arm_pose_path is not None:
+                requested_ctrl = env.apply_arm_target(
+                    jnp.asarray(requested_ctrl), step_count
+                )
             requested_ctrl = limit_motor_step(
                 jnp.asarray(requested_ctrl),
                 jnp.asarray(previous_ctrl),
@@ -611,7 +615,11 @@ def reset_mujoco_data(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> None:
     mj_data.ctrl[:] = mujoco_action_to_ctrl(
         env, np.zeros(env.action_size, dtype=np.float32)
     )
-    if env.config.arm_pose_path is not None and env.model.payload_mass[0] == 0:
+    if (
+        env.model.bar_body_id >= 0
+        and env.config.arm_pose_path is not None
+        and env.model.payload_mass[0] == 0
+    ):
         mj_data.eq_active[env.model.grip_equality_ids] = False
         mj_data.qpos[env.model.bar_qpos_adr : env.model.bar_qpos_adr + 3] = [
             10.0,
@@ -624,7 +632,7 @@ def reset_mujoco_data(env: BelloLocomotionEnv, mj_data: mujoco.MjData) -> None:
             np.min(mujoco_foot_height(env, mj_data))
         )
         mj_data.qpos[env.model.root_qpos_adr + 2] += clearance_adjustment
-        if env.config.arm_pose_path is not None:
+        if env.config.arm_pose_path is not None and env.model.bar_body_id >= 0:
             mj_data.qpos[env.model.bar_qpos_adr + 2] += clearance_adjustment
         mujoco.mj_forward(env.model.mj_model, mj_data)
 

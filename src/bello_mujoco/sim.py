@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from mujoco import mjx
 
 from bello_mujoco.actuators import ActuatorConfig
+from bello_mujoco.models.urdf import end_effector_payload_body_ids
 from bello_mujoco.models.barbell import (
     sample_payloads,
     free_joint_coordinates,
@@ -121,6 +122,7 @@ class ModelRandomizationConfig:
 
     enabled: bool = False
     payload_distribution: Literal["fixed", "standing"] = "fixed"
+    payload_mass_range_kg: tuple[float, float] = (5.0, 30.0)
     seed: int = 0
     joint_origin_range: tuple[float, float] = (0.0, 0.0)
     joint_angle_offset_range: tuple[float, float] = (0.0, 0.0)
@@ -139,6 +141,9 @@ class ModelRandomizationConfig:
             raise ValueError("payload_distribution must be fixed or standing")
         if self.payload_distribution == "standing" and not self.enabled:
             raise ValueError("standing payload sampling requires model randomization")
+        _validate_randomization_range(
+            "payload_mass_range_kg", self.payload_mass_range_kg, positive=True
+        )
         if self.seed < 0:
             raise ValueError(
                 f"model_randomization.seed must be nonnegative, got {self.seed}"
@@ -246,6 +251,10 @@ class BelloModel:
 
     payload_mass: np.ndarray | None = None
     robot_mass: np.ndarray | None = None
+
+    @cached_property
+    def payload_body_ids(self):
+        return end_effector_payload_body_ids(self.mj_model)
 
     @cached_property
     def bar_body_id(self):
@@ -519,6 +528,8 @@ def _load_model_from_path(
     terrain_geom_ids = named_geom_indices(mj_model, terrain.name)
     foot_body_ids = foot_body_indices(mj_model, robot)
     bar_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "barbell")
+    payload_ids = end_effector_payload_body_ids(mj_model)
+    load_ids = np.asarray([bar_id], dtype=np.int32) if bar_id >= 0 else payload_ids
     robot_geom_ids = robot_collision_geom_indices(mj_model, excluded_body_ids={bar_id})
     foot_geom_ids = foot_support_geom_indices(mj_model, robot, foot_body_ids)
     foot_geom_id_set = set(foot_geom_ids.tolist())
@@ -680,12 +691,11 @@ def _load_model_from_path(
         nonfoot_robot_body_ids=nonfoot_robot_body_ids,
         robot_mass=(
             randomized_fields["body_mass"].sum(axis=1)
-            - (randomized_fields["body_mass"][:, bar_id] if bar_id >= 0 else 0.0)
+            - randomized_fields["body_mass"][:, load_ids].sum(axis=1)
             if randomized_fields is not None
             else np.full(
                 batch_size,
-                mj_model.body_mass.sum()
-                - (mj_model.body_mass[bar_id] if bar_id >= 0 else 0.0),
+                mj_model.body_mass.sum() - mj_model.body_mass[load_ids].sum(),
             )
         ),
         payload_mass=(
@@ -693,7 +703,7 @@ def _load_model_from_path(
             if randomized_fields is not None
             else np.full(
                 batch_size,
-                mj_model.body_mass[bar_id] if bar_id >= 0 else 0.0,
+                mj_model.body_mass[load_ids].sum(),
                 dtype=np.float32,
             )
         ),
@@ -871,19 +881,28 @@ def _randomized_model_fields(
         )
 
     bar_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "barbell")
-    payload_mass = np.full(
-        batch_size, mj_model.body_mass[bar_id] if bar_id >= 0 else 0.0, dtype=np.float32
+    payload_ids = end_effector_payload_body_ids(mj_model)
+    nominal_payload = float(
+        mj_model.body_mass[bar_id]
+        if bar_id >= 0
+        else mj_model.body_mass[payload_ids].sum()
     )
+    payload_mass = np.full(batch_size, nominal_payload, dtype=np.float32)
     if config.payload_distribution == "standing":
-        if bar_id < 0:
-            raise ValueError("standing payload sampling requires a rigid bar")
-        payload_mass = sample_payloads(config.seed, batch_size)
-        # Unloaded worlds retain a positive-mass disconnected prop, parked remotely.
-        physical_mass = np.where(
-            payload_mass > 0, payload_mass, mj_model.body_mass[bar_id]
+        if nominal_payload <= 0:
+            raise ValueError("standing payload sampling requires a bar or EEF payloads")
+        payload_mass = sample_payloads(
+            config.seed, batch_size, config.payload_mass_range_kg
         )
-        body_inertia[:, bar_id] *= (physical_mass / mj_model.body_mass[bar_id])[:, None]
-        body_mass[:, bar_id] = physical_mass
+        if bar_id >= 0:
+            # Unloaded worlds keep a disconnected positive-mass prop parked remotely.
+            physical_mass = np.where(payload_mass > 0, payload_mass, nominal_payload)
+            body_inertia[:, bar_id] *= (physical_mass / nominal_payload)[:, None]
+            body_mass[:, bar_id] = physical_mass
+        else:
+            scale = payload_mass / nominal_payload
+            body_mass[:, payload_ids] *= scale[:, None]
+            body_inertia[:, payload_ids] *= scale[:, None, None]
     result = {
         "payload_mass": payload_mass,
         "jnt_pos": jnt_pos,
@@ -898,7 +917,7 @@ def _randomized_model_fields(
         "gravity_fraction": gravity_fraction,
         "joint_angle_offset": joint_angle_offset,
     }
-    if bar_id >= 0:
+    if bar_id >= 0 or payload_ids.size:
         # Grip softness depends on inverse inertias, not just body_mass. Recompute
         # native constants once per world, outside the rollout, for Warp parity.
         native = deepcopy(mj_model)

@@ -45,7 +45,7 @@ without making that margin a physical stop or a target clamp.
 | `deps/bello-stack/descriptions/` | Canonical geometry and hardware configuration |
 
 Maintained experiments: `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
-`bello_mini_standing`, `bello_mini_loaded_standing`, `motion`, `bello_mini_motion`,
+`bello_mini_standing`, `bello_mini_loaded_standing`, `bello_mini_payload_standing`, `motion`, `bello_mini_motion`,
 and `bello_mini_barbell_motion`.
 The CLI accepts its public top-level overrides;
 edit the selected recipe for nested reward/physics changes.
@@ -181,3 +181,40 @@ For exploratory barbell simulation, `env_config.allow_unscreened_reference`
 the archive result or relaxing mass, torque, grip, or collision constraints.
 The fixed-15 kg profile enables this setting; saved simulation checkpoints retain
 it. Rust deployment continues to require a passed screen.
+
+
+### EEF-load standing pretraining
+
+`bello_mini_payload_standing` trains the existing 14 leg/waist actions with the
+49.5 kg robot and a nominal 15 kg total load, split equally across fixed hand
+payload bodies. It shares the loaded-standing actor's measured arm position,
+velocity and commanded-target observations. Exact payload mass is not an actor
+input. Walking profiles retain their original actions and observations.
+
+`env_config.model_randomization.payload_mass_range_kg` controls the positive
+standing load interval. With `payload_distribution: standing`, 25% of worlds
+receive zero load, 25% receive the upper endpoint, and 50% sample uniformly in
+the interval. Each world's mass stays fixed throughout training. The proxy uses
+[5, 15] kg; the existing rigid-bar default remains [5, 30] kg. Each EEF child
+receives half the total, including zero mass and inertia in unloaded worlds.
+Native derived inertial constants are rebuilt per world before GPU rollout.
+Generic robot randomization does not alter these payload bodies.
+
+Prepare the bank with `uv run python -m bello_mujoco.evaluation.payload_standing`.
+This writes `outputs/payload-standing-15kg/standing.npz` and a JSON report.
+Symmetric arm excursions use four-second quintic transitions and endpoint holds.
+Collision and target-limit checks cover every 50 Hz frame; inverse dynamics with
+foot friction cones screens 5 Hz samples and the endpoint against peak torque.
+Only passing trajectories enter the bank. This screen does not validate thermal
+endurance or prove feasibility under every randomized robot model.
+
+The bank is hashed and copied into checkpoints. Gains, torque limits, feedback
+filters and latency stay unchanged. Small pushes and quiet-foot rewards train
+load compensation. Periodic training videos use the nominal fixed 15 kg proxy;
+final evaluation must separately cover 0, 5, 10 and 15 kg and robot/sensor seeds.
+
+The proxy has no bar collision geometry or two-hand mechanical coupling. It is
+balance pretraining, with episode resets at the reviewed handover posture, not
+pickup/release or motion-endpoint training. Validate the resulting policy on the
+continuous rigid-bar cycle and fine-tune there if necessary. Preserve live
+outputs from both controllers during handoff; hardware remains separately gated.

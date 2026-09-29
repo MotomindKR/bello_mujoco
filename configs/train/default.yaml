@@ -68,6 +68,8 @@ env_config:
     slope_angle_range: [0.0, 0.0]
   model_randomization:
     enabled: false
+    payload_distribution: fixed
+    payload_mass_range_kg: [5.0, 30.0]
     seed: 0
     joint_origin_range: [0.0, 0.0]
     joint_angle_offset_range: [0.0, 0.0]

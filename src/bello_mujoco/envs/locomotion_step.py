@@ -281,7 +281,7 @@ def step_outcome(
         **done_flags,
         **reward_info,
     }
-    if env.config.arm_pose_path is not None:
+    if env.config.arm_pose_path is not None and env.model.bar_body_id >= 0:
         info.update(bar_metrics(env.model, reward_state.data, world_id))
     if env.reward_config.enabled("track_torso_orientation"):
         info["tracking/torso_orientation_error"] = env._torso_orientation_error(

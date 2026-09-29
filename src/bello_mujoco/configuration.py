@@ -29,6 +29,7 @@ ExperimentName = Literal[
     "bello_mini_locomotion",
     "bello_mini_standing",
     "bello_mini_loaded_standing",
+    "bello_mini_payload_standing",
     "motion",
     "bello_mini_motion",
     "bello_mini_barbell_motion",
@@ -43,6 +44,9 @@ _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
         "profiles/train/bello_mini_loaded_standing.yaml"
     ),
     "bello_mini_barbell_motion": Path("profiles/train/bello_mini_barbell_motion.yaml"),
+    "bello_mini_payload_standing": Path(
+        "profiles/train/bello_mini_payload_standing.yaml"
+    ),
     "motion": Path("profiles/train/motion.yaml"),
     "bello_mini_motion": Path("profiles/train/bello_mini_motion.yaml"),
 }
@@ -243,6 +247,12 @@ def locomotion_training_profile(name: ExperimentName) -> TrainingRunConfig:
             "bello_mini_locomotion",
             "bello_mini_standing",
             "bello_mini_loaded_standing",
+        ),
+        "bello_mini_payload_standing": (
+            "bello_mini_locomotion",
+            "bello_mini_standing",
+            "bello_mini_loaded_standing",
+            "bello_mini_payload_standing",
         ),
     }
     if name != "smoke" and name not in profile_layers:

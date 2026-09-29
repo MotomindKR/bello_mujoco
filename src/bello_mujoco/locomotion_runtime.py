@@ -55,6 +55,7 @@ def load_locomotion_policy_runtime(
                     payload_distribution="fixed",
                 )
                 if metadata.asset.barbell is not None
+                or metadata.asset.end_effector_payload_mass_kg > 0
                 else metadata.env.model_randomization
             ),
         ),

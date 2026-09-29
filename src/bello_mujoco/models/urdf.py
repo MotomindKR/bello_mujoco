@@ -140,6 +140,14 @@ def add_end_effector_payloads(
         )
 
 
+def end_effector_payload_body_ids(model: mujoco.MjModel) -> np.ndarray:
+    """Bodies created by add_end_effector_payloads, never robot inertials."""
+    return np.asarray(
+        [i for i in range(model.nbody) if model.body(i).name.endswith("_payload")],
+        dtype=np.int32,
+    )
+
+
 def massless_fixed_urdf_link_names(urdf_path: Path) -> set[str]:
     """Return inertial-free fixed links and reject inertial-free dynamic links."""
 

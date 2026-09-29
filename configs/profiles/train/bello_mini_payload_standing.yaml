@@ -1,0 +1,49 @@
+# EEF-load balance pretraining; full-bar transfer is evaluated separately.
+config:
+  total_timesteps: 3000000000
+  num_envs: 1024
+  num_steps: 24
+  num_minibatches: 32
+asset_config:
+  barbell: null
+  target_total_mass_kg: 49.5
+  # Per hand, at the reviewed hand-local -Z grip point (center is already -25 mm).
+  end_effector_payload_mass_kg: 7.5
+  end_effector_payload_offset_m: [0.0, 0.0, -0.065]
+env_config:
+  arm_pose_path: outputs/payload-standing-15kg/standing.npz
+  model_randomization:
+    payload_distribution: standing
+    payload_mass_range_kg: [5.0, 15.0]
+    joint_angle_offset_scope: policy
+    joint_inertia_scale_range: [0.95, 1.05]
+    friction_range: [0.6, 1.2]
+  random_push:
+    enabled: true
+    curriculum_steps: 200000
+    initial_scale: 0.2
+    lin_vel_x: [-0.2, 0.2]
+    lin_vel_y: [-0.15, 0.15]
+reward_config:
+  weights:
+    stand_still: 1.0
+    stand_contact: -1.0
+    stand_foot_motion: -1.0
+    foot_slip: -1.0
+    stand_foot_foreaft: -0.5
+    stand_foot_width: -0.5
+    track_lin_vel_xy: 2.0
+    track_ang_vel_z: 1.0
+checkpoint_config:
+  every_updates: 1000
+  name: bello_mini_payload_standing_15kg_seed0
+  wandb_artifact_name: bello_mini_payload_standing_15kg_seed0
+wandb_config:
+  group: bello-mini-payload-standing
+  run_name: bello_mini_payload_standing_15kg_seed0
+  tags: [standing, bello-mini, eef-load-proxy, randomized-0-15kg]
+video_config:
+  filename_prefix: bello_mini_payload_standing_15kg
+  every_updates: 5000
+  steps: 1500
+  standing_suite_enabled: false
