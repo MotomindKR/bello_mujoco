@@ -1,0 +1,97 @@
+syntax = "proto3";
+package bello.operator.v1;
+
+service OperatorService {
+  rpc Exchange(stream ControllerSample) returns (stream OperatorStatus);
+}
+
+message ControllerSample {
+  // Strictly increasing within one operator session.
+  uint64 sequence = 1;
+  uint64 sample_monotonic_ns = 2;
+  bool connected = 3;
+  string name = 4;
+  // Normalized semantic intent in [-1, 1]: forward, right, counterclockwise yaw.
+  // The runner projects this intent into the bundle command frame.
+  double forward = 5;
+  double lateral = 6;
+  double yaw = 7;
+  bool back = 8;
+  bool start = 9;
+  bool a = 10;
+  bool r1 = 11;
+  bool dpad_up = 12;
+  bool dpad_down = 13;
+  // Explicit console request. Only accepted after fault cleanup, with neutral inputs.
+  bool clear_fault = 14;
+  // Abort requires both shoulder buttons continuously for one second.
+  bool l1 = 15;
+  // Horizontal mode selection; up/down select within the Motion mode.
+  bool dpad_left = 16;
+  bool dpad_right = 17;
+  // Console hold-to-abort request, independent of gamepad connection.
+  bool abort = 18;
+  // Console selection only; never starts control. Accepted only in Stand.
+  Selection selection = 19;
+  // Rising edge toggles upper-body tracking in Locomotion when configured.
+  bool y = 20;
+}
+
+message Selection {
+  oneof choice {
+    string mode = 1;
+    string motion = 2;
+    bool motion_menu_open = 3;
+    bool tracking_enabled = 4;
+  }
+}
+
+enum Mode {
+  MODE_DISARMED = 0;
+  MODE_HOLD = 1;
+  MODE_STAND = 2;
+  MODE_LOCOMOTION = 3;
+  MODE_MOTION = 4;
+  MODE_FAULT = 5;
+  MODE_TRACKING = 6;
+}
+
+message OperatorStatus {
+  Mode mode = 1;
+  string selected = 2;
+  string active_motion = 3;
+  string phase = 4;
+  double progress = 5;
+  string fault = 6;
+  bool controller_connected = 7;
+  bool neutral_required = 8;
+  repeated string modes = 9;
+  bool can_clear_fault = 10;
+  string recovery_error = 11;
+  uint64 clear_fault_sequence = 12;
+  // Requested locomotion velocity in operator axes; absent outside Locomotion.
+  VelocityCommand velocity_command = 13;
+  repeated string motions = 14;
+  string selected_motion = 15;
+  // Runner-timed hold progress in [0, 1]; zero when cancelled/released.
+  double hold_progress = 16;
+  double confirm_progress = 17;
+  double abort_progress = 18;
+  // A press closes this menu; a separate released-then-held A starts the motion.
+  bool motion_menu_open = 19;
+  bool tracking_available = 20;
+  bool tracking_enabled = 21;
+  bool tracking_live = 22;
+  // Full-body SONIC readiness is independent of upper-body teleop above.
+  bool sonic_ready = 23;
+  double sonic_reference_age_ms = 24;
+  double sonic_buffered_ms = 25;
+  double sonic_delay_ms = 26;
+  string sonic_status = 27;
+}
+
+message VelocityCommand {
+  double forward_mps = 1;
+  double right_mps = 2;
+  double yaw_rps = 3; // Positive counterclockwise.
+}

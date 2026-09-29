@@ -25,6 +25,8 @@ training dependency group, checks GPU training and software rendering, runs a sh
 starts the selected profile with W&B enabled.
 Motion preflight also restores the saved policy, renders a short CPU evaluation,
 and exports its deployment bundle before the full run can start.
+SONIC preflight performs the same restore/render/export gate after downloading
+the versioned W&B corpus artifact and the exact Hugging Face checkpoint revision.
 
 - Completion, setup/training failure, or a disappearing job process triggers
   automatic destruction.
@@ -88,6 +90,53 @@ The transfer checksum is not a checkpoint compatibility contract. Training
 checkpoints and deployment bundles already contain their exact motion copy.
 Other local datasets and historical checkpoint bundles are not uploaded or
 migrated by the launcher.
+
+SONIC jobs use immutable remote inputs instead of SSH-uploaded motion files:
+
+```bash
+uv run bello-vast-train experiment=bello_mini_sonic_transfer \
+  branch=feat/sonic-transfer max_price=0.60 duration_hours=40 \
+  motion_dataset_artifact=ENTITY/PROJECT/mini-sonic:v0 \
+  pretrained_revision=6733128a3d8a523b1418b06bca3cdf61c8b0987f \
+  evaluation_clips='[held_out_walk,held_out_dance]'
+```
+
+The host initializes the pinned `deps/gear_sonic` inspection submodule only for
+this experiment. It downloads the artifact and NVIDIA files outside Git, then
+records their resolved artifact version and checkpoint SHA-256 in every saved
+checkpoint.
+
+### SONIC sizing
+
+Use a **single RTX 5090 (32 GB), at least 64 GB host RAM, and 200 GB local disk**
+as the initial eight-hour-corpus candidate. Prefer at least 12 CPU cores and a
+CUDA-13-capable driver. The launcher currently requires one GPU; multiple
+consumer cards do not combine their VRAM for this training implementation.
+The corrected 2,048-environment smoke measured 16,049 MiB whole-device peak on
+the local 5090, but only with the four small integration clips. Benchmark the
+full corpus before increasing the environment count. A 96 GB RTX PRO 6000 is
+an optional larger-memory tier, not a demonstrated requirement for this task.
+See [measured results and the unresolved stability finding](sonic_validation.md).
+
+Hardware filters and environment count can be made explicit without changing
+the experiment profile:
+
+```bash
+uv run bello-vast-train experiment=bello_mini_sonic_transfer \
+  branch=feat/sonic-transfer dry_run=true num_envs=2048 \
+  offer.gpu_name=RTX_5090 offer.min_gpu_ram_gb=30 \
+  offer.min_cpu_ram_gb=64 offer.disk_gb=200 \
+  motion_dataset_artifact=ENTITY/PROJECT/mini-sonic:v0 \
+  pretrained_revision=6733128a3d8a523b1418b06bca3cdf61c8b0987f \
+  evaluation_clips='[held_out_walk,held_out_dance]'
+```
+
+The example validates source/configuration without renting. Use the finalized
+artifact and complete held-out list, and obtain a separate rental budget before
+launch. Offer availability and hourly rates are live marketplace data, not
+fixed training costs.
+Inspect the returned offer's CPU allocation separately; CPU-core count is not
+currently a configurable launcher filter.
 
 Non-dry execution reads:
 

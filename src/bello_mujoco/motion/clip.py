@@ -72,7 +72,9 @@ class MotionClip:
         return (self.num_frames - 1) / self.fps
 
 
-def load_motion_clip(path: Path | str, model: BelloModel) -> MotionClip:
+def load_motion_clip(
+    path: Path | str, model: BelloModel, *, as_numpy: bool = False
+) -> MotionClip:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(path)
@@ -109,7 +111,11 @@ def load_motion_clip(path: Path | str, model: BelloModel) -> MotionClip:
         fps=fps,
         joint_names=joint_names,
         body_names=body_names,
-        **{name: jnp.asarray(value) for name, value in arrays.items()},
+        **(
+            arrays
+            if as_numpy
+            else {name: jnp.asarray(value) for name, value in arrays.items()}
+        ),
     )
 
 

@@ -52,3 +52,14 @@ with geometry/inertia consolidated into surviving links. Useful fixed head,
 camera, and IMU frames remain. No active joint is disabled during compilation.
 Optional mass/payload experiments live in `asset_config`; payload inertia is
 applied at the declared attachment position.
+
+## Mini visual formats
+
+The canonical Mini URDF references 28 GLBs with embedded materials. Their
+millimetre vertices retain the URDF's 0.001 scale. Head and hand proxy visuals
+are removed; all physical frames, inertials and collisions remain unchanged.
+Electron and Kiss3d render the GLBs. MuJoCo's Python and Rust importers use an
+explicit temporary URDF referencing retained companion STLs. The newly detailed
+head and hands are absent from that visual path; their physical links and
+collisions remain. Missing companions fail at import.
+See the stack's Mini asset provenance for source and geometry details.

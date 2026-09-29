@@ -420,6 +420,44 @@ def test_native_rollout_uses_normalized_deterministic_actor_and_reports_stats(
     assert resources.close_count == 1
 
 
+@pytest.mark.parametrize("stop_on_terminal", [True, False])
+def test_native_rollout_rejects_nonfinite_state(
+    monkeypatch, tmp_path, stop_on_terminal
+):
+    env, state, resources, _, _ = install_native_rollout_fakes(monkeypatch)
+    monkeypatch.setattr(eval_motion, "apply_actor", lambda *_: jnp.zeros(1))
+    monkeypatch.setattr(
+        eval_motion,
+        "make_native_motion_step",
+        lambda _: (
+            lambda *args, **kwargs: (
+                state,
+                jnp.zeros(2),
+                jnp.asarray(0.0),
+                jnp.asarray(True),
+                {"done/terminal": True, "done/timeout": False, "done/nonfinite": True},
+            )
+        ),
+    )
+    with pytest.raises(RuntimeError, match="nonfinite state"):
+        eval_motion.render_motion_policy(
+            env,
+            policy=object(),
+            output_path=tmp_path / "invalid.mp4",
+            steps=1,
+            stop_on_terminal=stop_on_terminal,
+            width=4,
+            height=3,
+            fps=20,
+            obs_stack_size=1,
+            ppo_config=PPOConfig(),
+            observation_norm_state=ObservationNormState(
+                mean=jnp.zeros(2), var=jnp.ones(2), count=jnp.asarray(0.0)
+            ),
+        )
+    assert resources.close_count == 1
+
+
 def test_native_rollout_closes_video_resources_when_step_fails(
     monkeypatch, tmp_path: Path
 ) -> None:

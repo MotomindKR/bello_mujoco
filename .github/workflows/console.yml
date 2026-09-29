@@ -1,0 +1,113 @@
+name: Policy console
+on:
+  push:
+    tags: ['console-v*']
+  pull_request:
+    paths: ['console/**', 'rust/bello-policy/proto/operator.proto', 'deps/bello-stack', 'deps/pico-smplx-bridge', '.github/workflows/console.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    name: ${{ matrix.platform }}-${{ matrix.arch }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            platform: darwin
+            arch: x64
+          - os: macos-15
+            platform: darwin
+            arch: arm64
+          - os: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: stack
+        shell: bash
+        run: |
+          echo "revision=$(git rev-parse HEAD:deps/bello-stack)" >> "$GITHUB_OUTPUT"
+          echo "tracking=$(git rev-parse HEAD:deps/pico-smplx-bridge)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          repository: MotomindKR/bello-stack
+          ref: ${{ steps.stack.outputs.revision }}
+          path: deps/bello-stack
+          ssh-key: ${{ secrets.BELLO_STACK_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: MotomindKR/pico-smplx-bridge
+          ref: ${{ steps.stack.outputs.tracking }}
+          path: deps/pico-smplx-bridge
+          ssh-key: ${{ secrets.PICO_SMPLX_DEPLOY_KEY }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - name: Validate version and native architecture
+        working-directory: console
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          node <<'JS'
+          const assert = require('node:assert/strict');
+          const {version} = require('./package.json');
+          assert.equal(process.arch, process.env.TARGET_ARCH, 'Build on the target architecture for SDL');
+          if (process.env.GITHUB_REF_TYPE === 'tag') {
+            assert.equal(process.env.GITHUB_REF_NAME, `console-v${version}`, 'Tag must match console/package.json version');
+          }
+          JS
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb squashfs-tools libasound2t64 libgbm1 libgtk-3-0t64 libnss3 libgl1
+      - run: npm ci
+        working-directory: console
+      - run: npm run format:check
+        working-directory: console
+      - if: runner.os == 'macOS'
+        working-directory: console
+        run: |
+          brew install vulkan-loader
+          node -p 'require("electron")'
+          prepare_software_renderer() {
+            cp "$(brew --prefix vulkan-loader)/lib/libvulkan.1.dylib" \
+              "$1/Contents/Frameworks/Electron Framework.framework/Libraries/libvulkan.dylib"
+          }
+          prepare_software_renderer node_modules/electron/dist/Electron.app
+          npm test
+          npm run make:mac
+          prepare_software_renderer "out/Bello Mini Console-darwin-$(node -p process.arch)/Bello Mini Console.app"
+          BELLO_CONSOLE_EXECUTABLE="$PWD/out/Bello Mini Console-darwin-$(node -p process.arch)/Bello Mini Console.app/Contents/MacOS/bello-mini-console" node test/smoke.cjs
+      - if: runner.os == 'Linux'
+        working-directory: console
+        run: |
+          xvfb-run -a npm test
+          npm run make:linux
+          appimage=$(find "$PWD/out/make" -name '*.AppImage' -type f)
+          test -n "$appimage"
+          mkdir -p out/appimage-smoke
+          (cd out/appimage-smoke && "$appimage" --appimage-extract)
+          BELLO_CONSOLE_EXECUTABLE="$PWD/out/appimage-smoke/squashfs-root/AppRun" xvfb-run -a node test/smoke.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: console-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            console/out/make/**/*.dmg
+            console/out/make/**/*.AppImage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: console-checks-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: ignore
+          path: |
+            console/out/*.png

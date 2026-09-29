@@ -7,7 +7,7 @@ if (( $# > 1 )) || [[ ${1:-} != "" && ${1:-} != --arm && ${1:-} != --help ]]; th
 fi
 if [[ ${1:-} == --help ]]; then
   echo "Usage: bello-run-policy [--arm]"
-  echo "No arguments: read-only preflight. --arm: interactive HOLD/RUN/IDLE control."
+  echo "No arguments: read-only preflight. --arm: runner-owned gamepad control."
   exit 0
 fi
 
@@ -31,7 +31,7 @@ if [[ ${1:-} == --arm ]]; then
     fi
   done
   if pgrep -x bello-policy >/dev/null; then
-    echo "A policy runner is already running; stop it through its normal IDLE sequence." >&2
+    echo "A policy runner is already running; stop it and wait for lease cleanup." >&2
     exit 1
   fi
   mkdir -p "$source_dir/outputs/policy_logs"

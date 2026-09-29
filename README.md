@@ -26,7 +26,9 @@ inference, native CPU simulation, and Mesa llvmpipe software rasterization on
 Linux; use Lima on macOS.
 
 Maintained experiments are `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
-`bello_mini_standing`, `motion`, and `bello_mini_motion`. Values live in YAML, not documentation tables.
+`bello_mini_standing`, `motion`, `bello_mini_motion`, and
+`bello_mini_sonic_transfer`. SONIC transfer is an explicit pretrained-only
+workflow; see [SONIC transfer](docs/sonic_transfer.md). Values live in YAML, not documentation tables.
 Checkpoints require their exact clean root Git commit and pinned dependencies.
 Historical policies run from historical checkouts, without compatibility fallbacks.
 
@@ -47,6 +49,7 @@ not installed. Update the bridge before its consumers; see [PICO startup](docs/p
 - [Commands](docs/commands.md) and [configuration locations](docs/training_configuration.md)
 - [Training, evaluation, and checkpoints](docs/training_and_evaluation.md)
 - [Robot descriptions](docs/robot_assets.md) and [motion tracking](docs/motion_tracking.md)
+- [Bello Mini policy console](docs/policy_console.md)
 - [Hardware](docs/hardware.md), [emulator](docs/emulator.md), and [Lima](docs/macos_vcan.md)
 - [Systemd daemon startup and operations](docs/systemd.md)
 - [Vast.ai](docs/vast_ai.md)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,31 @@ class ImuSensorConfig:
     body_name: str | None = None
 
 
+def import_urdf_model(urdf_path: Path) -> mujoco.MjModel:
+    # MuJoCo's URDF importer does not read GLB. Keep the canonical visuals intact
+    # and use retained companion STL files only for this temporary import.
+    with tempfile.TemporaryDirectory(prefix="bello-mujoco-urdf-") as temporary:
+        import_tree = ET.parse(urdf_path)
+        adapted = False
+        for mesh in import_tree.findall(".//mesh"):
+            filename = mesh.get("filename")
+            if filename and filename.lower().endswith(".glb"):
+                companion = (urdf_path.parent / filename).with_suffix(".stl").resolve()
+                if not companion.is_file():
+                    raise FileNotFoundError(
+                        f"missing MuJoCo STL companion: {companion}"
+                    )
+                mesh.set("filename", str(companion))
+                adapted = True
+            elif filename:
+                mesh.set("filename", str((urdf_path.parent / filename).resolve()))
+        import_path = urdf_path
+        if adapted:
+            import_path = Path(temporary) / urdf_path.name
+            import_tree.write(import_path, encoding="utf-8", xml_declaration=True)
+        return mujoco.MjModel.from_xml_path(str(import_path))
+
+
 def compile_urdf_to_mjcf(
     urdf_path: Path,
     mjcf_path: Path,
@@ -42,7 +68,7 @@ def compile_urdf_to_mjcf(
     target_total_mass_kg: float | None = None,
     end_effector_payload_mass_kg: float = 0.0,
 ) -> None:
-    model = mujoco.MjModel.from_xml_path(str(urdf_path))
+    model = import_urdf_model(urdf_path)
     tree = save_model_xml(viewer_mjcf_path, model)
     root = tree.getroot()
     root.find("compiler").set("meshdir", str(urdf_path.parent.resolve()))

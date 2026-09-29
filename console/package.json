@@ -1,0 +1,40 @@
+{
+  "name": "bello-mini-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only hardware and pose display with a runner-owned gamepad session",
+  "main": "main.cjs",
+  "scripts": {
+    "build:ui": "vite build",
+    "start": "npm run build:ui && electron-forge start",
+    "make:mac": "npm run build:ui && electron-forge make --platform=darwin",
+    "make:linux": "npm run build:ui && electron-forge make --platform=linux",
+    "test": "npm run test:unit && npm run build:ui && node test/smoke.cjs",
+    "format": "prettier --write \"*.{cjs,json}\" \"src/**/*.{jsx,mjs,css}\" \"test/*.{cjs,mjs}\" \"scripts/*.cjs\"",
+    "format:check": "prettier --check \"*.{cjs,json}\" \"src/**/*.{jsx,mjs,css}\" \"test/*.{cjs,mjs}\" \"scripts/*.cjs\"",
+    "test:unit": "node --test test/controller.cjs test/operator-guide.mjs test/motor-temperature.mjs test/settings.cjs test/tracking.cjs test/snapshot.cjs"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.14.0",
+    "@grpc/proto-loader": "^0.8.0",
+    "@kmamal/sdl": "0.11.13",
+    "lucide-react": "^1.48.0",
+    "pretendard": "^1.3.9",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "three": "0.186.1",
+    "urdf-loader": "0.13.1"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "7.11.2",
+    "@electron-forge/maker-dmg": "7.11.2",
+    "@electron-forge/maker-zip": "7.11.2",
+    "@reforged/maker-appimage": "5.3.1",
+    "electron": "44.4.5",
+    "playwright": "^1.63.0",
+    "prettier": "3.9.9",
+    "vite": "^7.0.0"
+  },
+  "author": "Motomind",
+  "license": "UNLICENSED"
+}

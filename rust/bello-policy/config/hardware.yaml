@@ -11,7 +11,8 @@ startup_feedback_margin_radians: 0.0
 max_tilt_radians: 0.70
 max_angular_velocity: 20.0
 max_linear_acceleration: 100.0
-motion: null
+motions: []
+tracking: null
 control:
   following:
     enabled: false
@@ -24,7 +25,7 @@ control:
     max_target_speed_rps: 9.42477796076938
     connection_transition_duration_seconds: 1.0
   client_name: bello-policy
-  remote: {endpoint: http://127.0.0.1:50054, staleness_ms: 200}
+  operator_listen: 0.0.0.0:50055
   command_validity_seconds: 0.08
   acknowledgement_timeout_seconds: 0.5
   rpc_timeout_seconds: 2.0
@@ -33,7 +34,4 @@ control:
   joystick_command_scale: 1.0
   torso_command: [0.0, 0.0, 0.0]
   max_loop_lag_seconds: 0.10
-  max_duration_seconds: null
-  max_nominal_error_radians: 0.5
-  max_coupled_nominal_error_radians: 1.0
   policy_log_path: null

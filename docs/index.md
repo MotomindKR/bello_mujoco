@@ -5,6 +5,8 @@
 - [Training and evaluation](training_and_evaluation.md)
 - [Robot descriptions](robot_assets.md)
 - [BeyondMimic tracking](motion_tracking.md)
+- [Bello Mini policy console](policy_console.md)
+- [SONIC LoRA transfer](sonic_transfer.md)
 - [Hardware](hardware.md), [emulator](emulator.md), and [Lima](macos_vcan.md)
 - [PICO tracking and hand-control startup](pico_startup.md)
 - [Robot and tracking systemd workflow](systemd.md)
@@ -21,7 +23,7 @@
 | `envs/` | Task stepping, shared scalar/batch transitions, observations, gait, geometry, rewards, diagnostics |
 | `training/` | PPO optimization/rollouts, explicit environment contract, normalization, metrics, shared host update loop, checkpoints and remote training |
 | `evaluation/` | Native CPU rollouts, shared video resources, isolated software workers |
-| `hardware/` | Direct XRoboToolkit body and FastSAM retargeting, reference/neutral-command producers, pose diagnostics, and independent hands |
+| `hardware/` | Direct XRoboToolkit body and FastSAM retargeting, reference producers, pose diagnostics, and independent hands |
 | `motion/` | Reference clip loading and runtime reconstruction |
 | `robots/` | Robot task defaults and coordinate mappings |
 | `deployment.py` | Self-contained ONNX/reference deployment bundles |
@@ -31,4 +33,6 @@ Python paths are relative to `src/bello_mujoco/`. Generated models, checkpoints,
 videos, and caches are local artifacts, not source. Compatibility is the root
 Git commit; there is no parallel asset-manifest or fingerprint versioning system.
 Live messages still require shape, frame, freshness, and confidence validation.
-Offline GMR/dataset tooling is outside this repository's current scope.
+Offline AMASS-to-Mini corpus preparation is documented under
+[SONIC transfer](sonic_transfer.md#amass-research-corpus). It uses the pinned
+GMR implementation without modifying it; source datasets remain read-only.

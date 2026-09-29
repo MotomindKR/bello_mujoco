@@ -1,0 +1,13 @@
+{
+  "hardware": "10.42.0.1:50051",
+  "estimator": "10.42.0.1:50053",
+  "runner": "10.42.0.1:50055",
+  "tracking": "10.42.0.1:50052",
+  "referenceFrame": "odom",
+  "trackedFrame": "pelvis_link",
+  "controllerIndex": 0,
+  "controllerStyle": "xbox",
+  "theme": "system",
+  "deadzone": 0.12,
+  "freshnessMs": 250
+}

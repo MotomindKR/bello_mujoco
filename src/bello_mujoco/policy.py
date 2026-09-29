@@ -162,6 +162,8 @@ def policy_log_std(policy: ActorCritic) -> jax.Array:
 
 
 def clamp_policy_log_std(policy: ActorCritic) -> ActorCritic:
+    if hasattr(policy, "clamp_exploration"):
+        return policy.clamp_exploration()
     return eqx.tree_at(lambda model: model.log_std, policy, policy_log_std(policy))
 
 

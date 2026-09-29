@@ -1,6 +1,20 @@
 experiment: bello_locomotion
 motion_path: null  # Local .npz uploaded over SSH; need not be tracked in Git.
+motion_dataset_artifact: null
+pretrained_revision: null
+evaluation_clips: []
 total_timesteps: null
+num_envs: null
+offer:
+  gpu_name: RTX_5090
+  num_gpus: 1
+  min_cpu_ram_gb: 64
+  min_gpu_ram_gb: 0
+  disk_gb: 80
+  min_reliability: 0.98
+  min_cuda: 13.0
+  image: vastai/base-image:cuda-13.0.3-auto
+  search_limit: 50
 learning_rate: null
 end_effector_payload_mass_kg: null
 max_price: null

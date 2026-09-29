@@ -1,7 +1,7 @@
 //! BeyondMimic observations from motor telemetry and full-state or IMU feedback.
 //! The bundled physics model is used only for kinematics, never as an emulator.
 
-mod clip;
+pub(crate) mod clip;
 pub mod live;
 mod pose;
 mod rotation;
@@ -15,6 +15,18 @@ use serde::{Deserialize, Serialize};
 use crate::Policy;
 use clip::{Clip, Sample};
 use rotation::*;
+
+/// Recoverable policy failures; feedback and safety validation stay fatal.
+#[derive(Debug)]
+pub(super) struct PolicyFailure;
+
+impl std::fmt::Display for PolicyFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("motion policy failed")
+    }
+}
+
+impl std::error::Error for PolicyFailure {}
 
 #[derive(Deserialize)]
 struct Settings {
@@ -378,14 +390,14 @@ impl Motion {
             ensure!(
                 (anchor_pos[2] - reference.body_pos[self.anchor][2]).abs()
                     <= thresholds.root_height_error,
-                "motion termination: anchor height"
+                anyhow::anyhow!("motion termination: anchor height").context(PolicyFailure)
             );
         }
         let gravity = |q: DQuat| (q.conjugate() * DVec3::NEG_Z).z;
         ensure!(
             (gravity(anchor_quat) - gravity(reference.body_quat[self.anchor])).abs()
                 <= thresholds.root_orientation_error,
-            "motion termination: anchor orientation"
+            anyhow::anyhow!("motion termination: anchor orientation").context(PolicyFailure)
         );
         if full_state {
             // Relative-body targets use yaw-only alignment; their world Z is unchanged.
@@ -396,7 +408,7 @@ impl Motion {
                         |&i| (self.data.xpos()[self.bodies[i]][2] - reference.body_pos[i][2]).abs()
                             <= thresholds.end_effector_position_error
                     ),
-                "motion termination: end effector height"
+                anyhow::anyhow!("motion termination: end effector height").context(PolicyFailure)
             );
         }
         let reference =
@@ -438,7 +450,7 @@ impl Motion {
             let start = self.history.len() - frame.len();
             self.history[start..].copy_from_slice(&frame);
         }
-        let output = self.policy.infer(&self.history)?;
+        let output = self.policy.infer(&self.history).context(PolicyFailure)?;
         self.last_action = output
             .action
             .iter()

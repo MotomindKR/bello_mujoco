@@ -2,6 +2,15 @@
 
 Values belong in YAML, not duplicated documentation tables.
 
+SONIC's `sampling_config` controls its temporal-bin, exposure-normalized
+curriculum. `env_config.adaptive_sampling` is the BeyondMimic EMA recipe and
+must stay at inactive defaults for SONIC. See [the sampler contract](sonic_transfer.md#adaptive-motion-sampling).
+
+`config.timeout_bootstrap` selects next-state timeout values by default.
+SONIC explicitly selects `current_state` to reproduce Any2Any TRL's
+`gamma * V(s_t)` reward correction followed by done-masked GAE. This does not
+change the timeout convention for locomotion or BeyondMimic.
+
 Use `asset_config.joint_soft_limits` for task-specific target restrictions. The
 mapping contains logical joint names and `[lower, upper]` radians. Unspecified
 Mini joints use canonical URDF ranges. Resolved actuator limits are saved with
@@ -33,8 +42,17 @@ without making that margin a physical stop or a target clamp.
 | `deps/bello-stack/descriptions/` | Canonical geometry and hardware configuration |
 
 Maintained experiments: `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
-`bello_mini_standing`, `motion`. The CLI accepts its public top-level overrides;
-edit the selected recipe for nested reward/physics changes.
+`bello_mini_standing`, `motion`, `bello_mini_motion`, and
+`bello_mini_sonic_transfer`. The CLI accepts its public top-level overrides;
+edit the selected recipe for nested reward/physics changes. SONIC's corpus,
+immutable artifact identity, held-out clip names, pretrained checkpoint, and
+immutable source revision are explicit inputs; its fixed LoRA/PPO recipe lives
+in `configs/profiles/train/bello_mini_sonic_transfer.yaml`.
+The SONIC profile opts into trajectory minibatches, per-minibatch adaptive
+learning rate, sample-standard-deviation advantages and the reference critic's
+normalizer. Shared PPO defaults for other profiles are unchanged. Its corpus
+array-size guard and separate actor/critic optimization controls are documented
+in [SONIC transfer](sonic_transfer.md).
 
 ```bash
 uv run bello-train --cfg job

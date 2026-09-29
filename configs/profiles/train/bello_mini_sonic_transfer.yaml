@@ -1,0 +1,113 @@
+# Any2Any recipe on canonical Bello Mini dynamics. The corpus and NVIDIA
+# checkpoint are explicit command inputs and remain outside Git.
+dataset:
+  directory: motions/local
+  evaluation_clips: []
+  artifact: null
+  max_array_bytes: 4294967296
+pretrained:
+  checkpoint: checkpoints/sonic_release/last.pt
+  revision: ""
+sampling_config:
+  bin_size: 50
+  pre_failure_sample_window: 200
+  uniform_sampling_rate: 0.1
+  failure_rate_max_over_mean: 200.0
+  init_num_failures: 1.0
+config:
+  num_envs: 2048
+  num_steps: 24
+  update_epochs: 5
+  num_minibatches: 4
+  learning_rate: 0.00005
+  # TRL creates one optimizer; its adaptive scheduler changes every param group.
+  critic_learning_rate: null
+  adaptive_lr_interval: minibatch
+  minibatch_sampling: trajectories
+  advantage_std_ddof: 1
+  adam_epsilon: 0.00000001
+  value_loss_scale: 1.0
+  schedule: adaptive
+  desired_kl: 0.01
+  min_learning_rate: 0.00002
+  max_learning_rate: 0.0002
+  gamma: 0.99
+  gae_lambda: 0.95
+  timeout_bootstrap: current_state
+  clip_eps: 0.2
+  ent_coef: 0.01
+  vf_coef: 1.0
+  max_grad_norm: 0.1
+  # Match TRL: clip finite gradients; no extra pre-clipping magnitude rejection.
+  gradient_norm_max: null
+  normalize_value: false
+  normalize_observations: false
+  normalize_critic_observations: true
+  critic_normalization_mode: any2any
+  policy:
+    hidden_dims: [2048, 2048, 1024, 1024, 512, 512]
+    activation: swish
+    init_log_std: -0.5108256238
+    min_log_std: -6.9077552790
+    max_log_std: -0.5108256238
+    obs_stack_size: 10
+    action_distribution: gaussian
+    action_limit: 20.0
+env_config:
+  # BeyondMimic's EMA curriculum is inactive; use sampling_config above.
+  adaptive_sampling:
+    enabled: false
+    kernel_size: 1
+  observation_mode: proprioceptive
+  formulation: beyondmimic
+  action_clip: 20.0
+  decimation: 4
+  anchor_body_name: pelvis_link
+  simulation_physics:
+    timestep: 0.005
+  observation_low_pass_filter:
+    enabled: true
+    cutoff_hz: 10.0
+    noise_before_filter: true
+    residual_noise_scale: 0.1
+  observation_latency:
+    enabled: true
+    delay_steps: [0, 2]
+  push:
+    enabled: true
+    interval_seconds: [4.0, 6.0]
+  done:
+    root_height_error: 0.25
+    # SONIC compares squared full quaternion angle (rad^2), including yaw.
+    root_orientation_error: 1.0
+    end_effector_position_error: 0.3
+  reward:
+    root_position_weight: 0.5
+    root_orientation_weight: 0.5
+    body_position_weight: 1.0
+    body_orientation_weight: 1.0
+    body_linear_velocity_weight: 1.0
+    body_angular_velocity_weight: 1.0
+    action_rate_weight: -0.1
+    joint_limit_weight: -10.0
+    torque_l1_weight: 0.0
+    torque_peak_weight: 0.0
+    undesired_contact_weight: -0.1
+    local_five_point_weight: 2.0
+    anti_shake_weight: -0.005
+    foot_acceleration_weight: -0.0000025
+    root_position_sigma: 0.3
+    root_orientation_sigma: 0.4
+    body_position_sigma: 0.3
+    body_orientation_sigma: 0.4
+    body_linear_velocity_sigma: 1.0
+    body_angular_velocity_sigma: 3.141592653589793
+    local_five_point_sigma: 0.1
+    anti_shake_threshold: 1.5
+checkpoint_config:
+  name: bello_mini_sonic_transfer_seed${config.seed}
+  every_updates: 1000
+wandb_config:
+  group: bello-mini-sonic-transfer
+  run_name: bello_mini_sonic_transfer_seed${config.seed}
+  tags: [bello-mini, sonic, any2any, lora]

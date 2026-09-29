@@ -27,11 +27,10 @@ cargo run --locked -p bello-policy -- --policy outputs/policy.zip --source . \
   --hardware-config rust/bello-policy/config/hardware.yaml
 ```
 
-Start hardwared first. The gamepad/remote-command service may start later: the
-policy runner starts with zero velocity commands and connects in the background.
-Missing or stale remote input requests standing, not motor disable; it is not an
-emergency stop. On connection or reconnection, an armed neutral sample is required
-before accepting movement. The interactive HOLD/RUN/IDLE sequence is unchanged.
+Start hardwared first. The [policy console](policy_console.md) connects directly
+to hardwared, the estimator and the runner. The runner starts Disarmed and owns
+all transitions; see the console guide for the controller sequence and loss
+behavior. Only the runner acquires leases or sends motor commands.
 Preflight checks source,
 inventory, coordinate coverage, nominal targets/gains, IMU frames, group state,
 and telemetry freshness without acquiring control or writing motor targets.
@@ -79,41 +78,33 @@ the failed request. Repeated limiting is a diagnostic, not proof of stability.
 
 For local settings, copy the hardware YAML to ignored `outputs/` and point
 `--hardware-config` at that file. Keep the tracked checkout clean. In Lima,
-set `control.remote.endpoint` to `http://host.lima.internal:50054` for the native
-Mac visualizer. The reference endpoint, limits, and logging controls live in
+forward runner port 50055 to Mac loopback and set the console runner endpoint
+to `127.0.0.1:50055`. The reference endpoint, limits, and logging controls live in
 the [Rust configuration](../rust/bello-policy/config/hardware.yaml).
 
-Before acquiring control, the runner checks measured motor positions against
-the bundle's nominal pose. `control.max_nominal_error_radians` defaults to
-0.5 radians for direct coordinates; coupled coordinates use
-`control.max_coupled_nominal_error_radians` (1.0 radian). Existing machine-local
-YAML copies retain their own values and must be updated separately.
+Hold starts from measured joint positions and ramps to the bundle's nominal
+pose. Distance from that pose does not gate startup, acquisition, or Hold in
+either HIL or real runs. Joint and motor position limits, command slew limits,
+feedback freshness, tilt checks, and hardware leases still apply. Remove the
+retired `max_nominal_error_radians`, `max_coupled_nominal_error_radians`, and
+`nominal_error_overrides_radians` control fields from machine-local YAML copies;
+unknown configuration fields are rejected.
 
 ## Isolated emulator control
 
-Add `--arm` only for an explicitly authorized commissioning run. Follow the
-interactive sequence: `HOLD` acquires control and ramps to nominal; `RUN` starts
-inference; after stopping, `IDLE` explicitly disables motors. Errors and
-interruptions request damping first. Without `IDLE`, hardwared's watchdog and
-lease-expiry safety remain authoritative.
+Add `--arm` for an authorized commissioning run. The two-second Back+Start chord
+enters Hold, then A for one second enters Stand. Select modes with D-pad left/right and
+confirm with A. L1 + R1 aborts. Stop cleanup damps and releases leases.
+See the [console guide](policy_console.md) for the complete state sequence.
 
-Motion control uses a motion bundle plus a standing bundle. Full-state bundles
-require a fresh pose stream; newly trained proprioceptive bundles use IMU/joints
-without an estimator connection and require `motion.pose` to be omitted.
-See [observation modes](motion_tracking.md#observation-modes). `MOTION` blends
-from standing into the clip. Completion or the first
-Ctrl-C during motion returns to standing; another interrupt stops control.
-Malformed/stale feedback, rejected commands, remote abort, and SIGTERM stop
-control instead of attempting a standing recovery. See the
-[native runtime guide](../rust/bello-policy/README.md) for settings and commands.
-
-Motion uses a reference-relative, direction-sensitive gravity-angle guard
-(`motion.max_tilt_error_radians`), rather than an absolute upright cutoff.
-Transitions blend this reference and tolerance to/from upright. The top-level
-`max_tilt_radians` still protects HOLD, standing, and locomotion. Existing
-machine-local motion YAMLs must replace the removed `motion.max_tilt_radians`
-field explicitly. Both modes retain orientation and hardware safety checks;
-absolute torso/end-effector height checks apply only to full-state runtime.
+Named BeyondMimic bundles are preloaded from `motions` and start only from Stand.
+Full-state bundles require `motions[].settings.pose`; proprioceptive bundles
+require it to be omitted. Motion gravity-angle limits are configured under
+`motions[].settings.max_tilt_error_radians`. The top-level `max_tilt_radians`
+protects Hold, Stand and Locomotion. Feedback faults and abort take priority over
+motion completion. SONIC physical arming remains outside this release.
+See [observation modes](motion_tracking.md#observation-modes) and the
+[native runtime guide](../rust/bello-policy/README.md).
 
 The checkpoint owns normalization, motor targets, gait timing, command slew,
 and observation history. Motor feedback is converted to joint kinematics for

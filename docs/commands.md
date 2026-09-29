@@ -6,7 +6,7 @@ The YAML files linked below are the authoritative field/default reference.
 
 | Command | Configuration | Purpose |
 | --- | --- | --- |
-| `bello-train` | [train.yaml](../configs/commands/train.yaml) | Locomotion or BeyondMimic PPO |
+| `bello-train` | [train.yaml](../configs/commands/train.yaml) | Locomotion, BeyondMimic, or SONIC LoRA PPO |
 | `bello-eval` | [eval.yaml](../configs/commands/eval.yaml) | Linux CPU evaluation |
 | `bello-export-policy` | [export.yaml](../configs/commands/export.yaml) | ONNX/reference deployment bundle |
 | `bello-vast-train` | [vast_train.yaml](../configs/commands/vast_train.yaml) | Bounded remote training |
@@ -23,10 +23,20 @@ uv run --group training bello-train experiment=bello_mini_locomotion seed=1
 uv run --group training bello-train experiment=bello_mini_standing
 uv run --group training bello-train experiment=motion motion_path=motions/asap_fixed_head/CLIP.npz
 uv run --group training bello-train experiment=bello_mini_motion motion_path=/path/to/mini/CLIP.npz
+uv run --group training --group reference-validation bello-train \
+  experiment=bello_mini_sonic_transfer motion_dataset=/data/mini-sonic \
+  motion_dataset_artifact=ENTITY/PROJECT/mini-sonic:v0 \
+  pretrained_checkpoint=/data/sonic_release/last.pt pretrained_revision=COMMIT
 uv run --group training bello-train experiment=bello_mini_locomotion resume_path=checkpoints/RUN
 uv run bello-eval task=locomotion checkpoint_path=checkpoints/RUN gamepad_enabled=false steps=1500
 uv run bello-eval task=motion checkpoint_path=checkpoints/RUN output_path=outputs/motion.mp4
+uv run bello-eval task=sonic_transfer checkpoint_path=checkpoints/RUN \
+  motion_dataset=/data/mini-sonic evaluation_clips='[held_out_walk]' \
+  output_path=outputs/sonic-evaluation
 uv run bello-export-policy checkpoint_path=checkpoints/RUN output_path=outputs/policy.zip
+uv run bello-export-policy checkpoint_path=checkpoints/SONIC \
+  motion_dataset=/data/mini-sonic reference_clips='[walk]' \
+  output_path=outputs/sonic-policy.zip
 ```
 
 Select recipes from `configs/profiles/train/`. Edit those recipes for nested
@@ -34,6 +44,9 @@ physics/reward changes; the CLI exposes only its declared overrides. Evaluation
 and checkpoint resume require the checkpoint's exact clean source commit.
 Evaluation rasterization is Mesa llvmpipe software-only on Linux/Lima. Enabled training
 video failures are fatal; use `video_enabled=false` to disable videos explicitly.
+SONIC evaluation accepts only clip names recorded in the checkpoint's held-out
+split. SONIC export bundles only `reference_clips`; see
+[SONIC transfer](sonic_transfer.md).
 
 For a freshly trained torso-conditioned locomotion policy, add
 `torso_command=[0.1,-0.15,0.2]` to `bello-eval`. Values are roll/pitch/yaw radians;
@@ -51,7 +64,7 @@ nix develop .#rust-runtime --command cargo run --locked -p bello-policy -- \
   --hardware-config rust/bello-policy/config/hardware.yaml
 ```
 
-Start hardwared and the visualizer/remote service separately; see [Lima](macos_vcan.md).
+Start hardwared and the [policy console](policy_console.md) separately; see [Lima](macos_vcan.md).
 The emulator and policy runner are native commands, not Hydra/Python entrypoints.
 See [emulator configuration](emulator.md) and the
 [policy runtime](../rust/bello-policy/README.md).
@@ -71,6 +84,10 @@ uv run bello-run-hands \
   duration_seconds=10
 ```
 
+The reference service emits both the held-joint subset for upper-body following
+and named full-body joints plus world-frame root orientation for buffered SONIC
+Tracking, from the same retargeted sample. See the runner's
+[Tracking configuration](policy_console.md#buffered-tracking-hil).
 The reference service listens on `127.0.0.1:50056` by default; `listen` changes
 that address. The hand command defaults to unarmed preflight and opens no CAN
 connection. Armed independent hand control uses classic CAN directly. Neither
@@ -82,3 +99,8 @@ contract, validity rules, and freshness settings.
 
 See [Vast.ai](vast_ai.md). Remote completion/failure and the host deadline own
 rental teardown. Closing a local monitor does not destroy a running job.
+`num_envs` optionally overrides the selected profile on the remote host.
+The public `offer` tree exposes `gpu_name`, `min_gpu_ram_gb`, `min_cpu_ram_gb`,
+`disk_gb` and the existing marketplace filters.
+Training supports exactly one GPU per instance. Use `dry_run=true` to inspect
+selection without renting.

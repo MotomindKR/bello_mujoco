@@ -60,25 +60,22 @@ before starting; user services never reconfigure buses or require root.
 | Jetson `:50051` | Hardwared |
 | Jetson `:50053` | State estimator |
 | Jetson `127.0.0.1:50056` | GMR joint references (`bello-reference`) |
-| Visualizer host `:50054` | Manual gamepad command service |
+| Jetson `:50055` | Runner operator stream |
 
 Installed units and their referenced configs are authoritative. Keep these
 unauthenticated services on the trusted robot LAN. Body GMR and hand control do not need a
 licensed SMPL-X model or bridge reference-pose calibration. `bello-reference` is the
 GMR server, not an additional process to launch.
 
-## Manual visualizer and policy
+## Manual console and policy
 
-On the Ubuntu tracking PC, plug in the gamepad and open a **desktop terminal**:
+On the Ubuntu tracking PC, open the packaged Bello Mini console with a gamepad.
+Configure its hardware, estimator and runner endpoints to the Jetson ports
+50051, 50053 and 50055. See [console setup](policy_console.md).
 
-```bash
-~/.local/bin/bello-run-visualizer
-```
-
-Keep **Commanding OFF** while the policy owns motors. The launcher uses
-`~/.config/bello/ubuntu-visualizer.yaml`, connects to the Jetson's hardware/pose
-services, and serves gamepad commands on port 50054. It builds the visualizer
-if necessary using the existing Nix/Cargo environment.
+The optional `bello-run-visualizer` launcher remains a Kiss3d diagnostic tool.
+Keep **Commanding OFF** while the policy owns motors. Its configuration is
+`~/.config/bello/ubuntu-visualizer.yaml`; it hosts no gamepad service.
 
 On the Jetson, run read-only preflight:
 
@@ -92,11 +89,11 @@ For approved physical operation, support the robot and run:
 ~/.local/bin/bello-run-policy --arm
 ```
 
-Follow **HOLD**, **RUN**, and, during shutdown, **IDLE**. The launcher checks all
-four robot daemons and refuses a second policy process. It uses
-`~/.config/bello/jetson-policy.yaml`, with GMR enabled locally and gamepad
-commands from the Ubuntu PC. Missing/stale gamepad commands request standing;
-connection requires neutral input before movement.
+Use Back+Start for two seconds to enter Hold, then A for one second to enter
+Stand. Select modes with D-pad left/right and confirm with A. L1 + R1 aborts; cleanup damps and
+releases leases. The launcher checks all four robot daemons and
+refuses a second policy process. It uses `~/.config/bello/jetson-policy.yaml`
+with GMR enabled locally. Reconnection requires neutral controller input.
 
 Each armed run gets a unique `~/bello_mujoco/outputs/policy_logs/` directory;
 the unchanged YAML's relative `policy_log_path` resolves there. Logs are never
@@ -107,8 +104,7 @@ daemons. See [hardware deployment](hardware.md) for commissioning constraints.
 
 ## Stop, logs, and recovery
 
-First stop the manual policy through its normal damping / support / **IDLE**
-sequence. Verify it has released body control. Then, with hands clear:
+First stop the manual policy and wait for damping and lease cleanup. Verify it has released body control. Then, with hands clear:
 
 ```bash
 # Jetson
@@ -289,7 +285,7 @@ To prevent startup on the next boot, disable the relevant target with
 safe shutdown sequence above if needed. Re-running the installer re-enables
 boot startup. Hands still require an explicit restart after a process crash.
 
-To update code or units, complete policy IDLE and stop the robot target, update
+To update code or units, complete policy shutdown and stop the robot target, update
 the checkout/dependencies, rebuild, rerun the installer, and deliberately start
 the target. `systemctl --user cat UNIT` shows its effective command. Never update
 running Python sources or overwrite running native binaries. Restart tracking

@@ -32,6 +32,9 @@ Use `emulator_bello.yaml` for Bello. Start hardwared and the optional state
 estimator/visualizer in separate terminals using the corresponding vCAN
 profiles. Never run multiple emulators on the same CAN/serial endpoints.
 The native emulator accepts virtual CAN interfaces only.
+The setup script sets `vcan0` and `vcan1` transmit queue lengths to 65,536 frames.
+This kernel setting is separate from hardwared's bounded control-batch queues;
+command deadlines still apply.
 
 Enter releases the torso guide. Enter again resets the pose and disarms motors.
 Without an interactive terminal, the guide stays engaged. Ctrl-C/SIGTERM closes

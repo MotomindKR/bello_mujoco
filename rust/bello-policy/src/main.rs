@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
 
@@ -13,6 +14,9 @@ struct Args {
     policy: PathBuf,
     #[arg(long)]
     source: PathBuf,
+    /// Bundled prerecorded SONIC clip to select before runtime initialization.
+    #[arg(long)]
+    clip: Option<String>,
     #[arg(long)]
     check: bool,
     /// Read raw hardwared feedback JSON, assembling checkpoint-defined observations.
@@ -21,7 +25,7 @@ struct Args {
     /// Hardware settings; read-only preflight unless --arm is also supplied.
     #[arg(long, conflicts_with_all = ["check", "telemetry"])]
     hardware_config: Option<PathBuf>,
-    /// Requires interactive HOLD/RUN/IDLE confirmation and explicit control settings.
+    /// Enables the runner-owned operator service; motors remain off until the gamepad chord.
     #[arg(long, requires = "hardware_config")]
     arm: bool,
 }
@@ -39,6 +43,12 @@ async fn main() -> Result<()> {
     if args.check {
         if policy.metadata.task == "motion_tracking" {
             bello_policy::motion::Motion::new(policy)?;
+        } else if policy.metadata.task == "sonic_transfer" {
+            let clip = args
+                .clip
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("SONIC check requires --clip from the bundle"))?;
+            bello_policy::sonic::Sonic::new(policy, clip)?;
         }
         return Ok(());
     }
@@ -48,28 +58,93 @@ async fn main() -> Result<()> {
 
         let mut config: Config = serde_yaml::from_reader(std::fs::File::open(path)?)?;
         let control = config.control.take();
-        let (mut runtime, mut live) = if policy.metadata.task == "motion_tracking" {
-            let settings = config.motion.take().ok_or_else(|| {
-                anyhow::anyhow!("motion hardware control requires motion settings")
-            })?;
-            let standing = Locomotion::new(Policy::load(&settings.standing_policy, &args.source)?)?;
-            let live = bello_policy::motion::live::Live::connect(
-                bello_policy::motion::Motion::new(policy)?,
-                &standing,
-                settings,
-            )
-            .await?;
-            (standing, Some(live))
-        } else {
+        if policy.metadata.task == "sonic_transfer" {
             anyhow::ensure!(
-                config.motion.is_none(),
+                !args.arm,
+                "SONIC physical arming remains a commissioning gate"
+            );
+            anyhow::ensure!(
+                config.motions.is_empty(),
                 "motion settings require a motion bundle"
             );
-            (Locomotion::new(policy)?, None)
-        };
-        let hardware = Hardware::connect(config, &runtime).await?;
-        if let Some(live) = &mut live {
-            live.configure_hardware(&hardware)?;
+            let clip = args.clip.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("SONIC hardware preflight requires --clip from the bundle")
+            })?;
+            let mut runtime = bello_policy::sonic::Sonic::new(policy, clip)?;
+            let hardware = Hardware::connect(
+                config,
+                &runtime.policy.metadata,
+                &runtime.policy.target_limits,
+                runtime.imu_frame(),
+            )
+            .await?;
+            let sample = hardware.feedback(GroupState::Idle).await?;
+            let startup_target = hardware.target_limits.startup_target(
+                &sample.motor_position,
+                hardware.config.startup_feedback_margin_radians,
+            )?;
+            let preview = runtime.step(&bello_policy::sonic::Feedback {
+                motor_position: sample.motor_position,
+                motor_velocity: sample.motor_velocity,
+                orientation_xyzw: sample.orientation_xyzw,
+                angular_velocity_local: sample.angular_velocity,
+                reference_time: 0.,
+                initialize: true,
+            })?;
+            println!(
+                "{}",
+                serde_json::json!({"hardware_preflight": "passed", "armed": false,
+                "observation": preview.observation, "nominal_motor_target": runtime.policy.metadata.default_position,
+                "startup_motor_target": startup_target})
+            );
+            return Ok(());
+        }
+
+        anyhow::ensure!(
+            policy.metadata.task == "locomotion",
+            "hardware operator control requires a standing/locomotion --policy; configure named motions in hardware YAML"
+        );
+        let mut runtime = Locomotion::new(policy)?;
+        let configured_motions = std::mem::take(&mut config.motions);
+        let mut motions = BTreeMap::new();
+        for bundle in configured_motions {
+            anyhow::ensure!(
+                !bundle.name.trim().is_empty()
+                    && !["Stand", "Locomotion", "Motion", "Tracking"]
+                        .contains(&bundle.name.as_str())
+                    && !motions.contains_key(&bundle.name),
+                "invalid or duplicate motion name"
+            );
+            let motion_policy = Policy::load(&bundle.policy, &bundle.source)?;
+            let motion = bello_policy::motion::live::Live::connect(
+                bello_policy::motion::Motion::new(motion_policy)?,
+                &runtime,
+                bundle.settings,
+            )
+            .await?;
+            motions.insert(bundle.name, motion);
+        }
+        if let Some(settings) = config.tracking.take() {
+            let sonic = bello_policy::sonic::Sonic::live(Policy::load(
+                &settings.policy,
+                &settings.source,
+            )?)?;
+            let tracking = bello_policy::tracking::Tracking::new(sonic, &settings)?;
+            motions.insert(
+                "Tracking".into(),
+                bello_policy::motion::live::Live::connect_tracking(tracking, &runtime, &settings)
+                    .await?,
+            );
+        }
+        let hardware = Hardware::connect(
+            config,
+            &runtime.policy.metadata,
+            &runtime.policy.target_limits,
+            runtime.imu_frame(),
+        )
+        .await?;
+        for motion in motions.values_mut() {
+            motion.configure_hardware(&hardware)?;
         }
         if args.arm {
             return bello_policy::control::run(
@@ -77,7 +152,7 @@ async fn main() -> Result<()> {
                 runtime,
                 control
                     .ok_or_else(|| anyhow::anyhow!("armed execution requires control settings"))?,
-                live,
+                motions,
             )
             .await;
         }
@@ -86,8 +161,8 @@ async fn main() -> Result<()> {
             &sample.motor_position,
             hardware.config.startup_feedback_margin_radians,
         )?;
-        if let Some(live) = &live {
-            live.check_feedback(&sample)?;
+        for motion in motions.values() {
+            motion.check_feedback(&sample)?;
         }
         let preview = runtime.step(&sample)?;
         println!(
@@ -101,6 +176,16 @@ async fn main() -> Result<()> {
     if args.telemetry {
         if policy.metadata.task == "motion_tracking" {
             let mut runtime = bello_policy::motion::Motion::new(policy)?;
+            for line in io::stdin().lock().lines() {
+                let sample = serde_json::from_str(&line?)?;
+                println!("{}", serde_json::to_string(&runtime.step(&sample)?)?);
+            }
+            return Ok(());
+        } else if policy.metadata.task == "sonic_transfer" {
+            let clip = args.clip.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("SONIC telemetry requires --clip from the bundle")
+            })?;
+            let mut runtime = bello_policy::sonic::Sonic::new(policy, clip)?;
             for line in io::stdin().lock().lines() {
                 let sample = serde_json::from_str(&line?)?;
                 println!("{}", serde_json::to_string(&runtime.step(&sample)?)?);

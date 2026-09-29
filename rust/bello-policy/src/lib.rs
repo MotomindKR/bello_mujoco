@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -18,10 +18,13 @@ pub mod gait;
 pub mod hardware;
 pub mod locomotion;
 pub mod motion;
+pub mod operator;
 pub mod power;
-pub mod remote;
+pub mod reference;
+pub mod sonic;
 pub mod target_limits;
 pub mod torso;
+pub mod tracking;
 
 #[derive(Debug, Deserialize)]
 pub struct PolicyMetadata {
@@ -43,7 +46,10 @@ pub struct PolicyMetadata {
 impl PolicyMetadata {
     fn validate(&self) -> Result<()> {
         ensure!(
-            matches!(self.task.as_str(), "locomotion" | "motion_tracking"),
+            matches!(
+                self.task.as_str(),
+                "locomotion" | "motion_tracking" | "sonic_transfer"
+            ),
             "unknown policy task"
         );
         ensure!(
@@ -130,19 +136,23 @@ impl PolicyMetadata {
             .is_empty(),
             "policy source checkout is dirty"
         );
-        let submodules = git(&[
+        let mut submodule_args = vec![
             "submodule",
             "status",
             "--recursive",
             "--",
             "deps/bello-stack",
-        ])?;
+        ];
+        if self.task == "sonic_transfer" {
+            submodule_args.push("deps/gear_sonic");
+        }
+        let submodules = git(&submodule_args)?;
         ensure!(
             !submodules.is_empty()
                 && submodules
                     .lines()
                     .all(|line| !line.trim_start().starts_with(['+', '-', 'U'])),
-            "bello-stack must be initialized at the pinned commit"
+            "runtime submodules must be initialized at their pinned commits"
         );
         Ok(())
     }
@@ -159,6 +169,7 @@ pub struct Policy {
     session: Session,
     pub metadata: PolicyMetadata,
     pub reference_motion: Option<Vec<u8>>,
+    pub reference_clips: BTreeMap<String, Vec<u8>>,
     pub physics_xml: Vec<u8>,
     pub document: serde_json::Value,
 }
@@ -234,11 +245,44 @@ impl Policy {
         } else {
             None
         };
+        let mut reference_clips = BTreeMap::new();
+        if metadata.task == "sonic_transfer" {
+            #[derive(Deserialize)]
+            struct Manifest {
+                clips: Vec<String>,
+            }
+            let manifest: Manifest = serde_json::from_reader(
+                archive
+                    .by_name("clips.json")
+                    .context("SONIC deployment bundle is missing clips.json")?,
+            )?;
+            ensure!(
+                !manifest.clips.is_empty()
+                    && manifest.clips.iter().all(|name| {
+                        !name.is_empty()
+                            && std::path::Path::new(name)
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                == Some(name)
+                    })
+                    && manifest.clips.iter().collect::<BTreeSet<_>>().len() == manifest.clips.len(),
+                "invalid SONIC clip manifest"
+            );
+            for name in manifest.clips {
+                let mut bytes = Vec::new();
+                archive
+                    .by_name(&format!("clips/{name}.npz"))
+                    .with_context(|| format!("SONIC bundle is missing clip {name}"))?
+                    .read_to_end(&mut bytes)?;
+                reference_clips.insert(name, bytes);
+            }
+        }
         Ok(Self {
             target_limits,
             session,
             metadata,
             reference_motion,
+            reference_clips,
             physics_xml,
             document,
         })

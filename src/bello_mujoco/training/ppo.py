@@ -42,6 +42,7 @@ from bello_mujoco.training.ppo_types import (
 )
 from bello_mujoco.training.ppo_config import (
     PPOConfig,
+    parameter_learning_rate,
     validate_action_limit_contract,
     validate_ppo_config,
 )
@@ -60,6 +61,16 @@ from bello_mujoco.policy import (
 )
 
 LOG_RATIO_CLIP = 20.0
+
+
+def policy_trainable_filter(policy):
+    """Return a model's explicit trainability mask or the default array mask."""
+
+    return (
+        policy.trainable_filter()
+        if hasattr(policy, "trainable_filter")
+        else eqx.is_array
+    )
 
 
 def init_train_state(
@@ -159,6 +170,15 @@ def compute_gae(
             + config.gamma * next_value * not_terminal
             - transition.value
         )
+        if config.timeout_bootstrap == "current_state":
+            # TRL adds gamma * V(s_t) for timeouts before computing done-masked GAE.
+            timeout = transition.info["done/timeout"].astype(jnp.float32)
+            delta = (
+                transition.reward
+                + config.gamma * timeout * transition.value
+                + config.gamma * next_value * not_boundary
+                - transition.value
+            )
         gae = delta + config.gamma * config.gae_lambda * not_boundary * gae
         return (gae, transition.value), gae
 
@@ -171,8 +191,8 @@ def compute_gae(
     return advantages, advantages + transitions.value
 
 
-def normalize_advantages(advantages: jax.Array) -> jax.Array:
-    return (advantages - advantages.mean()) / (advantages.std() + 1.0e-8)
+def normalize_advantages(advantages: jax.Array, ddof: int = 0) -> jax.Array:
+    return (advantages - advantages.mean()) / (advantages.std(ddof=ddof) + 1.0e-8)
 
 
 def ppo_loss(
@@ -183,6 +203,7 @@ def ppo_loss(
     config: PPOConfig,
     entropy_rng: jax.Array | None = None,
     value_norm_state: ValueNormState | None = None,
+    old_log_std: jax.Array | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     log_prob, entropy, value = evaluate_actions(
         model,
@@ -238,6 +259,20 @@ def ppo_loss(
         ),
         "nonfinite/log_ratio": (~log_ratio_finite).astype(jnp.float32),
     }
+    if old_log_std is not None:
+        mean, log_std, _ = apply_policy(model, transitions.obs, transitions.critic_obs)
+        std, old_std = jnp.exp(log_std), jnp.exp(old_log_std)
+        metrics["analytic_kl"] = jax.lax.stop_gradient(
+            jnp.mean(
+                jnp.sum(
+                    jnp.log(std / old_std + 1.0e-5)
+                    + (old_std**2 + (transitions.action_mean - mean) ** 2)
+                    / (2.0 * std**2)
+                    - 0.5,
+                    axis=-1,
+                )
+            )
+        )
     return total_loss, metrics
 
 
@@ -312,15 +347,31 @@ def update_ppo(
             transitions.critic_obs, config.rollout_observation_max_abs
         ),
     )
-    advantages = normalize_advantages(sanitize_array(advantages, config.target_max_abs))
+    advantages = normalize_advantages(
+        sanitize_array(advantages, config.target_max_abs), config.advantage_std_ddof
+    )
     targets = sanitize_array(targets, config.target_max_abs)
     batch = flatten_batch((safe_transitions, advantages, targets))
-    init_params, static_policy = eqx.partition(train_state.policy, eqx.is_array)
+    trainable_filter = policy_trainable_filter(train_state.policy)
+    init_params, static_policy = eqx.partition(train_state.policy, trainable_filter)
     if learning_rate is None:
         learning_rate = jnp.asarray(config.learning_rate, dtype=jnp.float32)
     else:
         learning_rate = jnp.asarray(learning_rate, dtype=jnp.float32)
     target_kl = math.inf if config.target_kl is None else float(config.target_kl)
+    minibatch_lr = config.adaptive_lr_interval == "minibatch"
+    critic_minibatch_norm = (
+        config.critic_normalization_mode == "any2any"
+        and config.normalize_critic_observations
+    )
+    critic_norm = train_state.critic_norm
+    if critic_minibatch_norm and critic_norm is None:
+        critic_norm = init_observation_norm_state(
+            transitions.critic_obs.shape[-1]
+        )._replace(count=jnp.asarray(1.0, dtype=jnp.float32))
+    old_log_std = (
+        jax.lax.stop_gradient(train_state.policy.log_std) if minibatch_lr else None
+    )
 
     def tree_all_finite(tree) -> jax.Array:
         leaves = jax.tree_util.tree_leaves(tree)
@@ -329,9 +380,16 @@ def update_ppo(
         return jnp.all(jnp.stack([jnp.all(jnp.isfinite(leaf)) for leaf in leaves]))
 
     def update_epoch(carry, _: None):
-        params, opt_state, key, stopped = carry
+        params, opt_state, key, stopped, current_lr, critic_norm = carry
         key, perm_key = jax.random.split(key)
-        permutation = jax.random.permutation(perm_key, config.batch_size)
+        if config.minibatch_sampling == "trajectories":
+            environments = jax.random.permutation(perm_key, config.num_envs)
+            permutation = (
+                environments[:, None]
+                + jnp.arange(config.num_steps)[None, :] * config.num_envs
+            ).reshape(-1)
+        else:
+            permutation = jax.random.permutation(perm_key, config.batch_size)
         shuffled = jax.tree_util.tree_map(lambda x: x[permutation], batch)
         minibatches = jax.tree_util.tree_map(
             lambda x: x.reshape(
@@ -341,10 +399,20 @@ def update_ppo(
         )
 
         def update_minibatch(carry, minibatch: tuple[Transition, jax.Array, jax.Array]):
-            params, opt_state, stopped, key = carry
+            params, opt_state, stopped, key, current_lr, critic_norm = carry
             key, entropy_key = jax.random.split(key)
             old_opt_state = opt_state
             mb_transitions, mb_advantages, mb_targets = minibatch
+            if critic_minibatch_norm:
+                raw_critic = mb_transitions.critic_obs
+                mb_transitions = mb_transitions._replace(
+                    critic_obs=normalize_critic_observation(
+                        raw_critic, critic_norm, config
+                    )
+                )
+                critic_norm = update_critic_observation_norm_state(
+                    critic_norm, raw_critic, config, during_optimization=True
+                )
 
             def loss_fn(params):
                 model = eqx.combine(params, static_policy)
@@ -356,18 +424,26 @@ def update_ppo(
                     config,
                     entropy_rng=entropy_key,
                     value_norm_state=value_norm_state,
+                    old_log_std=old_log_std,
                 )
 
             (loss_value, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(
                 params
             )
+            if minibatch_lr:
+                current_lr = adapt_learning_rate(
+                    current_lr, metrics["analytic_kl"], config, target_kl_exceeded=False
+                )
             updates, opt_state = optimizer.update(grads, opt_state, params)
-            updates = jax.tree_util.tree_map(
-                lambda update: -learning_rate * update, updates
+            updates = jax.tree_util.tree_map_with_path(
+                lambda path, update: (
+                    -parameter_learning_rate(config, current_lr, path) * update
+                ),
+                updates,
             )
             next_params = optax.apply_updates(params, updates)
             policy = clamp_policy_log_std(eqx.combine(next_params, static_policy))
-            next_params, _ = eqx.partition(policy, eqx.is_array)
+            next_params, _ = eqx.partition(policy, trainable_filter)
 
             finite_loss = jnp.isfinite(loss_value)
             finite_metrics = tree_all_finite(metrics)
@@ -380,7 +456,9 @@ def update_ppo(
             ) & (metrics["nonfinite/log_ratio"] == 0)
             gradient_norm = optax.tree.norm(grads)
             plausible_gradient = jnp.isfinite(gradient_norm) & (
-                gradient_norm <= config.gradient_norm_max
+                (gradient_norm <= config.gradient_norm_max)
+                if config.gradient_norm_max is not None
+                else jnp.asarray(True)
             )
             finite_update = (
                 finite_loss
@@ -442,30 +520,40 @@ def update_ppo(
                 "nonfinite/optimizer_state": (~finite_optimizer).astype(jnp.float32),
                 "invalid/gradient_norm": (~plausible_gradient).astype(jnp.float32),
                 "gradient_norm": gradient_norm,
+                "actor_gradient_norm": optax.tree.norm(grads.actor),
+                "critic_gradient_norm": optax.tree.norm(grads.critic),
+                "exploration_gradient_norm": optax.tree.norm(
+                    grads.std if hasattr(grads, "std") else grads.log_std
+                ),
                 "target_kl_exceeded": exceeds_target_kl.astype(jnp.float32),
                 "ppo_update_fraction": should_update.astype(jnp.float32),
             }
-            return (params, opt_state, stopped, key), metrics
+            return (params, opt_state, stopped, key, current_lr, critic_norm), metrics
 
-        (params, opt_state, stopped, key), metrics = jax.lax.scan(
-            update_minibatch,
-            (params, opt_state, stopped, key),
-            minibatches,
+        (params, opt_state, stopped, key, current_lr, critic_norm), metrics = (
+            jax.lax.scan(
+                update_minibatch,
+                (params, opt_state, stopped, key, current_lr, critic_norm),
+                minibatches,
+            )
         )
-        return (params, opt_state, key, stopped), metrics
+        return (params, opt_state, key, stopped, current_lr, critic_norm), metrics
 
-    (params, opt_state, _, _), metrics = jax.lax.scan(
+    (params, opt_state, _, _, final_lr, critic_norm), metrics = jax.lax.scan(
         update_epoch,
         (
             init_params,
             train_state.opt_state,
             rng,
             jnp.asarray(False),
+            learning_rate,
+            critic_norm,
         ),
         None,
         config.update_epochs,
     )
     metrics = aggregate_ppo_metrics(metrics)
+    metrics["final_minibatch_learning_rate"] = final_lr
     metrics.update(
         {name: invalid.astype(jnp.float32) for name, invalid in input_validity.items()}
     )
@@ -476,6 +564,7 @@ def update_ppo(
         policy=clamp_policy_log_std(eqx.combine(params, static_policy)),
         opt_state=opt_state,
         update=train_state.update + 1,
+        critic_norm=critic_norm,
     )
     return train_state, metrics
 
@@ -486,6 +575,9 @@ def aggregate_ppo_metrics(
     max_metric_names = {
         "approx_kl",
         "gradient_norm",
+        "actor_gradient_norm",
+        "critic_gradient_norm",
+        "exploration_gradient_norm",
         "nonfinite_update",
         "target_kl_exceeded",
         *(name for name in metrics if name.startswith(("invalid/", "nonfinite/"))),
@@ -656,7 +748,9 @@ def collect_rollout(
             reward,
             log_prob,
             policy_obs,
-            critic_policy_obs,
+            raw_critic_policy_obs
+            if config.critic_normalization_mode == "any2any"
+            else critic_policy_obs,
             transition_info,
         )
         return (
@@ -737,6 +831,68 @@ def init_runner_state(
     )
 
 
+def init_runner_state_with_policy(
+    rng: jax.Array,
+    env: PPOEnvironment,
+    config: PPOConfig,
+    policy: eqx.Module,
+) -> tuple[RunnerState, eqx.Module, optax.GradientTransformation]:
+    """Initialize the shared PPO runner from an imported, non-random policy."""
+
+    validate_action_limit_contract(config, env.action_clip)
+    rng, env_key, step_count_key = jax.random.split(rng, 3)
+    optimizer = make_optimizer(config)
+    filter_spec = policy_trainable_filter(policy)
+    params, static_policy = eqx.partition(policy, filter_spec)
+    opt_state = optimizer.init(params)
+    task_state = env.initial_task_state()
+    initial_env = env.with_task_state(task_state)
+    env_state, obs = initial_env.reset_batch(config.num_envs, rng=env_key)
+    step_count = env.initial_step_counts(config.num_envs, step_count_key)
+    env_state = initial_env.with_initial_step_counts(env_state, step_count)
+    if env.ppo_stagger_initial_step_count:
+        rng, staggered_obs_key = jax.random.split(rng)
+        obs = initial_env.observation_batch(env_state, staggered_obs_key)
+    critic_obs = initial_env.critic_observation_batch(env_state)
+    obs_stack = init_observation_stack(obs, config.policy.obs_stack_size)
+    critic_obs_stack = init_observation_stack(critic_obs, config.policy.obs_stack_size)
+    expected_actor = policy_observation_size(env.observation_size, config.policy)
+    expected_critic = policy_observation_size(
+        env.critic_observation_size, config.policy
+    )
+    if getattr(policy.actor, "observation_size", expected_actor) != expected_actor:
+        raise ValueError("imported actor observation layout does not match environment")
+    if getattr(policy.critic, "observation_size", expected_critic) != expected_critic:
+        raise ValueError(
+            "imported critic observation layout does not match environment"
+        )
+    return (
+        RunnerState(
+            params=params,
+            opt_state=opt_state,
+            update=jnp.asarray(0, dtype=jnp.int32),
+            env_state=env_state,
+            obs_stack=obs_stack,
+            critic_obs_stack=critic_obs_stack,
+            rng=rng,
+            learning_rate=jnp.asarray(config.learning_rate, dtype=jnp.float32),
+            value_norm_state=init_value_norm_state(),
+            observation_norm_state=init_observation_norm_state(expected_actor),
+            critic_observation_norm_state=init_observation_norm_state(
+                expected_critic
+            )._replace(
+                count=jnp.asarray(
+                    1.0 if config.critic_normalization_mode == "any2any" else 0.0,
+                    dtype=jnp.float32,
+                )
+            ),
+            task_state=task_state,
+        ),
+        static_policy,
+        optimizer,
+    )
+
+
 def runner_train_state(
     runner_state: RunnerState,
     static_policy: eqx.Module,
@@ -762,6 +918,7 @@ def update_runner_state(
         policy=policy,
         opt_state=runner_state.opt_state,
         update=runner_state.update,
+        critic_norm=runner_state.critic_observation_norm_state,
     )
     (
         (
@@ -817,13 +974,21 @@ def update_runner_state(
         learning_rate=learning_rate,
         value_norm_state=value_norm_state,
     )
-    next_learning_rate = adapt_learning_rate(
-        learning_rate,
-        adaptive_learning_rate_kl(metrics, config),
-        config,
-        target_kl_exceeded=metrics["target_kl_exceeded"] > 0,
+    if config.critic_normalization_mode == "any2any":
+        critic_observation_norm_state = train_state.critic_norm
+    next_learning_rate = (
+        metrics["final_minibatch_learning_rate"]
+        if config.adaptive_lr_interval == "minibatch"
+        else adapt_learning_rate(
+            learning_rate,
+            adaptive_learning_rate_kl(metrics, config),
+            config,
+            target_kl_exceeded=metrics["target_kl_exceeded"] > 0,
+        )
     )
-    params, _ = eqx.partition(train_state.policy, eqx.is_array)
+    params, _ = eqx.partition(
+        train_state.policy, policy_trainable_filter(train_state.policy)
+    )
     task_metrics = env.task_state_metrics(task_state)
     metrics = {
         **metrics,

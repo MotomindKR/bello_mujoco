@@ -34,6 +34,8 @@ def training_updates(
     config: PPOConfig,
     initial_runner: RunnerInitialization,
     run,
+    *,
+    update_fn=None,
 ):
     """Yield synchronized, validated updates after recording training metrics."""
     runner_state, static_policy, optimizer = initial_runner
@@ -44,9 +46,12 @@ def training_updates(
             f"update={start_update}, num_updates={config.num_updates}"
         )
 
-    @jax.jit
-    def update_fn(state):
-        return update_runner_state(state, static_policy, optimizer, env, config)
+    if update_fn is None:
+        update_fn = jax.jit(
+            lambda state: update_runner_state(
+                state, static_policy, optimizer, env, config
+            )
+        )
 
     for _ in tqdm(
         range(start_update, config.num_updates),

@@ -1,4 +1,4 @@
-//! Direction-sensitive, yaw-independent tilt protection for live motion.
+//! Direction-sensitive, yaw-independent tilt deviation for live motion.
 
 use anyhow::{Result, ensure};
 use glam::{DQuat, DVec3};
@@ -27,9 +27,13 @@ impl Envelope {
         }
     }
 
-    pub fn check(self, orientation: DQuat) -> Result<f64> {
+    pub fn error(self, orientation: DQuat) -> Result<f64> {
         let gravity = checked_quaternion(orientation)?.conjugate() * DVec3::NEG_Z;
-        let error = self.gravity.angle_between(gravity);
+        Ok(self.gravity.angle_between(gravity))
+    }
+
+    pub fn check(self, orientation: DQuat) -> Result<f64> {
+        let error = self.error(orientation)?;
         ensure!(
             error <= self.max_error,
             "motion tilt deviation {error:.4} rad exceeds reference limit {:.4} rad",
