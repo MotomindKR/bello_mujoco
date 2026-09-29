@@ -356,7 +356,7 @@ def main() -> None:
     tracking_parser.add_argument(
         "--bridge-listen",
         action="append",
-        help="repeatable listener (default: 127.0.0.1:50052)",
+        help="repeatable listener (default: 0.0.0.0:50052)",
     )
     tracking_parser.add_argument(
         "--device-id", help="track only this headset device ID"
@@ -395,7 +395,7 @@ def main() -> None:
             args.tracking_dir.absolute(),
             require_file(Path(uv)),
             xrobot_release(),
-            tuple(args.bridge_listen or ("127.0.0.1:50052",)),
+            tuple(args.bridge_listen or ("0.0.0.0:50052",)),
             args.device_id,
         )
         # Resolve all source prerequisites before downloading or writing anything.

@@ -11,13 +11,15 @@ consumes the reference producer and hardwared telemetry.
 
 | Process | Endpoint in this same-host example | Purpose |
 | --- | --- | --- |
-| PICO bridge | `127.0.0.1:50052` | Native XRoboToolkit body and hand poses |
+| PICO bridge | `0.0.0.0:50052` | Native XRoboToolkit body and hand poses |
 | `bello-run-reference` | `127.0.0.1:50056` | GMR joint references |
 | `bello-hardwared` | `127.0.0.1:50051` | Robot telemetry and motor control |
 | Policy runner | `127.0.0.1:50055` | Operator stream |
 
 The receiver listens on port 63901; its SDK uses local port 60061. The bridge
 uses 50052 so hardwared can retain 50051 on the same host. No viewer is needed.
+The bridge accepts clients on all IPv4 interfaces. Onboard clients use
+`127.0.0.1:50052`; remote clients use the Jetson's LAN or hotspot IP address.
 
 ## Tracking host
 

@@ -287,7 +287,7 @@ def tracking_checkout(installer, monkeypatch, tmp_path):
     return checkout
 
 
-def test_tracking_units_use_direct_sdk_and_separate_local_port(
+def test_tracking_units_use_direct_sdk_and_network_bridge_port(
     installer, tracking_checkout, monkeypatch, tmp_path
 ):
     module, calls = installer
@@ -300,7 +300,7 @@ def test_tracking_units_use_direct_sdk_and_separate_local_port(
     assert "viewer" not in target
     assert "RoboticsServiceProcess" in receiver
     assert "SDK/arm64/libPXREARobotSDK.so" in bridge
-    assert '"--listen" "127.0.0.1:50052"' in bridge
+    assert '"--listen" "0.0.0.0:50052"' in bridge
     assert "After=xrobotoolkit.service" in bridge
     assert "Wants=xrobotoolkit.service" in bridge
     assert "UnsetEnvironment=LD_LIBRARY_PATH" not in receiver + bridge

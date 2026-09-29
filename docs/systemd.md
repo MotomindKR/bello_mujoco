@@ -56,7 +56,7 @@ before starting; user services never reconfigure buses or require root.
 | Endpoint | Owner |
 | --- | --- |
 | Tracking host `:63901` | XRoboToolkit PC Service |
-| Tracking host `127.0.0.1:50052` | Typed native body and hand bridge |
+| Tracking host `0.0.0.0:50052` | Typed native body and hand bridge |
 | Jetson `:50051` | Hardwared |
 | Jetson `:50053` | State estimator |
 | Jetson `127.0.0.1:50056` | GMR joint references (`bello-reference`) |
@@ -234,10 +234,14 @@ it explicitly. `--dry-run` prints units, download URL, checksum and environment
 paths without downloading, changing systemd or writing files. Repeated installs
 reuse the verified distribution and matching dependency environment.
 
-The default bridge listener is `127.0.0.1:50052`, leaving hardwared's `50051`
-free. For a separate tracking PC, pass `--bridge-listen HOST_IP:50052` and give
-that address to the robot installer's `--tracking-endpoint`. Repeat
-`--bridge-listen` to also bind loopback. `--device-id` selects a particular
+The default bridge listener is `0.0.0.0:50052`, exposing native tracking on all
+IPv4 interfaces and leaving hardwared's `50051` free. Onboard GMR and hand
+clients can use `127.0.0.1:50052`. For a separate tracking host, set the robot
+installer's `--tracking-endpoint` to that host's reachable IP and port 50052.
+Pass `--bridge-listen HOST_IP:50052`
+to restrict the listener to one interface, or `--bridge-listen 127.0.0.1:50052`
+for local clients only. Repeat `--bridge-listen` for additional addresses.
+`--device-id` selects a particular
 headset; `--tracking-dir` sets the installation directory; `--uv` selects the
 setup-time uv executable. Unsupported distributions/architectures fail explicitly.
 
