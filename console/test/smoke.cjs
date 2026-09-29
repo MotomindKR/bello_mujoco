@@ -59,7 +59,7 @@ const runnerStatus = {
   selectedMotion: "Wave",
   phase: "standing",
   modes: ["Stand", "Locomotion", "Motion", "Tracking"],
-  startups: ["Crane", "Front-down"],
+  startups: ["Crane", "Back-down"],
   selectedStartup: "Crane",
   sonicReady: true,
   sonicBufferedMs: 1100,
@@ -390,19 +390,19 @@ async function serve(service, implementation) {
       const saved = structuredClone(runnerStatus);
       Object.assign(runnerStatus, { mode: "MODE_DISARMED", phase: "disarmed" });
       await page
-        .getByRole("button", { name: "Front-down", exact: true })
+        .getByRole("button", { name: "Back-down", exact: true })
         .click();
       await page.waitForFunction(
         () =>
           document.querySelector('.mode-option[aria-pressed="true"]')
-            ?.textContent === "Front-down",
+            ?.textContent === "Back-down",
       );
       assert(
-        samples.some((sample) => sample.selection?.startup === "Front-down"),
+        samples.some((sample) => sample.selection?.startup === "Back-down"),
       );
       assert.equal(runnerStatus.mode, "MODE_DISARMED");
       await capture(page, {
-        path: path.join(root, "console/out/front-down-startup.png"),
+        path: path.join(root, "console/out/back-down-startup.png"),
       });
       Object.assign(runnerStatus, saved);
       await page.getByRole("button", { name: "Motion", exact: true }).waitFor();
@@ -426,7 +426,7 @@ async function serve(service, implementation) {
           { mode: "MODE_HOLD", phase: "holding", progress: 1 },
           {
             mode: "MODE_HOLD",
-            selectedStartup: "Front-down",
+            selectedStartup: "Back-down",
             phase: "bending",
             progress: 0.2,
           },
@@ -665,7 +665,7 @@ async function serve(service, implementation) {
               : { motion: sample.selection.motion },
         ),
       [
-        { startup: "Front-down" },
+        { startup: "Back-down" },
         { mode: "Locomotion" },
         { mode: "Motion" },
         { motion: "Bow" },
@@ -775,6 +775,36 @@ async function serve(service, implementation) {
       1,
       "Short keyboard hold must cancel",
     );
+    await abortButton.hover();
+    await page.mouse.down();
+    Object.assign(runnerStatus, {
+      mode: "MODE_FAULT",
+      phase: "fault",
+      canClearFault: false,
+    });
+    const idleButton = page.getByRole("button", {
+      name: "Hold to idle",
+      exact: true,
+    });
+    await idleButton.waitFor();
+    assert.equal(await idleButton.isEnabled(), false);
+    runnerStatus.canClearFault = true;
+    await page.waitForFunction(
+      () => !document.querySelector(".abort-button").disabled,
+    );
+    await page.waitForTimeout(1200);
+    await page.mouse.up();
+    assert.equal(
+      samples.filter((sample) => sample.clearFault).length,
+      0,
+      "Holding across a fault transition must not request Idle",
+    );
+    assert.equal(samples.filter((sample) => sample.abort).length, 1);
+    Object.assign(runnerStatus, {
+      mode: "MODE_STAND",
+      phase: "standing",
+      canClearFault: false,
+    });
     assert.equal(await page.locator("canvas").count(), 1);
     assert.equal(await page.locator(".model .model-feedback").count(), 1);
     assert.equal(await page.locator(".hero-heading").count(), 0);
@@ -1030,15 +1060,32 @@ async function serve(service, implementation) {
       "Fault",
     );
     recoveryFails = false;
-    await page
-      .getByRole("button", { name: "Clear fault", exact: true })
-      .click();
+    await idleButton.hover();
+    await page.mouse.down();
+    await page.waitForTimeout(300);
+    await page.mouse.up();
+    await page.waitForTimeout(800);
+    assert.equal(
+      samples.filter((sample) => sample.clearFault).length,
+      1,
+      "Short Idle hold must cancel",
+    );
+    await idleButton.focus();
+    await page.keyboard.down("Space");
     await page.waitForFunction(
       () =>
         document.querySelector(".header-status strong")?.textContent ===
         "Disarmed",
     );
+    await page.waitForTimeout(1200);
+    await page.keyboard.up("Space");
     assert.equal(samples.filter((sample) => sample.clearFault).length, 2);
+    assert.equal(
+      samples.filter((sample) => sample.abort).length,
+      1,
+      "Holding across recovery must not abort again",
+    );
+    assert.equal(await abortButton.isEnabled(), true);
     Object.assign(runnerStatus, { mode: "MODE_STAND", phase: "standing" });
     powerSamples[0].motorRail = {
       voltageV: 48.125,

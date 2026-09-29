@@ -374,7 +374,13 @@ def start_services(fake, *, pose_enabled=True):
 
 
 def bundle(
-    source, *, metadata_updates=None, physics=b"<mujoco/>", motion=None, target=None
+    source,
+    *,
+    metadata_updates=None,
+    physics=b"<mujoco/>",
+    motion=None,
+    target=None,
+    action=None,
 ):
     metadata = dict(
         git_commit=subprocess.check_output(
@@ -416,7 +422,7 @@ def bundle(
             value=numpy_helper.from_array(np.asarray([values], dtype=np.float32)),
         )
         for name, values in [
-            ("action", [0] * count),
+            ("action", [0] * count if action is None else action),
             ("motor_target", target or metadata["default_position"]),
         ]
     ]

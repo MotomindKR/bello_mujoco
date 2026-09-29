@@ -90,7 +90,7 @@ let sequence = 0n;
 let operatorCall;
 let pendingClear;
 let abortHoldTimer;
-let pendingAbort = false;
+let pendingStop = null;
 let pendingSelection;
 function cancelAbortHold() {
   clearTimeout(abortHoldTimer);
@@ -349,7 +349,7 @@ function startOperator() {
       if (operatorCall === call) {
         operatorCall = null;
         cancelAbortHold();
-        pendingAbort = false;
+        pendingStop = null;
         pendingSelection = null;
         finishClear(
           "Runner disconnected while clearing fault. Check its status before retrying.",
@@ -391,7 +391,7 @@ function startTracking() {
 
 function stopConnections() {
   cancelAbortHold();
-  pendingAbort = false;
+  pendingStop = null;
   pendingSelection = null;
   finishClear(
     "Connections changed while clearing fault. Check runner status before retrying.",
@@ -495,8 +495,12 @@ app.whenReady().then(() => {
     if (!isConsoleSender(event)) return;
     window.setFullScreen(!window.isFullScreen());
   });
-  ipcMain.handle("abort-hold", (event, held) => {
-    if (!isConsoleSender(event) || typeof held !== "boolean")
+  ipcMain.handle("abort-hold", (event, held, action) => {
+    if (
+      !isConsoleSender(event) ||
+      typeof held !== "boolean" ||
+      !["abort", "idle"].includes(action)
+    )
       return { error: "Invalid abort request." };
     if (!held) {
       cancelAbortHold();
@@ -505,9 +509,16 @@ app.whenReady().then(() => {
     if (abortHoldTimer) return {};
     const call = operatorCall;
     if (!runnerReady(call)) return { error: "Runner unavailable." };
+    const matchesAction = () =>
+      action === "idle"
+        ? snapshot.operator?.mode === "MODE_FAULT" &&
+          snapshot.operator.canClearFault
+        : snapshot.operator?.mode !== "MODE_FAULT";
+    if (!matchesAction())
+      return { error: "Wait for the runner to finish stopping." };
     abortHoldTimer = setTimeout(() => {
       // Keep the timer set until release so key repeats cannot retrigger it.
-      if (runnerReady(call)) pendingAbort = true;
+      if (runnerReady(call) && matchesAction()) pendingStop = action;
     }, 1000);
     return {};
   });
@@ -614,9 +625,17 @@ app.whenReady().then(() => {
       sample.clearFault = true;
       pendingClear.sequence = sample.sequence;
     }
-    if (pendingAbort && operatorCall && !operatorCall.destroyed) {
-      sample.abort = true;
-      pendingAbort = false;
+    if (pendingStop) {
+      if (runnerReady()) {
+        if (pendingStop === "idle" && snapshot.operator?.canClearFault)
+          sample.clearFault = true;
+        else if (
+          pendingStop === "abort" &&
+          snapshot.operator?.mode !== "MODE_FAULT"
+        )
+          sample.abort = true;
+      }
+      pendingStop = null;
     }
     if (pendingSelection) {
       if (

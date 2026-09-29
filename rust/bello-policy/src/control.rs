@@ -354,7 +354,7 @@ pub async fn run(
                     &mut *log,
                     &serde_json::json!({"event": "startup_target",
                 "motor_target": startup_target, "measured_motor_position": measured_startup,
-                "startup": if lying { "front_down" } else { "crane" },
+                "startup": if lying { "back_down" } else { "crane" },
                 "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}),
                 )?;
                 log.write_all(b"\n")?;
@@ -483,7 +483,6 @@ pub async fn run(
                 }
                 if input.lost && mode == Mode::Locomotion {
                     mode = Mode::Stand;
-                    policy.reset();
                     operator.set_mode(mode, "standing", "", 0.);
                 }
                 let mut start_motion = false;
@@ -514,12 +513,10 @@ pub async fn run(
                     }
                     Some(RequestMode::Stand) if mode == Mode::Locomotion => {
                         mode = Mode::Stand;
-                        policy.reset();
                         operator.set_mode(mode, "standing", "", 0.);
                     }
                     Some(RequestMode::Locomotion) if mode == Mode::Stand => {
                         mode = Mode::Locomotion;
-                        policy.reset();
                         operator.set_mode(mode, "locomotion", "", 0.);
                     }
                     Some(RequestMode::Motion(name))

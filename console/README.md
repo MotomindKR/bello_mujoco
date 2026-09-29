@@ -38,19 +38,20 @@ Build on the target architecture with `npm run make:mac` (DMG) or
 Forge rebuilds the SDL controller module for Electron on each native runner.
 The Bello face icon source is in [assets](assets/README.md).
 
-CI builds macOS and Linux for both x64 (amd64) and arm64. It runs for matching
+CI builds macOS for Apple silicon (arm64) and Linux for x64 (amd64) and arm64.
+Intel Macs are not supported. It runs for matching
 pull requests, manual dispatch, and pushed `console-v*` tags. Set the version
 in `package.json` and `package-lock.json`, update `RELEASE_NOTES.md`, commit the
 release, then tag it:
 
 ```bash
-git tag console-v0.2.2
-git push origin console-v0.2.2
+git tag console-v0.2.3
+git push origin console-v0.2.3
 ```
 
-The tag must exactly match `console-v` plus the package version. After all four
+The tag must exactly match `console-v` plus the package version. After all three
 packaged smoke tests pass, CI publishes the DMGs, AppImages and `SHA256SUMS` to a
-GitHub Release. The `console-darwin-{x64,arm64}` / `console-linux-{x64,arm64}`
+GitHub Release. The `console-darwin-arm64` / `console-linux-{x64,arm64}`
 Actions artifacts remain available as well. macOS bundles use an ad-hoc signature
 to bind their bundle identity and privacy description. They are not Developer ID
 signed or notarized.

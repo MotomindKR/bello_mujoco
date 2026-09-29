@@ -15,9 +15,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15-intel
-            platform: darwin
-            arch: x64
           - os: macos-15
             platform: darwin
             arch: arm64
@@ -140,7 +137,7 @@ jobs:
         run: |
           mkdir release
           version="${GITHUB_REF_NAME#console-v}"
-          for target in darwin-x64 darwin-arm64 linux-x64 linux-arm64; do
+          for target in darwin-arm64 linux-x64 linux-arm64; do
             extension=AppImage
             if [[ "$target" == darwin-* ]]; then extension=dmg; fi
             mapfile -d '' files < <(find "installers/console-$target" -type f -name "*.$extension" -print0)

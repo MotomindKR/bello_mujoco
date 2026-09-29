@@ -130,7 +130,7 @@ export function OperatorCard({ state, children }) {
           <DirectionHint direction="Right" sample={sample} />
         </div>
         <div className="mode-detail">
-          {startup && operator.selectedStartup === "Front-down" && (
+          {startup && operator.selectedStartup === "Back-down" && (
             <div className="tracking-toggle">
               <span>
                 {operator.phase === "engaging ankles"
@@ -217,7 +217,11 @@ export function OperatorCard({ state, children }) {
       </div>
       <StickIndicators state={state} />
       <AbortButton
-        available={live}
+        key={operator.mode === "MODE_FAULT" ? "idle" : "abort"}
+        idle={operator.mode === "MODE_FAULT"}
+        available={
+          live && (operator.mode !== "MODE_FAULT" || operator.canClearFault)
+        }
         sample={sample}
         progress={live ? operator.abortProgress : 0}
       />

@@ -50,6 +50,7 @@ struct State {
     hold_since: Option<Instant>,
     confirm_since: Option<Instant>,
     abort_since: Option<Instant>,
+    stop_consumed: bool,
     previous_left: bool,
     previous_right: bool,
     previous_up: bool,
@@ -116,6 +117,7 @@ impl State {
             hold_since: None,
             confirm_since: None,
             abort_since: None,
+            stop_consumed: false,
             previous_left: false,
             previous_right: false,
             previous_up: false,
@@ -151,6 +153,15 @@ impl State {
         self.confirm_consumed = false;
     }
 
+    fn request_clear(&mut self, sequence: u64) {
+        self.status.clear_fault_sequence = sequence;
+        self.clear_requested = true;
+        self.aborted = false;
+        self.status.can_clear_fault = false;
+        self.status.recovery_error.clear();
+        self.status.phase = "clearing fault".into();
+    }
+
     fn receive(&mut self, sample: ControllerSample, now: Instant) -> Result<()> {
         let axes = [sample.forward, sample.lateral, sample.yaw];
         ensure!(
@@ -177,11 +188,7 @@ impl State {
             self.status.clear_fault_sequence = sample.sequence;
             let neutral = neutral_input(&sample);
             if neutral {
-                self.clear_requested = true;
-                self.aborted = false;
-                self.status.can_clear_fault = false;
-                self.status.recovery_error.clear();
-                self.status.phase = "clearing fault".into();
+                self.request_clear(sample.sequence);
             } else {
                 self.status.recovery_error =
                     "Release all controller inputs before clearing fault.".into();
@@ -194,6 +201,21 @@ impl State {
             return Ok(());
         }
         if sample.connected && sample.l1 && sample.r1 {
+            let idle = self.status.mode == Mode::Fault as i32;
+            if self.stop_consumed {
+                self.axes = [0.; 3];
+                return Ok(());
+            }
+            if idle
+                && (!self.status.can_clear_fault
+                    || self.neutral_required
+                    || !neutral_except_shoulders(&sample))
+            {
+                self.abort_since = None;
+                self.status.abort_progress = 0.;
+                self.axes = [0.; 3];
+                return Ok(());
+            }
             let since = *self.abort_since.get_or_insert(now);
             self.status.abort_progress = now.duration_since(since).as_secs_f64().min(1.);
             self.axes = [0.; 3];
@@ -204,11 +226,17 @@ impl State {
             self.confirm_consumed = sample.a;
             self.pending = None;
             if now.duration_since(since) >= Duration::from_secs(1) {
-                self.aborted = true;
+                self.stop_consumed = true;
+                if idle {
+                    self.request_clear(sample.sequence);
+                } else {
+                    self.aborted = true;
+                }
             }
             return Ok(());
         }
         self.abort_since = None;
+        self.stop_consumed = false;
         self.status.abort_progress = 0.;
         if let Some(selection) = &sample.selection {
             // Mode/menu choices work without a gamepad. Tracking is handled
@@ -447,6 +475,10 @@ impl State {
 }
 
 fn neutral_input(sample: &ControllerSample) -> bool {
+    !sample.l1 && !sample.r1 && neutral_except_shoulders(sample)
+}
+
+fn neutral_except_shoulders(sample: &ControllerSample) -> bool {
     [sample.forward, sample.lateral, sample.yaw]
         .iter()
         .all(|v| v.abs() <= NEUTRAL)
@@ -454,8 +486,6 @@ fn neutral_input(sample: &ControllerSample) -> bool {
             || sample.start
             || sample.a
             || sample.y
-            || sample.l1
-            || sample.r1
             || sample.dpad_up
             || sample.dpad_down
             || sample.dpad_left
@@ -526,7 +556,7 @@ impl Source {
             state.pending.take()
         };
         Snapshot {
-            lying_start: state.status.selected_startup == "Front-down",
+            lying_start: state.status.selected_startup == "Back-down",
             axes: if lost { [0.; 3] } else { state.axes },
             lost,
             request,
@@ -562,7 +592,7 @@ impl Source {
         let mut state = self.state.lock().unwrap();
         state.status.startups = vec!["Crane".into()];
         if lying {
-            state.status.startups.push("Front-down".into());
+            state.status.startups.push("Back-down".into());
         }
     }
 
@@ -610,11 +640,8 @@ impl Source {
 
     pub fn fault(&self, message: &str) {
         let mut state = self.state.lock().unwrap();
+        state.disconnect();
         state.status.velocity_command = None;
-        state.hold_since = None;
-        state.confirm_since = None;
-        state.status.hold_progress = 0.;
-        state.status.confirm_progress = 0.;
         state.status.startup_ready = false;
         state.status.mode = Mode::Fault as i32;
         state.status.phase = "fault".into();
@@ -788,7 +815,7 @@ mod tests {
     #[test]
     fn startup_selection_requires_a_new_chord_and_balance_requires_readiness() {
         let (mut state, mut controller) = fixture();
-        state.status.startups.push("Front-down".into());
+        state.status.startups.push("Back-down".into());
         controller.send(
             &mut state,
             ControllerSample {
@@ -808,7 +835,7 @@ mod tests {
             },
             1200,
         );
-        assert_eq!(state.status.selected_startup, "Front-down");
+        assert_eq!(state.status.selected_startup, "Back-down");
         assert!(state.pending.is_none());
         controller.send(&mut state, ControllerSample::default(), 20);
         controller.send(
@@ -864,7 +891,7 @@ mod tests {
             },
             20,
         );
-        assert_eq!(state.status.selected_startup, "Front-down");
+        assert_eq!(state.status.selected_startup, "Back-down");
     }
 
     #[test]
@@ -956,6 +983,88 @@ mod tests {
         controller.send(&mut source.state.lock().unwrap(), chord, 2200);
         assert_eq!(source.snapshot().request, Some(RequestMode::Hold));
     }
+    #[tokio::test]
+    async fn shoulder_abort_then_idle_requires_release_and_allows_rearming() {
+        let source = Source::bind("127.0.0.1:0".parse().unwrap(), vec![]).unwrap();
+        let mut controller = Controller::new();
+        let shoulders = ControllerSample {
+            l1: true,
+            r1: true,
+            ..Default::default()
+        };
+        controller.send(&mut source.state.lock().unwrap(), shoulders.clone(), 1040);
+        assert_eq!(source.snapshot().request, Some(RequestMode::Abort));
+        source.fault("Operator abort");
+        source.allow_fault_clear("");
+        controller.send(&mut source.state.lock().unwrap(), shoulders.clone(), 2200);
+        assert!(!source.take_fault_clear());
+        controller.send(
+            &mut source.state.lock().unwrap(),
+            ControllerSample::default(),
+            20,
+        );
+        controller.send(&mut source.state.lock().unwrap(), shoulders.clone(), 800);
+        assert!(!source.take_fault_clear());
+        controller.send(
+            &mut source.state.lock().unwrap(),
+            ControllerSample::default(),
+            20,
+        );
+        controller.send(&mut source.state.lock().unwrap(), shoulders.clone(), 1040);
+        assert!(source.take_fault_clear());
+        assert_ne!(source.snapshot().request, Some(RequestMode::Abort));
+        assert!(source.disarm_after_recovery());
+        controller.send(&mut source.state.lock().unwrap(), shoulders, 2200);
+        assert_ne!(source.snapshot().request, Some(RequestMode::Abort));
+        assert!(!source.take_fault_clear());
+        controller.send(
+            &mut source.state.lock().unwrap(),
+            ControllerSample::default(),
+            20,
+        );
+        controller.send(
+            &mut source.state.lock().unwrap(),
+            ControllerSample {
+                back: true,
+                start: true,
+                ..Default::default()
+            },
+            2040,
+        );
+        assert_eq!(source.snapshot().request, Some(RequestMode::Hold));
+    }
+
+    #[test]
+    fn idle_hold_requires_cleanup_neutral_sticks_and_continuous_samples() {
+        let (mut state, mut controller) = fixture();
+        state.status.mode = Mode::Fault as i32;
+        let shoulders = ControllerSample {
+            l1: true,
+            r1: true,
+            ..Default::default()
+        };
+        controller.send(&mut state, shoulders.clone(), 1040);
+        assert!(!state.clear_requested);
+        state.status.can_clear_fault = true;
+        controller.send(
+            &mut state,
+            ControllerSample {
+                forward: 0.5,
+                ..shoulders.clone()
+            },
+            1040,
+        );
+        assert!(!state.clear_requested);
+        controller.send(&mut state, shoulders.clone(), 800);
+        controller.now += STALE + Duration::from_millis(1);
+        controller.send(&mut state, shoulders.clone(), 1040);
+        assert!(!state.clear_requested);
+        assert_eq!(state.status.abort_progress, 0.);
+        controller.send(&mut state, ControllerSample::default(), 20);
+        controller.send(&mut state, shoulders, 1040);
+        assert!(state.clear_requested);
+    }
+
     #[test]
     fn chord_is_continuous_and_fires_once_until_release() {
         let (mut state, mut controller) = fixture();

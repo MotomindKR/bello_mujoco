@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import { GamepadButton } from "./GamepadButton.jsx";
 
-export function AbortButton({ available, sample, progress = 0 }) {
+export function AbortButton({ available, sample, progress = 0, idle = false }) {
+  const action = idle ? "idle" : "abort";
+  const label = `Hold to ${action}`;
   const held = useRef(false);
   const [holding, setHolding] = useState(false);
   const [error, setError] = useState("");
@@ -10,15 +12,17 @@ export function AbortButton({ available, sample, progress = 0 }) {
     if (!held.current) return;
     held.current = false;
     setHolding(false);
-    window.bello.abortHold(false).catch(() => setError("Runner unavailable."));
-  }, []);
+    window.bello
+      .abortHold(false, action)
+      .catch(() => setError("Runner unavailable."));
+  }, [action]);
   const start = async () => {
     if (held.current || !available) return;
     held.current = true;
     setHolding(true);
     setError("");
     try {
-      const result = await window.bello.abortHold(true);
+      const result = await window.bello.abortHold(true, action);
       if (result.error) {
         cancel();
         setError(result.error);
@@ -42,7 +46,7 @@ export function AbortButton({ available, sample, progress = 0 }) {
     <button
       type="button"
       className={"abort-button" + (holding ? " holding" : "")}
-      aria-label="Hold to abort"
+      aria-label={label}
       disabled={!available}
       onPointerDown={(event) => {
         if (event.button === 0) {
@@ -88,7 +92,7 @@ export function AbortButton({ available, sample, progress = 0 }) {
         }
         aria-hidden="true"
       />
-      <strong>{error || "Hold to abort · 1 s"}</strong>
+      <strong>{error || `${label} · 1 s`}</strong>
       <span className="abort-chord">
         <GamepadButton name="L1" sample={sample} progress={progress} /> +{" "}
         <GamepadButton name="R1" sample={sample} progress={progress} />

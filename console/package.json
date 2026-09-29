@@ -1,14 +1,14 @@
 {
   "name": "bello-mini-console",
   "desktopName": "bello-mini-console.desktop",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Read-only hardware and pose display with a runner-owned gamepad session",
   "main": "main.cjs",
   "scripts": {
     "build:ui": "vite build",
     "start": "npm run build:ui && electron-forge start",
-    "make:mac": "npm run build:ui && electron-forge make --platform=darwin",
+    "make:mac": "npm run build:ui && electron-forge make --platform=darwin --arch=arm64",
     "make:linux": "npm run build:ui && electron-forge make --platform=linux",
     "test": "npm run test:unit && npm run build:ui && node test/smoke.cjs",
     "format": "prettier --write \"*.{cjs,json}\" \"src/**/*.{jsx,mjs,css}\" \"test/*.{cjs,mjs}\" \"scripts/*.cjs\"",

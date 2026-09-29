@@ -84,7 +84,7 @@ bundle, its exact clean source checkout, and the runner hardware/control YAML.
 It runs the current `bello-policy` binary with `--arm`, which enables the operator
 server on port 50055; it does not acquire control until the gamepad Hold chord.
 Named motions, buffered SONIC Tracking, upper-body following and assisted
-Front-down startup remain configured in that YAML. Use absolute bundle/source
+Back-down startup remain configured in that YAML. Use absolute bundle/source
 paths in its `motions` and `tracking` entries.
 
 Support the robot before entering Hold. Use Back+Start for two seconds to enter

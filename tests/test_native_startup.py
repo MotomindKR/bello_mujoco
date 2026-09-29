@@ -41,7 +41,7 @@ class AssistedHardware(SyntheticHardware):
         "missing_joint",
     ],
 )
-def test_front_down_startup(rust_policy, hardware_proto, tmp_path, scenario):
+def test_back_down_startup(rust_policy, hardware_proto, tmp_path, scenario):
     _, _, source = rust_policy
     names = [
         f"{side}_{joint}_joint"
@@ -55,7 +55,7 @@ def test_front_down_startup(rust_policy, hardware_proto, tmp_path, scenario):
     for i in (2, 6):
         mapping[i : i + 2, i : i + 2] = [[1, 1], [1, -1]]
     fake = AssistedHardware(hardware_proto, names=names, positions=[0.0] * 8)
-    fake.orientation = hardware_proto.Quaternion(y=2**-0.5, w=2**-0.5)
+    fake.orientation = hardware_proto.Quaternion(y=-(2**-0.5), w=2**-0.5)
     server, pool, endpoint = start_services(fake)
     policy = tmp_path / "policy.zip"
     policy.write_bytes(
@@ -132,9 +132,9 @@ def test_front_down_startup(rust_policy, hardware_proto, tmp_path, scenario):
                 return
             operator = OperatorClient(address)
             assert not fake.calls
-            assert list(operator.status.startups) == ["Crane", "Front-down"]
+            assert list(operator.status.startups) == ["Crane", "Back-down"]
             operator.press(dpad_right=True)
-            operator.wait(lambda s: s.selected_startup == "Front-down")
+            operator.wait(lambda s: s.selected_startup == "Back-down")
             operator.press(2.1, back=True, start=True)
             operator.wait(lambda s: s.phase == "awaiting lift", timeout=25)
             if scenario == "abort_lift":
@@ -142,9 +142,14 @@ def test_front_down_startup(rust_policy, hardware_proto, tmp_path, scenario):
                 operator.wait(lambda s: s.mode == pb.MODE_FAULT and s.can_clear_fault)
                 assert fake.state == hardware_proto.GROUP_STATE_DAMPED
                 assert "disable" not in fake.calls
-                operator.press(clear_fault=True)
+                operator.press(1.1, l1=True, r1=True)
                 operator.wait(lambda s: s.mode == pb.MODE_DISARMED)
                 assert fake.state == hardware_proto.GROUP_STATE_IDLE
+                fake.orientation = hardware_proto.Quaternion(w=1)
+                operator.press(dpad_left=True)
+                operator.wait(lambda s: s.selected_startup == "Crane")
+                operator.stand()
+                assert fake.state == hardware_proto.GROUP_STATE_RUNNING
                 return
             assert not operator.status.startup_ready
             operator.press(1.1, a=True)

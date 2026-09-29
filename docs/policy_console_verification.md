@@ -451,3 +451,25 @@ These tests use loopback hardware and synthetic policies. Front-down pose angles
 remain opt-in configuration; no physical lift or trained-policy physics HIL
 validation is claimed. Platform installers are independently verified by the
 release workflow before publication.
+
+## 2026-09-29: Console 0.2.3 recovery and policy continuity
+
+- Abort changes the one-second stop button to Hold to idle after damping cleanup.
+  A separate one-second L1+R1 hold uses the same runner recovery path. Continued
+  holds cannot cross from abort to Idle or from recovery into another abort.
+- Stand/Locomotion changes and disconnect-to-Stand preserve policy history,
+  previous actions, gait state and torso command smoothing.
+- Assisted startup is now Back-down (face upward). The loopback startup fixture
+  begins with the corresponding flat-torso orientation. Hip and knee flexion
+  signs, balance confirmation, free ankles and paced straightening are retained.
+- macOS packaging targets arm64 only; Linux retains x64 and arm64.
+
+Validation: all 60 Rust unit tests and eight Linux native integration cases
+passed. The native continuity regression first failed against the previous
+runner when its previous-action observation jumped to zero on a mode change.
+With the fix, repeated Stand/Locomotion changes and moving-session disconnect
+match an uninterrupted replay of the same measured inputs. The startup tests
+include damping-to-Idle recovery followed by re-entry to Hold and Stand.
+All 25 console unit tests and the macOS Electron smoke passed, including short
+holds, action changes during a held button, recovery failure/retry and Back-down
+selection. These are synthetic control checks, not physical stability tests.

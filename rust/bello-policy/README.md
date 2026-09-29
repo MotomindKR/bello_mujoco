@@ -90,8 +90,8 @@ For isolated emulator validation, add `--arm`. The runner hosts the operator
 stream on `control.operator_listen` (port 50055). A neutral controller sample and
 a two-second Back+Start chord enter Hold. The default Crane startup ramps to
 nominal Hold; a one-second A press enters Stand. Optional `control.lying_start`
-adds Front-down startup, with free ankles, balance confirmation and left-stick
-straightening. See [assisted startup](../../docs/policy_console.md#assisted-front-down-startup)
+adds Back-down startup, with free ankles, balance confirmation and left-stick
+straightening. See [assisted startup](../../docs/policy_console.md#assisted-back-down-startup)
 for configuration and controller phases.
 From Stand, D-pad left/right selects Stand, Locomotion, or Motion. Within Motion,
 D-pad up/down selects a preloaded named motion; holding A for one second confirms.

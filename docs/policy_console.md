@@ -1,6 +1,6 @@
 # Bello Mini policy console
 
-The Electron console supports macOS and Ubuntu/Debian on x64 (amd64) and arm64. The interface
+The Electron console supports Apple silicon macOS and Ubuntu/Debian on x64 (amd64) and arm64. Intel Macs are not supported. The interface
 uses Motomind typography and surfaces, English labels, a full-width dashboard
 with a compact edge inset, and Light/Dark/System appearance settings. System is
 the default and follows operating-system changes; Light and Dark override it.
@@ -177,7 +177,8 @@ new owner must release all controls before operating.
 | Tracking, reference buffer ready | A for 1 second with neutral sticks | Blend back to Stand |
 | Named motion | Completion | Blend back to Stand |
 | Named motion | Policy inference/action, tilt deviation, or tracking termination failure | Blend back to Stand; retain control |
-| Any state | L1 + R1 for 1 second | Latched abort and Fault |
+| Outside Fault | L1 + R1 for 1 second | Latched abort, damping and Fault |
+| Fault, after cleanup and releasing inputs | L1 + R1 for 1 second or console **Hold to idle** | Disable damped groups, recover faults and verify Idle; return to Disarmed |
 | Fault, after cleanup | Console **Clear fault**, with neutral inputs | Recover hardware groups and return to Disarmed |
 
 Presses must be continuous and released before repeating. Named motions cannot
@@ -190,6 +191,11 @@ neutral range for motion and the entry/confirmation checks. Small residual
 input cannot activate the policy's minimum walking speed. The checkpoint's
 gait stop transition can finish its remaining steps after a moving command
 returns to zero.
+
+Stand and Locomotion share one continuous policy session. Switching between
+them preserves observation history, previous actions, gait state and torso
+command smoothing. Stand requests zero velocity through the checkpoint's normal
+command/gait transition; a controller disconnect uses the same stopping path.
 
 Before acquisition, connection loss leaves the runner Disarmed. Hold retains
 its current target (a ramp pauses). Locomotion zeros its velocity command and
@@ -269,9 +275,9 @@ npm run make:linux     # Linux host: AppImage (requires squashfs-tools)
 Forge rebuilds the native module and keeps SDL's native library outside ASAR.
 Artifacts go to ignored `console/out/make`. macOS packages are unsigned local
 commissioning builds. Release signing/notarization requires deployment credentials.
-CI builds all four OS/architecture combinations on native runners. Pushing a
+CI builds these three OS/architecture combinations on native runners. Pushing a
 `console-v<version>` tag triggers the build; its version must match
-`console/package.json`. After all four packaged smoke tests pass, CI publishes
+`console/package.json`. After all three packaged smoke tests pass, CI publishes
 the installers and `SHA256SUMS` to a GitHub Release using
 `console/RELEASE_NOTES.md`. Installers also remain downloadable Actions artifacts. See the
 [console README](../console/README.md) for tag commands and required deploy keys.
@@ -319,8 +325,15 @@ together for one second on the controller. The console button works without a ga
 early, losing focus, or losing the runner connection cancels the button hold.
 Both paths request a runner abort and release hardware leases with damping,
 without disabling the motors. The runner keeps a latched Fault for explicit
-recovery. **Clear fault** performs the existing hardware recovery/reset and
-returns to Disarmed; a new entry chord is required.
+recovery. The button changes to **Hold to idle** after aborting, and becomes
+available once damping cleanup finishes. Release the first hold, then hold the
+button or **L1 + R1** again for one second with neutral sticks. This disables
+damped groups, recovers hardware faults and verifies fresh Idle feedback before
+returning to Disarmed. A continuous press cannot trigger both actions.
+**Clear fault** uses the same recovery path. If recovery fails, the error remains
+visible and the action can be retried. After success, release all inputs and hold
+**Back + Start** for two seconds to re-enable Hold, then hold **A** for one second
+to enter Stand. No runner restart is needed.
 
 Bello Mini's physical and vCAN hardware profiles request damping for every
 fault cause, including temperature and reported motor faults. Damping uses
@@ -404,14 +417,18 @@ confirm, and shoulder-abort prompts fill using runner-reported hold progress.
 Releasing either shoulder or losing samples resets an unfinished abort timer.
 The on-screen abort button keeps its separate one-second pointer/keyboard hold.
 
-## Assisted front-down startup
+## Assisted back-down startup
 
 The runner supports two startup choices, selected with D-pad left/right or the
 console's **Startup** buttons while Disarmed. **Crane** remains the default:
 Back+Start for two seconds ramps to nominal Hold, then A for one second enters
 Stand.
 
-Enable **Front-down** by setting `control.lying_start` in the hardware YAML. Its
+Back-down starts with the robot lying on its back, face upward. Hip flexion and
+knee bending keep the same joint signs: the operator lifts the torso while the
+runner holds bent legs. The runner does not roll the robot over or lift its torso.
+
+Enable **Back-down** by setting `control.lying_start` in the hardware YAML. Its
 angles are logical joint radians, resolved through the bundle's motor mapping,
 including differential ankles. This example is a commissioning preset, not a
 validated physical lift pose:
@@ -434,7 +451,7 @@ The maximum configured straightening speed is 0.5 rad/s; ankle engagement takes
 
 | Phase | Operator action | Runner behavior |
 | --- | --- | --- |
-| Disarmed | Select Front-down; hold Back+Start for 2 s | Acquire control; ramp to bent hips/knees over `ramp_seconds`. |
+| Disarmed | Select Back-down; hold Back+Start for 2 s | Acquire control; ramp to bent hips/knees over `ramp_seconds`. |
 | Lift | Lift and balance the supported robot upright | Hold bent legs. All ankle actuators have zero position gain, damping gain and feedforward torque. |
 | Confirm balance | Release sticks; hold A for 1 s | Accept only while torso tilt is within the normal hardware limit. IMU tilt does not measure foot contact or balance; the operator confirms support. |
 | Straighten | Push left stick up; release to pause | Move toward nominal hips/knees at up to the configured joint speed. Stick deflection scales speed; tighter motor step limits reduce it further. Other axes and downward input do not move the pose. Ankles remain free. |

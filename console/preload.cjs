@@ -5,8 +5,8 @@ contextBridge.exposeInMainWorld(
     selectChoice(kind, name) {
       return ipcRenderer.invoke("select-choice", kind, name);
     },
-    abortHold(held) {
-      return ipcRenderer.invoke("abort-hold", held);
+    abortHold(held, action) {
+      return ipcRenderer.invoke("abort-hold", held, action);
     },
     clearFault() {
       return ipcRenderer.invoke("clear-fault");
