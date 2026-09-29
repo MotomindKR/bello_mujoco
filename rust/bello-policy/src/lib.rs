@@ -19,7 +19,7 @@ pub mod hardware;
 pub mod locomotion;
 pub mod motion;
 pub mod power;
-pub mod remote;
+pub mod operator;
 pub mod target_limits;
 pub mod torso;
 

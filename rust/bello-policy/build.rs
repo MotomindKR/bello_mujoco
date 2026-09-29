@@ -1,7 +1,7 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=proto/reference.proto");
-    tonic_prost_build::configure()
-        .build_server(false)
-        .compile_protos(&["proto/reference.proto"], &["proto"])?;
+    println!("cargo:rerun-if-changed=proto/operator.proto");
+    tonic_prost_build::configure().compile_protos(&["proto/reference.proto"], &["proto"])?;
+    tonic_prost_build::configure().compile_protos(&["proto/operator.proto"], &["proto"])?;
     Ok(())
 }

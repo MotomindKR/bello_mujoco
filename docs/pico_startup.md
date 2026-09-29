@@ -14,7 +14,7 @@ consumes the reference producer and hardwared telemetry.
 | PICO bridge | `127.0.0.1:50052` | Native XRoboToolkit body and hand poses |
 | `bello-run-reference` | `127.0.0.1:50056` | GMR joint references |
 | `bello-hardwared` | `127.0.0.1:50051` | Robot telemetry and motor control |
-| Bello visualizer | `127.0.0.1:50054` | Remote controller intent |
+| Policy runner | `127.0.0.1:50055` | Operator stream |
 
 The receiver listens on port 63901; its SDK uses local port 60061. The bridge
 uses 50052 so hardwared can retain 50051 on the same host. No viewer is needed.
@@ -121,14 +121,10 @@ nix develop .#rust-runtime --command cargo run --locked \
   --config /absolute/path/to/machine-hardwared.yaml
 ```
 
-Start the [Bello visualizer](../deps/bello-stack/components/bello-visualizer/README.md)
-with its machine-local profile and a connected gamepad. For the same-host
-example, pass `--hardware-endpoint http://127.0.0.1:50051`; its remote service
-listens on 50054. The Mini example also expects the state estimator on 50053.
-Keep the visualizer's **Commanding** toggle off while the policy owns motors.
-It may start after the policy runner: absent/stale gamepad commands request
-standing, and connection/reconnection requires neutral input before movement.
-The policy's HOLD/RUN confirmations are still required.
+Start the [policy console](policy_console.md) with a mapped gamepad. In this
+same-host example, use hardware `127.0.0.1:50051`, estimator `127.0.0.1:50053`
+and runner `127.0.0.1:50055`. The runner starts Disarmed and waits for neutral
+input followed by the gamepad entry chord.
 
 Copy the policy settings into ignored output and edit the copy:
 
@@ -145,8 +141,7 @@ control:
   following:
     enabled: true
     endpoint: http://127.0.0.1:50056
-  remote:
-    endpoint: http://127.0.0.1:50054
+  operator_listen: 127.0.0.1:50055
 ```
 
 Run read-only preflight with a policy bundle and its **exact clean source
@@ -163,12 +158,12 @@ An older bundle does not become compatible by pointing `--source` at new main.
 Use its matching checkout or export a bundle from a checkpoint trained at the
 new source revision. See [export and deployment](hardware.md).
 
-For a commissioned control run, add `--arm`, then use the interactive `HOLD`
-and `RUN` sequence. After stopping, `IDLE` explicitly disables motors. Live
+For a commissioned control run, add `--arm`, then use the console controller
+sequence: Back+Start enters Hold and A enters Stand. Cleanup disables motors. Live
 following applies to checkpoint-held upper-body coordinates; motion-bundle
 mode requires following to be disabled. Physical policy commissioning remains
 pending as described in the deployment guide.
 
 The systemd workflow also manages the reference producer, hands,
 hardwared, and estimator with systemd. Only the policy runner and Bello
-visualizer remain manual; see the [daemon guide](systemd.md).
+console remain manual; see the [daemon guide](systemd.md).

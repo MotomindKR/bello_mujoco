@@ -1,21 +1,20 @@
 //! Explicit operator lifecycle over bello-stack's lease-owning control sessions.
 use crate::{
     hardware::Hardware,
-    locomotion::{Feedback, Locomotion},
-    remote,
+    locomotion::Locomotion,
+    operator::{self, RequestMode, proto::Mode},
 };
 use anyhow::{Context, Result, ensure};
 use bello_hardware_client::{
-    CommandFrame, ControlOptions, ControlSession, ControlState, CoordinateTarget, MotorGroup,
-    raw::proto,
+    CommandFrame, ControlOptions, ControlSession, CoordinateTarget, MotorGroup, raw::proto,
 };
 use futures_util::future::join_all;
-use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{IsTerminal, Write};
-use std::os::fd::{AsFd, AsRawFd};
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Deserialize)]
@@ -23,7 +22,7 @@ use std::time::{Duration, Instant};
 pub struct Config {
     pub following: crate::following::Config,
     pub client_name: String,
-    pub remote: remote::Config,
+    pub operator_listen: std::net::SocketAddr,
     pub command_validity_seconds: f64,
     pub acknowledgement_timeout_seconds: f64,
     pub rpc_timeout_seconds: f64,
@@ -33,9 +32,6 @@ pub struct Config {
     #[serde(default)]
     pub torso_command: [f32; 3],
     pub max_loop_lag_seconds: f64,
-    pub max_duration_seconds: Option<f64>,
-    pub max_nominal_error_radians: f64,
-    pub max_coupled_nominal_error_radians: f64,
     pub policy_log_path: Option<PathBuf>,
 }
 
@@ -49,8 +45,6 @@ impl Config {
             self.ramp_seconds,
             self.gain_scale,
             self.max_loop_lag_seconds,
-            self.max_nominal_error_radians,
-            self.max_coupled_nominal_error_radians,
         ] {
             ensure!(
                 value.is_finite() && value > 0. && value < 86400.,
@@ -62,71 +56,7 @@ impl Config {
                 && self.gain_scale <= 1.,
             "invalid acknowledgement deadline/gain scale"
         );
-        ensure!(
-            self.max_duration_seconds
-                .is_none_or(|s| s.is_finite() && s > 0. && s < 86400.),
-            "invalid run duration"
-        );
         Ok(())
-    }
-}
-
-struct Operator {
-    input: Vec<u8>,
-}
-impl Operator {
-    fn new() -> Result<Self> {
-        ensure!(
-            std::io::stdin().is_terminal(),
-            "armed control requires an interactive terminal"
-        );
-        Ok(Self { input: Vec::new() })
-    }
-    fn prompt(&mut self, text: &str) -> Result<()> {
-        self.input.clear();
-        writeln!(std::io::stderr(), "{text}")?;
-        Ok(())
-    }
-    fn line(&mut self) -> Result<Option<String>> {
-        let stdin = std::io::stdin();
-        let mut fds = [PollFd::new(stdin.as_fd(), PollFlags::POLLIN)];
-        while poll(&mut fds, PollTimeout::ZERO)? > 0 {
-            let events = fds[0].revents().unwrap_or(PollFlags::empty());
-            ensure!(
-                !events.intersects(PollFlags::POLLERR | PollFlags::POLLNVAL),
-                "operator terminal failed"
-            );
-            if !events.intersects(PollFlags::POLLIN | PollFlags::POLLHUP) {
-                break;
-            }
-            let mut byte = [0];
-            // Raw fd avoids stdio prefetch making poll miss already-buffered characters.
-            ensure!(
-                nix::unistd::read(stdin.as_raw_fd(), &mut byte)? == 1,
-                "operator terminal closed"
-            );
-            if byte[0] == b'\n' {
-                return Ok(Some(String::from_utf8(std::mem::take(&mut self.input))?));
-            }
-            ensure!(self.input.len() < 32, "operator confirmation too long");
-            if byte[0] != b'\r' {
-                self.input.push(byte[0]);
-            }
-        }
-        Ok(None)
-    }
-    async fn confirm(&mut self, expected: &str) -> Result<()> {
-        loop {
-            if let Some(line) = self.line()? {
-                if expected == "IDLE" && line != expected {
-                    eprintln!("Expected exact IDLE; controls remain under daemon safety.");
-                    continue;
-                }
-                ensure!(line == expected, "expected exact {expected}");
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
     }
 }
 
@@ -162,27 +92,6 @@ fn frame(
         )?;
     }
     Ok(builder.build()?)
-}
-
-fn nominal(policy: &Locomotion, sample: &Feedback, config: &Config) -> Result<()> {
-    for (i, (measured, target)) in sample
-        .motor_position
-        .iter()
-        .zip(&policy.policy.metadata.default_position)
-        .enumerate()
-    {
-        let limit = policy.nominal_tolerance(
-            i,
-            config.max_nominal_error_radians,
-            config.max_coupled_nominal_error_radians,
-        );
-        ensure!(
-            (measured - *target as f64).abs() <= limit,
-            "{} is too far from nominal pose",
-            policy.policy.metadata.coordinates[i]
-        );
-    }
-    Ok(())
 }
 
 async fn send(
@@ -258,13 +167,57 @@ async fn pace(deadline: &mut tokio::time::Instant, period: Duration, lag: Durati
     Ok(())
 }
 
+async fn recover_groups(hardware: &Hardware, config: &Config) -> Result<()> {
+    let rpc = Duration::from_secs_f64(config.rpc_timeout_seconds);
+    for group in &hardware.groups {
+        let mut control = tokio::time::timeout(rpc, group.control(&config.client_name))
+            .await
+            .context("recovery lease acquisition timed out")??;
+        let recovery = async {
+            let inventory = hardware.robot.raw_client().inventory().await?;
+            let current = inventory
+                .groups
+                .iter()
+                .find(|item| item.name == group.name())
+                .context("recovery group missing from hardware inventory")?;
+            if current.state == proto::GroupState::Fault as i32 {
+                control.recover().await?;
+            } else {
+                control.disable().await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        };
+        let result = tokio::time::timeout(rpc, recovery)
+            .await
+            .context("group recovery timed out")
+            .and_then(|value| value);
+        let cleanup = tokio::time::timeout(rpc, control.release())
+            .await
+            .context("recovery lease release timed out")
+            .and_then(|value| value.map_err(Into::into));
+        result.with_context(|| format!("{} recovery failed", group.name()))?;
+        cleanup?;
+    }
+    hardware.feedback(proto::GroupState::Idle).await?;
+    Ok(())
+}
+
 pub async fn run(
     hardware: Hardware,
     mut policy: Locomotion,
     config: Config,
-    mut motion: Option<crate::motion::live::Live>,
+    mut motions: BTreeMap<String, crate::motion::live::Live>,
 ) -> Result<()> {
     config.validate()?;
+    policy.controller_command([0.; 3], config.joystick_command_scale)?;
+    ensure!(
+        config.command_validity_seconds > policy.policy.metadata.control_timestep,
+        "command validity must exceed the policy period"
+    );
+    ensure!(
+        config.torso_command == [0.; 3],
+        "operator control requires a neutral standing torso command"
+    );
     let standing_gains: Vec<[f32; 2]> = policy
         .policy
         .metadata
@@ -273,374 +226,448 @@ pub async fn run(
         .zip(&policy.policy.metadata.kd)
         .map(|(&kp, &kd)| [kp, kd])
         .collect();
-    ensure!(
-        config.command_validity_seconds > policy.policy.metadata.control_timestep,
-        "command validity must exceed the policy period"
-    );
-    if let Some(motion) = &motion {
-        ensure!(
-            !config.following.enabled,
-            "motion control cannot enable upper-body following"
-        );
-        ensure!(
-            config.command_validity_seconds > motion.motion_period(),
-            "command validity must exceed the motion period"
-        );
-    }
-    let motion_interrupt = motion.as_ref().map(|motion| motion.interrupt.clone());
-    let mut operator = Operator::new()?;
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    policy.remote_command([0.; 3], config.joystick_command_scale)?;
-    policy.validate_torso_command(config.torso_command)?;
-    ensure!(
-        motion.is_none() || config.torso_command == [0.; 3],
-        "motion playback requires a neutral standing torso command"
-    );
-    ensure!(
-        !config.following.enabled || config.torso_command == [0.; 3],
-        "body following owns torso commands; leave control.torso_command neutral"
-    );
     let rpc = Duration::from_secs_f64(config.rpc_timeout_seconds);
-    let remote = remote::Source::start(&config.remote, rpc)?;
-    let mut following = if config.following.enabled {
-        Some(crate::following::Following::new(
-            config.following.clone(),
-            &policy.policy,
-        )?)
-    } else {
-        None
-    };
+    let operator =
+        operator::Source::bind(config.operator_listen, motions.keys().cloned().collect())?;
+    operator.set_tracking(config.following.enabled, false, false);
     let mut log: Option<File> = config
         .policy_log_path
         .as_ref()
-        .map(|p| OpenOptions::new().write(true).create_new(true).open(p))
+        .map(|path| OpenOptions::new().write(true).create_new(true).open(path))
         .transpose()?;
     let power = log
         .as_ref()
         .map(|_| crate::power::Source::start(&hardware.robot, rpc));
-    let preflight = hardware.feedback(proto::GroupState::Idle).await?;
+    let preflight = hardware.ready_feedback().await?;
     let limits = hardware.target_limits.clone();
     let startup_margin = hardware.config.startup_feedback_margin_radians;
     limits.startup_target(&preflight.motor_position, startup_margin)?;
-    if let Some(motion) = &motion {
+    for motion in motions.values() {
         motion.check_feedback(&preflight)?;
     }
-    nominal(&policy, &preflight, &config)?;
-    // Warm up ONNX before acquiring control; discard its history before RUN.
     policy.step(&preflight)?;
     policy.reset();
-    operator.prompt("Support the robot. Type HOLD to acquire control and ramp to nominal:")?;
-    tokio::select! { r = operator.confirm("HOLD") => r?, _ = interrupt.recv() => anyhow::bail!("cancelled before arming"), _ = terminate.recv() => anyhow::bail!("cancelled before arming") }
-    let mut controls = Vec::new();
-    let operation = async {
-        remote.sample()?;
-        let initial = hardware.feedback(proto::GroupState::Idle).await?;
-        if let Some(motion) = &motion {
-            motion.check_feedback(&initial)?;
-        }
-        nominal(&policy, &initial, &config)?;
-        let startup_target = limits.startup_target(&initial.motor_position, startup_margin)?;
-        if startup_target != initial.motor_position {
-            eprintln!(
-                "Adjusted initial HOLD target inside command limits; measured feedback was within the configured feedback allowance."
-            );
-        }
-        if let Some(log) = &mut log {
-            serde_json::to_writer(
-                &mut *log,
-                &serde_json::json!({
-                    "event": "startup_target", "measured_motor_position": initial.motor_position,
-                    "motor_target": startup_target,
-                    "motor_rails": power.as_ref().map(crate::power::Source::snapshot)
-                }),
-            )?;
-            log.write_all(b"\n")?;
-            log.flush()?;
-        }
-        let mut targets = CommandTargets {
-            coordinates: policy.policy.metadata.coordinates.clone(),
-            previous: startup_target.clone(),
-            limited_count: 0,
-        };
-        for group in &hardware.groups {
-            let options = ControlOptions::new(&config.client_name)
-                .command_validity(Duration::from_secs_f64(config.command_validity_seconds))
-                .acknowledgement_timeout(Duration::from_secs_f64(
-                    config.acknowledgement_timeout_seconds,
-                ))
-                .task_shutdown_timeout(rpc);
-            controls.push(
-                tokio::time::timeout(rpc, group.control_with(options))
-                    .await
-                    .context("lease acquisition timed out")??,
-            );
-        }
-        let frames = controls
-            .iter()
-            .map(|c| {
-                frame(
-                    c.group(),
-                    &targets.coordinates,
-                    &startup_target,
-                    &standing_gains,
-                    config.gain_scale,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let results = join_all(
-            controls
-                .iter_mut()
-                .zip(frames)
-                .map(|(c, f)| tokio::time::timeout(rpc, c.start(f))),
-        )
-        .await;
-        for result in results {
-            result.context("motor start timed out")??;
-        }
-        let period = Duration::from_secs_f64(policy.policy.metadata.control_timestep);
-        let lag = Duration::from_secs_f64(config.max_loop_lag_seconds);
-        let target: Vec<f64> = policy
-            .policy
-            .metadata
-            .default_position
-            .iter()
-            .map(|v| *v as f64)
-            .collect();
-        let steps = (config.ramp_seconds / period.as_secs_f64()).ceil() as usize;
-        let mut deadline = tokio::time::Instant::now();
-        for step in 1..=steps {
-            remote.sample()?;
-            let sample = hardware.feedback(proto::GroupState::Running).await?;
-            if let Some(motion) = &motion {
-                motion.check_feedback(&sample)?;
-            }
-            let ramp: Vec<f64> = startup_target
-                .iter()
-                .zip(&target)
-                .map(|(a, b)| a + step as f64 / steps as f64 * (b - a))
-                .collect();
-            send(
-                &mut controls,
-                &ramp,
-                &standing_gains,
-                &config,
-                &mut targets,
-                &limits,
-                &mut log,
-            )
-            .await?;
-            pace(&mut deadline, period, lag).await?;
-        }
-        operator.prompt(
-            "Nominal ramp complete. Release support and settle the robot, then type RUN:",
-        )?;
-        loop {
-            remote.sample()?;
-            let sample = hardware.feedback(proto::GroupState::Running).await?;
-            if let Some(motion) = &motion {
-                motion.check_feedback(&sample)?;
-            }
-            nominal(&policy, &sample, &config)?;
-            send(
-                &mut controls,
-                &target,
-                &standing_gains,
-                &config,
-                &mut targets,
-                &limits,
-                &mut log,
-            )
-            .await?;
-            if let Some(line) = operator.line()? {
-                ensure!(line == "RUN", "expected exact RUN");
-                break;
-            }
-            pace(&mut deadline, period, lag).await?;
-        }
-        policy.reset();
-        deadline = tokio::time::Instant::now();
-        let started = Instant::now();
-        let mut active_period = period;
-        let mut torso_command = config.torso_command;
-        if motion.is_some() {
-            operator.prompt(
-                "Standing policy is active with zero command. Type MOTION to begin the clip:",
-            )?;
-        } else if following.is_some() {
-            operator.prompt("Locomotion active with body following; Ctrl-C stops.")?;
+    eprintln!(
+        "Operator service listening on {}; waiting for neutral input and Back+Start.",
+        config.operator_listen
+    );
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    for motion in motions.values() {
+        ensure!(
+            config.command_validity_seconds > motion.motion_period(),
+            "command validity must exceed every motion policy period"
+        );
+    }
+    // Each recovery starts a fresh control session, while the operator service
+    // and policy log remain open. No lease is acquired until another entry chord.
+    'sessions: loop {
+        let mut following = if config.following.enabled {
+            Some(crate::following::Following::new(
+                config.following.clone(),
+                &policy.policy,
+            )?)
         } else {
-            operator.prompt(
-                "Locomotion active. Optional: TORSO <roll> <pitch> <yaw> in radians; Ctrl-C stops.",
-            )?;
-        }
-        while config
-            .max_duration_seconds
-            .is_none_or(|s| started.elapsed().as_secs_f64() < s)
-        {
-            let max_tilt = motion
-                .as_ref()
-                .map_or(Some(hardware.config.max_tilt_radians), |motion| {
-                    motion.absolute_tilt_limit(hardware.config.max_tilt_radians)
-                });
-            let mut sample = hardware
-                .feedback_with_tilt(proto::GroupState::Running, max_tilt)
-                .await?;
-            if let Some(motion) = &mut motion {
-                remote.sample()?;
-                let request = operator.line()?;
-                ensure!(
-                    request.as_deref().is_none_or(|s| s == "MOTION"),
-                    "expected exact MOTION"
-                );
-                let step = motion.step(
-                    &mut policy,
-                    &sample,
-                    request.is_some(),
-                    &targets.previous,
-                    hardware.config.max_tilt_radians,
-                )?;
-                if step.period != active_period {
-                    deadline = tokio::time::Instant::now();
-                    active_period = step.period;
-                }
-                let target: Vec<f64> = step.target.iter().map(|v| *v as f64).collect();
-                let command = send(
-                    &mut controls,
-                    &target,
-                    &step.motor_gains,
-                    &config,
-                    &mut targets,
-                    motion.target_limits(),
-                    &mut log,
-                )
-                .await?;
-                if let Some(log) = &mut log {
-                    serde_json::to_writer(
-                        &mut *log,
-                        &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "motion": step.log, "command": command, "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}),
-                    )?;
-                    log.write_all(b"\n")?;
-                    log.flush()?;
-                }
-                pace(&mut deadline, active_period, lag).await?;
-                continue;
-            }
-            sample.command =
-                policy.remote_command(remote.sample()?, config.joystick_command_scale)?;
-            if let Some(line) = operator.line()? {
-                let fields: Vec<_> = line.split_whitespace().collect();
-                let requested = (|| -> Result<[f32; 3]> {
-                    ensure!(following.is_none(), "body following owns torso commands");
-                    ensure!(
-                        fields.len() == 4 && fields[0] == "TORSO",
-                        "expected TORSO <roll> <pitch> <yaw> in radians"
-                    );
-                    let values = [fields[1].parse()?, fields[2].parse()?, fields[3].parse()?];
-                    policy.validate_torso_command(values)?;
-                    Ok(values)
-                })();
-                match requested {
-                    Ok(values) => torso_command = values,
-                    Err(error) => {
-                        eprintln!("Torso command rejected; retaining previous target: {error}")
+            None
+        };
+        let mut controls = Vec::new();
+        let motion_interrupt = Arc::new(Mutex::new(None::<crate::motion::live::Interrupt>));
+        let operation = async {
+            let (startup_target, measured_startup) = loop {
+                loop {
+                    let input = operator.snapshot();
+                    ensure!(input.request != Some(RequestMode::Abort), "operator abort");
+                    if !input.lost && input.request == Some(RequestMode::Hold) {
+                        break;
                     }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
-            }
-            let following_live = if let Some(following) = &mut following {
-                let (live, tracked_torso) =
-                    following.update(&sample.motor_position, period.as_secs_f64())?;
-                sample.torso_command = policy.tracked_torso_command(tracked_torso)?;
-                live
-            } else {
-                sample.torso_command = torso_command;
-                false
+                let initial = hardware.ready_feedback().await?;
+                let startup_target =
+                    limits.startup_target(&initial.motor_position, startup_margin)?;
+                for group in &hardware.groups {
+                    let input = operator.snapshot();
+                    ensure!(input.request != Some(RequestMode::Abort), "operator abort");
+                    if input.lost {
+                        break;
+                    }
+                    let options = ControlOptions::new(&config.client_name)
+                        .command_validity(Duration::from_secs_f64(config.command_validity_seconds))
+                        .acknowledgement_timeout(Duration::from_secs_f64(
+                            config.acknowledgement_timeout_seconds,
+                        ))
+                        .task_shutdown_timeout(rpc);
+                    controls.push(
+                        tokio::time::timeout(rpc, group.control_with(options))
+                            .await
+                            .context("lease acquisition timed out")??,
+                    );
+                }
+                let input = operator.snapshot();
+                ensure!(input.request != Some(RequestMode::Abort), "operator abort");
+                if input.lost || controls.len() != hardware.groups.len() {
+                    for control in controls.drain(..) {
+                        tokio::time::timeout(rpc, control.release())
+                            .await
+                            .context("lease release timed out")??;
+                    }
+                    operator.set_mode(Mode::Disarmed, "disarmed", "", 0.);
+                    continue;
+                }
+                break (startup_target, initial.motor_position);
             };
-            let mut step = policy.step(&sample)?;
-            if let Some(following) = &following {
-                following.apply(&mut step.motor_target)?;
-            }
-            let target: Vec<f64> = step.motor_target.iter().map(|v| *v as f64).collect();
-            let command = send(
-                &mut controls,
-                &target,
-                &standing_gains,
-                &config,
-                &mut targets,
-                &limits,
-                &mut log,
-            )
-            .await?;
             if let Some(log) = &mut log {
                 serde_json::to_writer(
                     &mut *log,
-                    &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample, "policy": step, "following_live": following_live, "command": command, "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}),
+                    &serde_json::json!({"event": "startup_target",
+                "motor_target": startup_target, "measured_motor_position": measured_startup,
+                "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}),
                 )?;
                 log.write_all(b"\n")?;
                 log.flush()?;
             }
-            pace(&mut deadline, period, lag).await?;
+            let mut targets = CommandTargets {
+                coordinates: policy.policy.metadata.coordinates.clone(),
+                previous: startup_target.clone(),
+                limited_count: 0,
+            };
+            let frames = controls
+                .iter()
+                .map(|control| {
+                    frame(
+                        control.group(),
+                        &targets.coordinates,
+                        &startup_target,
+                        &standing_gains,
+                        config.gain_scale,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            for result in join_all(
+                controls
+                    .iter_mut()
+                    .zip(frames)
+                    .map(|(control, frame)| tokio::time::timeout(rpc, control.start(frame))),
+            )
+            .await
+            {
+                result.context("motor start timed out")??;
+            }
+            operator.set_mode(Mode::Hold, "ramping", "", 0.);
+            let period = Duration::from_secs_f64(policy.policy.metadata.control_timestep);
+            let lag = Duration::from_secs_f64(config.max_loop_lag_seconds);
+            let target: Vec<f64> = policy
+                .policy
+                .metadata
+                .default_position
+                .iter()
+                .map(|v| *v as f64)
+                .collect();
+            let steps = (config.ramp_seconds / period.as_secs_f64()).ceil() as usize;
+            let mut deadline = tokio::time::Instant::now();
+            let mut step = 0;
+            while step < steps {
+                let input = operator.snapshot();
+                ensure!(input.request != Some(RequestMode::Abort), "operator abort");
+                hardware.feedback(proto::GroupState::Running).await?;
+                let ramp = if input.lost {
+                    targets.previous.clone()
+                } else {
+                    step += 1;
+                    startup_target
+                        .iter()
+                        .zip(&target)
+                        .map(|(a, b)| a + step as f64 / steps as f64 * (b - a))
+                        .collect()
+                };
+                send(
+                    &mut controls,
+                    &ramp,
+                    &standing_gains,
+                    &config,
+                    &mut targets,
+                    &limits,
+                    &mut log,
+                )
+                .await?;
+                operator.set_mode(Mode::Hold, "ramping", "", step as f64 / steps as f64);
+                pace(&mut deadline, period, lag).await?;
+            }
+            operator.set_mode(Mode::Hold, "holding", "", 1.);
+            loop {
+                let input = operator.snapshot();
+                ensure!(input.request != Some(RequestMode::Abort), "operator abort");
+                hardware.feedback(proto::GroupState::Running).await?;
+                let held = if input.lost {
+                    targets.previous.clone()
+                } else {
+                    target.clone()
+                };
+                send(
+                    &mut controls,
+                    &held,
+                    &standing_gains,
+                    &config,
+                    &mut targets,
+                    &limits,
+                    &mut log,
+                )
+                .await?;
+                if input.request == Some(RequestMode::Stand) {
+                    break;
+                }
+                pace(&mut deadline, period, lag).await?;
+            }
+            policy.reset();
+            operator.set_mode(Mode::Stand, "standing", "", 0.);
+            let started = Instant::now();
+            deadline = tokio::time::Instant::now();
+            let mut active_period = period;
+            let mut mode = Mode::Stand;
+            let mut active_motion: Option<String> = None;
+            let mut tracking_enabled = false;
+            operator.set_tracking(following.is_some(), false, false);
+            loop {
+                let input = operator.snapshot();
+                ensure!(input.request != Some(RequestMode::Abort), "operator abort");
+                if input.lost && mode == Mode::Locomotion {
+                    mode = Mode::Stand;
+                    policy.reset();
+                    operator.set_mode(mode, "standing", "", 0.);
+                }
+                let mut start_motion = false;
+                match input.request {
+                    Some(RequestMode::SetTracking(enabled))
+                        if mode == Mode::Locomotion && following.is_some() =>
+                    {
+                        tracking_enabled = enabled;
+                    }
+                    Some(RequestMode::Stand) if mode == Mode::Locomotion => {
+                        mode = Mode::Stand;
+                        policy.reset();
+                        operator.set_mode(mode, "standing", "", 0.);
+                    }
+                    Some(RequestMode::Locomotion) if mode == Mode::Stand => {
+                        mode = Mode::Locomotion;
+                        policy.reset();
+                        operator.set_mode(mode, "locomotion", "", 0.);
+                    }
+                    Some(RequestMode::Motion(name))
+                        if mode == Mode::Stand && motions.contains_key(&name) =>
+                    {
+                        *motion_interrupt.lock().unwrap() = Some(motions[&name].interrupt.clone());
+                        active_motion = Some(name);
+                        start_motion = true;
+                        mode = Mode::Motion;
+                        if let Some(following) = &mut following {
+                            following.reset();
+                        }
+                    }
+                    _ => {}
+                }
+                if mode != Mode::Locomotion {
+                    tracking_enabled = false;
+                    operator.set_tracking(following.is_some(), false, false);
+                }
+                let max_tilt = active_motion
+                    .as_ref()
+                    .and_then(|name| motions.get(name))
+                    .map_or(Some(hardware.config.max_tilt_radians), |motion| {
+                        motion.absolute_tilt_limit(hardware.config.max_tilt_radians)
+                    });
+                let mut sample = hardware
+                    .feedback_with_tilt(proto::GroupState::Running, max_tilt)
+                    .await?;
+                if let Some(name) = active_motion.as_ref() {
+                    let motion = motions
+                        .get_mut(name)
+                        .expect("selected motion was preloaded");
+                    let step = motion.step(
+                        &mut policy,
+                        &sample,
+                        start_motion,
+                        &targets.previous,
+                        hardware.config.max_tilt_radians,
+                    )?;
+                    if step.period != active_period {
+                        deadline = tokio::time::Instant::now();
+                        active_period = step.period;
+                    }
+                    let phase = if let Some(failure) = step.log["failure"].as_str() {
+                        format!("returning to Stand: {failure}")
+                    } else {
+                        step.log["phase"].as_str().unwrap_or("motion").to_owned()
+                    };
+                    let progress = step.log["reference_time"]
+                        .as_f64()
+                        .map_or(0., |time| time / motion.duration());
+                    let target: Vec<f64> = step.target.iter().map(|value| *value as f64).collect();
+                    let command = send(
+                        &mut controls,
+                        &target,
+                        &step.motor_gains,
+                        &config,
+                        &mut targets,
+                        motion.target_limits(),
+                        &mut log,
+                    )
+                    .await?;
+                    if let Some(log) = &mut log {
+                        serde_json::to_writer(
+                            &mut *log,
+                            &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(),
+                        "feedback": sample, "motion": step.log, "command": command,
+                        "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}),
+                        )?;
+                        log.write_all(b"\n")?;
+                        log.flush()?;
+                    }
+                    if motion.is_standing() {
+                        *motion_interrupt.lock().unwrap() = None;
+                        active_motion = None;
+                        mode = Mode::Stand;
+                        policy.reset();
+                        operator.set_mode(mode, "standing", "", 0.);
+                    } else {
+                        operator.set_mode(mode, &phase, name, progress);
+                    }
+                    pace(&mut deadline, active_period, lag).await?;
+                    continue;
+                }
+                if active_period != period {
+                    active_period = period;
+                    deadline = tokio::time::Instant::now();
+                }
+                sample.command = policy.controller_command(
+                    if mode == Mode::Locomotion {
+                        input.axes
+                    } else {
+                        [0.; 3]
+                    },
+                    config.joystick_command_scale,
+                )?;
+                let following_live = if let Some(following) = &mut following {
+                    let (live, tracked_torso) = following.update(
+                        &sample.motor_position,
+                        period.as_secs_f64(),
+                        tracking_enabled,
+                    )?;
+                    sample.torso_command = policy.tracked_torso_command(tracked_torso)?;
+                    live
+                } else {
+                    false
+                };
+                operator.set_tracking(following.is_some(), tracking_enabled, following_live);
+                let mut step = policy.step(&sample)?;
+                if let Some(following) = &following {
+                    following.apply(&mut step.motor_target)?;
+                }
+                let target: Vec<f64> = step
+                    .motor_target
+                    .iter()
+                    .map(|value| *value as f64)
+                    .collect();
+                let command = send(
+                    &mut controls,
+                    &target,
+                    &standing_gains,
+                    &config,
+                    &mut targets,
+                    &limits,
+                    &mut log,
+                )
+                .await?;
+                operator.set_velocity_command(policy.operator_velocity(sample.command));
+                if let Some(log) = &mut log {
+                    serde_json::to_writer(
+                        &mut *log,
+                        &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(),
+                    "feedback": sample, "policy": step, "following_live": following_live,
+                    "command": command, "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}),
+                    )?;
+                    log.write_all(b"\n")?;
+                    log.flush()?;
+                }
+                pace(&mut deadline, period, lag).await?;
+            }
+        };
+        let (result, shutdown_requested): (Result<()>, bool) = {
+            tokio::pin!(operation);
+            loop {
+                tokio::select! {
+                    result = &mut operation => break (result, false),
+                    _ = interrupt.recv() => {
+                        if motion_interrupt.lock().unwrap().as_ref().is_some_and(|motion| motion.request_return()) {
+                            eprintln!("Motion interrupted: requesting return to standing.");
+                        } else {
+                            break (Err(anyhow::anyhow!("operator interrupted control")), true);
+                        }
+                    },
+                    _ = terminate.recv() => break (Err(anyhow::anyhow!("process termination requested")), true),
+                }
+            }
+        };
+        if let Err(error) = &result {
+            operator.set_tracking(config.following.enabled, false, false);
+            eprintln!("Control stopped: {error:#}");
+            operator.fault(&format!("{error:#}"));
         }
-        Ok::<_, anyhow::Error>(())
-    };
-    let result = {
-        tokio::pin!(operation);
-        loop {
-            tokio::select! {
-                result = &mut operation => break result,
-                _ = interrupt.recv() => {
-                    if motion_interrupt.as_ref().is_some_and(|motion| motion.request_return()) {
-                        eprintln!("Motion interrupted: requesting return to standing.");
-                    } else { break Err(anyhow::anyhow!("operator interrupted control")); }
-                },
-                _ = terminate.recv() => break Err(anyhow::anyhow!("process termination requested")),
+        let mut cleanup_errors = Vec::new();
+        for closed in join_all(
+            controls
+                .into_iter()
+                .map(|control| tokio::time::timeout(rpc, control.release())),
+        )
+        .await
+        {
+            if let Err(error) = closed
+                .context("damping release timed out")
+                .and_then(|value| value.map_err(Into::into))
+            {
+                cleanup_errors.push(format!("damping release: {error:#}"));
             }
         }
-    };
-    if let Err(error) = &result {
-        eprintln!("Control stopped: {error:#}");
-    }
-    let mut cleanup_errors = Vec::new();
-    let stops = join_all(
-        controls
-            .iter_mut()
-            .filter(|c| matches!(c.state(), ControlState::Running | ControlState::Uncertain))
-            .map(|c| tokio::time::timeout(rpc, c.stop())),
-    )
-    .await;
-    for stop in stops {
-        match stop {
-            Ok(Ok(())) => {}
-            other => cleanup_errors.push(format!("stop: {other:?}")),
-        }
-    }
-    if controls.iter().any(|c| c.state() != ControlState::Ready) {
-        operator.prompt("Control is stopping; support the robot. Type IDLE to disable motors and release control:")?;
-        let confirmed = tokio::select! { r = operator.confirm("IDLE") => r, _ = interrupt.recv() => Err(anyhow::anyhow!("IDLE was not confirmed")), _ = terminate.recv() => Err(anyhow::anyhow!("IDLE was not confirmed")) };
-        if let Err(error) = confirmed {
-            eprintln!(
-                "IDLE not confirmed: no explicit disable sent; daemon timeout/lease-expiry safety remains active."
-            );
-            return Err(error).context(format!(
-                "control result: {result:?}; cleanup: {cleanup_errors:?}"
+        if !cleanup_errors.is_empty() {
+            operator.fault(&format!(
+                "control result: {result:?}; cleanup failed: {cleanup_errors:?}"
             ));
         }
-    }
-    for closed in join_all(
-        controls
-            .into_iter()
-            .map(|c| tokio::time::timeout(rpc, c.shutdown())),
-    )
-    .await
-    {
-        match closed {
-            Ok(Ok(())) => {}
-            other => cleanup_errors.push(format!("shutdown: {other:?}")),
+        if !shutdown_requested {
+            operator.allow_fault_clear("");
+            loop {
+                tokio::select! {
+                    _ = interrupt.recv() => break,
+                    _ = terminate.recv() => break,
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+                if !operator.take_fault_clear() {
+                    continue;
+                }
+                match recover_groups(&hardware, &config).await {
+                    Ok(()) => {
+                        if !operator.disarm_after_recovery() {
+                            operator.allow_fault_clear("Operator abort during fault recovery.");
+                            continue;
+                        }
+                        policy.reset();
+                        policy.controller_command([0.; 3], config.joystick_command_scale)?;
+                        for motion in motions.values_mut() {
+                            motion.reset();
+                        }
+                        if let Some(log) = &mut log {
+                            writeln!(log, "{{\"event\":\"fault_cleared\"}}")?;
+                            log.flush()?;
+                        }
+                        continue 'sessions;
+                    }
+                    Err(error) => operator.allow_fault_clear(&format!("{error:#}")),
+                }
+            }
         }
+        ensure!(
+            cleanup_errors.is_empty(),
+            "control result: {result:?}; cleanup failed: {cleanup_errors:?}"
+        );
+        return result;
     }
-    ensure!(
-        cleanup_errors.is_empty(),
-        "control result: {result:?}; cleanup failed: {cleanup_errors:?}"
-    );
-    result
 }

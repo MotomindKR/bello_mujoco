@@ -1,6 +1,5 @@
 //! Task phases only: lease, command acknowledgements, and shutdown stay in control.
 
-use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicU8, Ordering},
@@ -13,15 +12,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::tilt::Envelope;
-use super::{Feedback, Motion, ObservationMode, pose};
+use super::{Feedback, Motion, ObservationMode, PolicyFailure, pose};
 use crate::hardware::Hardware;
 use crate::locomotion::{Feedback as HardwareFeedback, Locomotion};
 use crate::target_limits::TargetLimits;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub standing_policy: PathBuf,
     pub pose: Option<pose::Config>,
     pub start_time_seconds: f64,
     pub transition_seconds: f64,
@@ -80,6 +78,7 @@ pub struct Live {
     phase: Phase,
     standing_limits: TargetLimits,
     transition_limits: TargetLimits,
+    failure: Option<String>,
     pub interrupt: Interrupt,
 }
 
@@ -144,9 +143,13 @@ impl Live {
                 );
                 RootFeedback::Imu
             }
-            (ObservationMode::FullState, None) => bail!("full-state motion requires motion.pose"),
+            (ObservationMode::FullState, None) => {
+                bail!("full-state motion requires motions[].settings.pose")
+            }
             (ObservationMode::Proprioceptive, Some(_)) => {
-                bail!("proprioceptive motion uses hardware IMU feedback; remove motion.pose")
+                bail!(
+                    "proprioceptive motion uses hardware IMU feedback; remove motions[].settings.pose"
+                )
             }
         };
         eprintln!(
@@ -164,12 +167,28 @@ impl Live {
             phase: Phase::Standing,
             standing_limits,
             transition_limits,
+            failure: None,
             interrupt: Interrupt::default(),
         })
     }
 
     pub fn motion_period(&self) -> f64 {
         self.motion.policy.metadata.control_timestep
+    }
+
+    pub fn reset(&mut self) {
+        self.phase = Phase::Standing;
+        self.failure = None;
+        self.motion.reset();
+        self.interrupt.0.store(0, Ordering::SeqCst);
+    }
+
+    pub fn duration(&self) -> f64 {
+        self.motion.duration()
+    }
+
+    pub fn is_standing(&self) -> bool {
+        matches!(self.phase, Phase::Standing)
     }
 
     pub fn motion_limits(&self) -> &TargetLimits {
@@ -326,6 +345,23 @@ impl Live {
         }
     }
 
+    fn return_to_standing(
+        &mut self,
+        standing: &mut Locomotion,
+        previous_target: &[f64],
+        tilt: Envelope,
+    ) {
+        self.phase = Phase::ToStanding(self.transition(
+            previous_target,
+            standing,
+            standing.policy.metadata.control_timestep,
+            tilt,
+        ));
+        self.interrupt.0.store(0, Ordering::SeqCst);
+        standing.reset();
+        eprintln!("Transitioning back to standing.");
+    }
+
     pub fn step(
         &mut self,
         standing: &mut Locomotion,
@@ -336,10 +372,22 @@ impl Live {
     ) -> Result<Output> {
         let mut sample = self.feedback(feedback)?;
         let now = Instant::now();
-        // Validate before phase changes: interrupts must not reset an unsafe pose
-        // into a newly permissive envelope. The endpoint is checked before handover.
+        let orientation = DQuat::from_array(feedback.orientation_xyzw);
         let tilt = self.tilt_envelope(now, standing_tilt_limit);
-        let tilt_error = tilt.check(DQuat::from_array(feedback.orientation_xyzw))?;
+        let tilt_error = tilt.error(orientation)?;
+        if matches!(self.phase, Phase::Standing) {
+            tilt.check(orientation)?;
+        } else if matches!(self.phase, Phase::ToMotion(_) | Phase::Motion(_))
+            && tilt_error > tilt.max_error
+        {
+            let failure = format!(
+                "motion tilt deviation {tilt_error:.4} rad exceeds reference limit {:.4} rad",
+                tilt.max_error
+            );
+            eprintln!("Motion failed; returning to Stand: {failure}");
+            self.failure = Some(failure);
+            self.return_to_standing(standing, previous_target, tilt);
+        }
         let standing_period = standing.policy.metadata.control_timestep;
         // A scheduled blend can finish before step limiting reaches the destination.
         // Switch envelopes only after the last acknowledged command is feasible there.
@@ -353,8 +401,15 @@ impl Live {
             Phase::ToStanding(t)
                 if t.step >= t.steps && self.standing_limits.validate(previous_target).is_ok() =>
             {
+                // Recovery follows the standing policy, not the failed clip's
+                // reference trajectory. Reinstate upright safety at handover.
+                ensure!(
+                    Envelope::new(DQuat::IDENTITY, standing_tilt_limit).error(orientation)?
+                        <= standing_tilt_limit,
+                    "robot tilt exceeds safety limit after return to standing"
+                );
                 self.phase = Phase::Standing;
-                eprintln!("Standing policy resumed. Type MOTION to start the clip again.");
+                eprintln!("Standing policy resumed.");
             }
             _ => {}
         }
@@ -370,21 +425,41 @@ impl Live {
                 tilt,
             ));
             self.motion.reset();
+            self.failure = None;
             self.interrupt.0.store(1, Ordering::SeqCst);
             eprintln!("Transitioning to motion tracking.");
         }
         let complete = matches!(self.phase, Phase::Motion(started)
             if self.config.start_time_seconds + now.saturating_duration_since(started).as_secs_f64() >= self.motion.duration());
         if complete || self.interrupt.0.load(Ordering::SeqCst) == 2 {
-            self.phase = Phase::ToStanding(self.transition(
-                previous_target,
-                standing,
-                standing_period,
-                tilt,
-            ));
-            self.interrupt.0.store(0, Ordering::SeqCst);
-            standing.reset();
-            eprintln!("Transitioning back to standing.");
+            self.return_to_standing(standing, previous_target, tilt);
+        }
+        let mut motion_step = None;
+        if matches!(self.phase, Phase::ToMotion(_) | Phase::Motion(_)) {
+            sample.reference_time = self.config.start_time_seconds
+                + match self.phase {
+                    Phase::Motion(started) => now.saturating_duration_since(started).as_secs_f64(),
+                    _ => 0.,
+                };
+            sample.initialize = matches!(&self.phase, Phase::ToMotion(t) if t.step == 0);
+            let result = self.motion.step(&sample).and_then(|step| {
+                ensure!(
+                    step.raw_action
+                        .iter()
+                        .all(|a| a.is_finite() && a.abs() <= self.config.max_raw_action_abs),
+                    anyhow::anyhow!("implausible motion action").context(PolicyFailure)
+                );
+                Ok(step)
+            });
+            match result {
+                Ok(step) => motion_step = Some(step),
+                Err(error) if error.is::<PolicyFailure>() => {
+                    eprintln!("Motion failed; returning to Stand: {error:#}");
+                    self.failure = Some(format!("{error:#}"));
+                    self.return_to_standing(standing, previous_target, tilt);
+                }
+                Err(error) => return Err(error),
+            }
         }
         let (target, policy_log, phase_name, reference_time, period) = match &self.phase {
             Phase::Standing | Phase::ToStanding(_) => {
@@ -403,24 +478,8 @@ impl Live {
                 )
             }
             Phase::ToMotion(_) | Phase::Motion(_) => {
-                let time = self.config.start_time_seconds
-                    + match self.phase {
-                        Phase::Motion(started) => {
-                            now.saturating_duration_since(started).as_secs_f64()
-                        }
-                        _ => 0.,
-                    };
-                let initialize = matches!(&self.phase, Phase::ToMotion(t) if t.step == 0);
-                sample.reference_time = time;
-                sample.initialize = initialize;
-                let step = self.motion.step(&sample)?;
-                ensure!(
-                    step.raw_action
-                        .iter()
-                        .all(|a| a.abs() <= self.config.max_raw_action_abs),
-                    "implausible motion action"
-                );
-                let name = if initialize || matches!(self.phase, Phase::ToMotion(_)) {
+                let step = motion_step.expect("motion phase produced a validated step");
+                let name = if matches!(self.phase, Phase::ToMotion(_)) {
                     "transition_to_motion"
                 } else {
                     "motion"
@@ -429,7 +488,7 @@ impl Live {
                     step.motor_target.clone(),
                     json!(step),
                     name,
-                    Some(time),
+                    Some(sample.reference_time),
                     self.motion_period(),
                 )
             }
@@ -459,6 +518,7 @@ impl Live {
             "observation_mode": self.motion.settings.environment.observation_mode,
             "policy": policy_log, "motor_target": target, "motor_gains": motor_gains,
             "destination_target_limited": destination_target_limited,
+            "failure": self.failure,
             "tilt_error_radians": tilt_error, "tilt_error_limit_radians": tilt.max_error,
             "reference_gravity_imu": tilt.gravity.to_array()}),
             target,

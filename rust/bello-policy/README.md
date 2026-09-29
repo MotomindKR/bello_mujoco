@@ -65,19 +65,14 @@ Preflight checks inventory, coordinate coverage, nominal targets/gains, IMU
 frames, telemetry timestamps and freshness, group state, and IMU plausibility.
 It performs no lease acquisition or motor writes.
 
-For isolated emulator validation, add `--arm` and configure the `control` section
-in the hardware YAML. Control requires an interactive terminal:
-`HOLD` acquires control and ramps to nominal, `RUN` starts inference, and `IDLE`
-confirms motor disable after stopping. Failures, remote abort, SIGINT, or SIGTERM
-request damping first. Without an `IDLE` confirmation, it sends no explicit
-disable; hardwared's watchdog and lease-expiry safety remain authoritative.
-
-The remote-command service is not a startup dependency: the runner starts with
-zero velocity commands and connects/reconnects in the background. Each connection
-requires a neutral sample before accepting an armed controller;
-stale/disconnected input requests standing, not motor disable. Received aborts
-remain latched and malformed messages still stop control. The checkpoint owns command mapping
-and slewing. Optional JSONL policy logs use a new file, never overwrite one.
+For isolated emulator validation, add `--arm`. The runner hosts the operator
+stream on `control.operator_listen` (port 50055). A neutral controller sample and
+a two-second Back+Start chord enter Hold; a one-second A press enters Stand.
+From Stand, D-pad left/right selects Stand, Locomotion, or Motion. Within Motion,
+D-pad up/down selects a preloaded named motion; holding A for one second confirms.
+See the [console guide](../../docs/policy_console.md) for transitions, connection
+loss, packaging and direct service ownership. Stop cleanup automatically damps and
+releases leases. No terminal confirmation is required.
 
 Each locomotion/motion sample and the `startup_target` event includes
 `motor_rails`, keyed by power-board name. Each reading contains `voltage_v`,
@@ -89,7 +84,7 @@ daemon's stale flag. Unknown, offline, malformed, or disconnected readings are
 The logger reads a background telemetry cache and reconnects automatically.
 Power telemetry does not add an RPC to the control loop or gate motor control.
 
-Synthetic lifecycle checks cover rejection, stale feedback, remote abort,
+Synthetic lifecycle checks cover rejection, stale feedback, operator abort,
 signals, and ambiguous start timeouts. A synthetic hold actor has completed the
 native policy/hardwared/MuJoCo lifecycle on isolated Lima vCAN. Trained-policy
 dynamics commissioning remains pending. This is the only policy runner;
@@ -103,45 +98,33 @@ ONNX Runtime must provide the API supported by the pinned `ort` crate.
 
 ## Locomotion torso commands
 
-Use a newly trained/exported torso-conditioned locomotion bundle. Set
-`control.torso_command: [roll, pitch, yaw]` in the hardware YAML (neutral by
-default). After RUN, type `TORSO 0.1 -0.15 0.2` to change the target, or
-`TORSO 0 0 0` to return upright. Angles are radians: ground-relative lean plus
-pelvis-heading-relative twist, in anatomical forward/left/up axes. The command
-does not request gait steps or replace the existing yaw-rate command.
-
-Targets start neutral and follow the checkpoint's per-axis slew limits. An
-invalid terminal request is rejected without replacing the previous target;
-invalid YAML/telemetry targets fail validation. Logs contain requested
-`feedback.torso_command` and effective `policy.torso_command`. The three-axis
-gamepad protocol is unchanged. Gamepad disconnection requests zero velocity but
-retains the separately selected torso target; remote abort still stops control.
-When body following is enabled, tracking owns the torso target instead: keep
-`control.torso_command` neutral; terminal `TORSO` overrides are rejected.
-Motion playback requires a neutral torso command. Hardware safety limits are unchanged;
-fresh CPU evaluation and emulator commissioning are required before hardware.
+Operator control requires `control.torso_command: [0, 0, 0]`. Optional live
+following supplies torso commands only during Locomotion. Stand uses neutral
+commands. Raw telemetry inference still accepts explicit torso commands.
 
 ## Live motion control
 
-Pass the motion bundle to `--policy`. In a local copy of the hardware YAML,
-replace `motion: null` with a motion mapping such as:
+Pass the locomotion standing bundle to `--policy`. Configure all motion bundles
+in the hardware YAML; they are preloaded before control acquisition:
 
 ```yaml
-motion:
-  standing_policy: /absolute/path/to/standing.zip
-  start_time_seconds: 0.0
-  transition_seconds: 0.2
-  max_tilt_error_radians: 0.5
-  max_raw_action_abs: 5.0
-  pose:
-    endpoint: http://127.0.0.1:50053
-    reference_frame: odom
-    tracked_frame: pelvis_link
-    timeout_seconds: 2.0
-    max_age_ms: 100.0
-    max_linear_velocity: 5.0
-    max_angular_velocity: 20.0
-    max_imu_orientation_error: 0.25
+motions:
+  - name: Wave
+    policy: /absolute/path/to/wave.zip
+    settings:
+      start_time_seconds: 0.0
+      transition_seconds: 0.2
+      max_tilt_error_radians: 0.5
+      max_raw_action_abs: 5.0
+      pose:
+        endpoint: http://127.0.0.1:50053
+        reference_frame: odom
+        tracked_frame: pelvis_link
+        timeout_seconds: 2.0
+        max_age_ms: 100.0
+        max_linear_velocity: 5.0
+        max_angular_velocity: 20.0
+        max_imu_orientation_error: 0.25
 ```
 
 The example is for a `full_state` bundle. For a newly trained `proprioceptive`
@@ -163,38 +146,45 @@ A differently named pose frame is accepted only if the bundled model proves
 it is rigidly fixed to and coincident with the floating base, including rotation.
 Offset, rotated, or articulated frames are rejected rather than reinterpreted.
 
-`HOLD` ramps to the standing policy's nominal pose; `RUN` starts standing with
-zero velocity command. Type `MOTION` to blend into the clip. Completion or the
-first Ctrl-C during motion blends back to standing; another Ctrl-C stops and
-requests damping. SIGTERM, remote abort, malformed/stale pose, hardware faults,
-or rejected commands take the STOP path, not a standing recovery. `IDLE` remains
-required for explicit disable. Standing and motion retain their own gains,
-control periods, and histories. Targets and KP/KD blend together over
-`motion.transition_seconds`, including when returning before a blend finishes.
-HOLD uses the standing gains; `control.gain_scale` multiplies both policies'
-gains. Logs record the active, unscaled `motor_gains` pairs in coordinate order.
-The remote is monitored for aborts, but its velocity
-axes are ignored in this workflow. Upper-body following must be disabled.
+Hold ramps to the standing bundle's nominal pose. Confirm Stand, select a named
+motion, press A to accept and close its menu, then release and hold A for one
+second to blend into it. Completion or the first
+Ctrl-C blends back to Stand; another Ctrl-C, SIGTERM or holding L1 + R1 for one second stops control.
+Malformed/stale feedback and rejected commands stop control. Standing and motion
+retain their own gains, periods and histories. Targets and KP/KD blend over
+`motions[].settings.transition_seconds`, including interrupted blends. Hold uses
+standing gains; `control.gain_scale` multiplies all gains. Logs record unscaled
+`motor_gains`. Velocity axes are used only in Locomotion. Named motions and
+upper-body following may be configured together; following is disabled outside
+Locomotion and never overrides a named motion.
 
 The top-level `max_tilt_radians` remains the absolute upright limit for
 preflight, HOLD, standing, and locomotion. During motion, the runner instead
 compares the measured and reference gravity directions in the logical IMU
-frame, accounting for its fixed mounting rotation. `motion.max_tilt_error_radians`
+frame, accounting for its fixed mounting rotation. `motions[].settings.max_tilt_error_radians`
 limits this angular deviation, not absolute lean; opposite-direction leans
 are distinguishable, while world yaw is ignored. The example uses 0.5 rad
 (about 29 degrees); commission this tolerance in the emulator before hardware.
 This replaces the removed `motion.max_tilt_radians` setting, without an alias.
 
-Entry blends the upright reference/tolerance into the starting clip reference;
-exit blends the current reference/tolerance back to upright. Both follow the
-command blend fraction. The guard runs before phase changes or interrupts,
-and must pass its upright endpoint before standing resumes. Returning to
-standing is therefore not an unguarded recovery from an arbitrary fallen pose.
+Entry blends the upright reference/tolerance into the starting clip reference.
+Exceeding that envelope during entry or active motion starts a blended return
+to standing from the last acknowledged target and current gains. Recovery does
+not require following the failed clip's tilt reference or a prescribed tilt
+trajectory. The absolute upright limit must pass before standing resumes.
 Logs include observation mode, tilt error, limit, and reference gravity.
 Both modes retain the scalar anchor-gravity check, hardware faults, feedback
 freshness, IMU plausibility, and target limits. Full-state mode additionally
 enforces pose freshness/IMU agreement, estimated velocity limits, and checkpoint
 absolute-height terminations. Proprioceptive mode cannot check absolute height.
+
+Motion tilt deviation, tracking termination and inference/action failures initiate the same
+blended return to standing as normal completion, using the last acknowledged
+target and current gains. Failed motion outputs are never sent. The operator
+phase reports the reason during the return and motion log rows retain it in
+`failure`. No automatic retry occurs. Feedback/pose validation, the absolute
+upright limit at handover, hardware/lease errors, and any standing-policy/return failure
+still end control with damping.
 
 Standing and motion each use their own motor/joint target limits, intersected
 with the live hardware motor bounds. Blends use a transition envelope covering
@@ -219,7 +209,11 @@ uv run bello-run-reference asset=bello_mini \
 
 Producer settings live in `configs/commands/reference.yaml`. Enable
 `control.following.enabled` in the Rust hardware YAML and point its endpoint at
-the producer. The protocol is `proto/reference.proto`: named URDF joint angles,
+the producer. This makes tracking available; press Y in Locomotion to turn it
+on or off. It starts off on each Locomotion entry and turns off on operator
+loss. Off blends arm targets back to nominal with the same speed and transition
+limits used for a source outage. Operator status distinguishes availability,
+enabled intent, and live reference reception. The protocol is `proto/reference.proto`: named URDF joint angles,
 velocities, and three torso-command angles, not motor commands. The producer never
 connects to hardwared and does not load policy weights.
 
@@ -244,3 +238,7 @@ producer outage, malformed references, torso limits/slew, and unchanged
 policy-owned targets. Update producer and runner together: available references
 must contain all three torso angles. Retraining with torso commands and live
 tracking/emulator commissioning are required before deploying this behavior.
+
+Named motion entries require `source` alongside `name`, `policy`, and `settings`.
+This is the clean source checkout for that individual bundle; `--source` remains
+the source checkout for the main locomotion policy.

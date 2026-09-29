@@ -54,13 +54,13 @@ new policy; changing metadata or zeroing inputs of a full-state policy is not a
 conversion. Evaluation/export use the saved mode. Runtime rejects a mode/layout
 mismatch instead of adapting the network inputs.
 
-For a proprioceptive bundle, omit `motion.pose` from the hardware YAML. The native
+For a proprioceptive bundle, omit `motions[].settings.pose` from the hardware YAML. The native
 runner uses hardwared's IMU orientation/gyro and measured joints, including the
 CAD IMU rotation and actual waist kinematics, with no pose-service connection.
 This removes the translational estimator dependency, not IMU orientation sensing.
 Absolute torso/foot-height guards are unavailable in this runtime mode;
 reference-relative orientation, motor/joint/step, freshness, fault, and control
-lifecycle protections remain. Full-state bundles still require `motion.pose`
+lifecycle protections remain. Full-state bundles still require `motions[].settings.pose`
 and retain their height guards. Commission new weights in the emulator before
 physical use; removing pose feedback does not guarantee stability.
 

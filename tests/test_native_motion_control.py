@@ -1,6 +1,7 @@
 """Motion lifecycle and pose failures over synthetic gRPC, never physical CAN."""
 
 import json
+from io import BytesIO
 import os
 from pathlib import Path
 import pty
@@ -8,10 +9,14 @@ import select
 import signal
 import subprocess
 import time
+from zipfile import ZipFile
 
 import jax.numpy as jnp
 import mujoco
+import grpc
 import numpy as np
+import onnx
+from onnx import helper, numpy_helper
 import pytest
 import yaml
 from scipy.spatial.transform import Rotation
@@ -20,6 +25,8 @@ from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.hardware import _pose_pb2 as pb
 from bello_mujoco.motion.clip import MotionClip
 from bello_mujoco.training.tracking import to_builtin
+from bello_mujoco.hardware import _operator_pb2 as operator_pb
+from native_operator import OperatorClient, operator_endpoint
 from test_native_control import (
     SyntheticHardware,
     assert_motor_rail_log,
@@ -186,7 +193,7 @@ def motion_bundle(
     )
 
 
-def control_settings(endpoint, standing, log=None):
+def control_settings(endpoint, standing, source, log=None):
     settings = yaml.safe_load(
         (
             Path(__file__).parents[1] / "rust/bello-policy/config/hardware.yaml"
@@ -196,7 +203,6 @@ def control_settings(endpoint, standing, log=None):
         endpoint=endpoint,
         groups=["limb"],
         motion=dict(
-            standing_policy=str(standing),
             start_time_seconds=0.0,
             transition_seconds=0.08,
             max_tilt_error_radians=0.5,
@@ -215,11 +221,211 @@ def control_settings(endpoint, standing, log=None):
     )
     settings["control"].update(
         ramp_seconds=0.06,
-        max_duration_seconds=1.5,
         policy_log_path=str(log) if log is not None else None,
     )
-    settings["control"]["remote"]["endpoint"] = endpoint
+    settings["control"]["operator_listen"] = operator_endpoint()
+    settings["motions"] = [
+        dict(
+            name="Wave",
+            policy=str(standing.parent / "motion.zip"),
+            source=str(source),
+            settings=settings.pop("motion"),
+        )
+    ]
     return settings
+
+
+def run_motion(run, standing, *, content, hardware_config):
+    Path(hardware_config["motions"][0]["policy"]).write_bytes(content)
+    return run(content=standing.read_bytes(), hardware_config=hardware_config)
+
+
+def failing_motion_bundle(source, failure, observation_mode):
+    content = motion_bundle(source, frames=20, observation_mode=observation_mode)
+    result = BytesIO()
+    with ZipFile(BytesIO(content)) as original, ZipFile(result, "w") as modified:
+        for name in original.namelist():
+            data = original.read(name)
+            if name == "policy.onnx":
+                model = onnx.load_model_from_string(data)
+                if failure == "action":
+                    node = next(n for n in model.graph.node if n.output == ["action"])
+                    node.attribute[0].t.CopyFrom(
+                        numpy_helper.from_array(np.full((1, 3), 6, dtype=np.float32))
+                    )
+                elif failure == "inference":
+                    # Warm-up uses zeros. Fail only on live observations so this
+                    # exercises recovery after acquisition, not bundle rejection.
+                    node = next(
+                        n for n in model.graph.node if n.output == ["motor_target"]
+                    )
+                    node.output[0] = "valid_target"
+                    model.graph.initializer.extend(
+                        [
+                            numpy_helper.from_array(np.array(0, np.float32), "zero"),
+                            numpy_helper.from_array(
+                                np.full((1, 3), np.nan, np.float32), "invalid_target"
+                            ),
+                        ]
+                    )
+                    model.graph.node.extend(
+                        [
+                            helper.make_node("Abs", ["observation"], ["absolute"]),
+                            helper.make_node("ReduceSum", ["absolute"], ["sum"]),
+                            helper.make_node("Greater", ["sum", "zero"], ["live"]),
+                            helper.make_node(
+                                "Where",
+                                ["live", "invalid_target", "valid_target"],
+                                ["motor_target"],
+                            ),
+                        ]
+                    )
+                elif failure in ("tracking", "tracking_active"):
+                    # The synthetic tip is displaced by motor feedback while
+                    # hardware tilt, pose, and IMU remain valid.
+                    metadata = json.loads(model.metadata_props[0].value)
+                    threshold = (
+                        "root_orientation_error"
+                        if failure == "tracking_active"
+                        else "end_effector_position_error"
+                    )
+                    metadata["environment"]["done"][threshold] = 0.00001
+                    model.metadata_props[0].value = json.dumps(metadata)
+                onnx.checker.check_model(model)
+                data = model.SerializeToString()
+            modified.writestr(name, data)
+    return result.getvalue()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["action", "inference", "tracking", "tracking_active", "tilt_entry", "tilt_active"],
+)
+@pytest.mark.parametrize("observation_mode", ["full_state", "proprioceptive"])
+def test_failed_motion_blends_to_stand_without_releasing_control(
+    rust_policy, hardware_proto, tmp_path, failure, observation_mode
+):
+    if failure == "tracking" and observation_mode == "proprioceptive":
+        pytest.skip("absolute-height tracking requires full-state feedback")
+    _, _, source = rust_policy
+    fake = MotionHardware(hardware_proto)
+    server, pool, endpoint = start_services(fake)
+    standing = tmp_path / "standing.zip"
+    standing.write_bytes(bundle(source))
+    motion = tmp_path / "motion.zip"
+    motion.write_bytes(failing_motion_bundle(source, failure, observation_mode))
+    standing.write_bytes(
+        bundle(source, metadata_updates={"position_step_limits": [0.02] * 3})
+    )
+    log = tmp_path / "policy.jsonl"
+    settings = control_settings(endpoint, standing, source, log)
+    if failure == "tilt_entry":
+        settings["motions"][0]["settings"]["transition_seconds"] = 0.3
+        settings["motions"][0]["settings"]["max_tilt_error_radians"] = 0.05
+    if observation_mode == "proprioceptive":
+        del settings["motions"][0]["settings"]["pose"]
+    config = tmp_path / "hardware.json"
+    config.write_text(json.dumps(settings))
+    output = tmp_path / "runner.log"
+    with output.open("w") as stream:
+        process = subprocess.Popen(
+            [
+                os.environ["BELLO_POLICY_BIN"],
+                "--source",
+                str(source),
+                "--policy",
+                str(standing),
+                "--hardware-config",
+                str(config),
+                "--arm",
+            ],
+            stdout=stream,
+            stderr=stream,
+            start_new_session=True,
+        )
+    operator = None
+    try:
+        try:
+            operator = OperatorClient(settings["control"]["operator_listen"], fake)
+        except grpc.FutureTimeoutError:
+            pytest.fail(output.read_text())
+        operator.stand()
+        for attempt in range(2):
+            fake.pitch_ramp = (0.0, 0.0, 0.0, 1.0)
+            operator.select("Wave")
+            if failure == "tilt_entry":
+                operator.buttons = {"a": True}
+                operator.wait(lambda status: status.phase == "transition_to_motion")
+                operator.buttons = {}
+                fake.pitch_ramp = (0.0, 0.6, time.monotonic(), 0.15)
+            else:
+                operator.press(1.1, a=True)
+            if failure == "tracking_active":
+                operator.wait(
+                    lambda status: (
+                        status.mode == operator_pb.MODE_MOTION
+                        and status.phase == "motion"
+                    )
+                )
+                fake.pitch_ramp = (0.1, 0.1, 0.0, 1.0)
+            if failure == "tilt_active":
+                operator.wait(lambda status: status.phase == "motion")
+                fake.pitch_ramp = (0.0, 0.6, time.monotonic(), 0.15)
+            operator.wait(lambda status: status.mode == operator_pb.MODE_STAND)
+            deadline = time.monotonic() + 2
+            while not np.allclose(fake.targets[-1], [0.2, -0.3, 0.4], atol=1e-6):
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            assert (
+                output.read_text().count("Motion failed; returning to Stand")
+                == attempt + 1
+            )
+            assert not operator.status.fault
+            assert fake.state == hardware_proto.GROUP_STATE_RUNNING
+            assert "release" not in fake.calls
+            assert "disable" not in fake.calls
+            if failure.startswith("tilt_"):
+                fake.pitch_ramp = (0.6, 0.0, time.monotonic(), 0.15)
+                time.sleep(0.2)
+        events = [json.loads(line) for line in log.read_text().splitlines()]
+        returns = [row for row in events if row.get("motion", {}).get("failure")]
+        assert returns
+        assert any(
+            row["motion"]["phase"] == "transition_to_standing" for row in returns
+        )
+        assert returns[-1]["motion"]["phase"] == "standing"
+        expected = {
+            "action": "implausible motion action",
+            "inference": "nonfinite",
+            "tracking": "motion termination",
+            "tracking_active": "motion termination: anchor orientation",
+            "tilt_entry": "motion tilt deviation",
+            "tilt_active": "motion tilt deviation",
+        }[failure]
+        assert expected in returns[0]["motion"]["failure"]
+        if failure == "tilt_entry":
+            assert not any(
+                row.get("motion", {}).get("phase") == "motion" for row in events
+            )
+        if failure.startswith("tilt_"):
+            assert "damp" not in fake.calls
+        np.testing.assert_allclose(fake.targets[-1], [0.2, -0.3, 0.4], atol=1e-6)
+        assert np.max(np.abs(np.diff(np.asarray(fake.targets), axis=0))) <= 0.020001
+        # Recovery retains control, so a subsequent abort must still damp.
+        operator.press(1.1, l1=True, r1=True)
+        operator.wait(lambda status: status.mode == operator_pb.MODE_FAULT)
+        deadline = time.monotonic() + 3
+        while fake.state != hardware_proto.GROUP_STATE_DAMPED:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    finally:
+        if operator:
+            operator.close()
+        process.send_signal(signal.SIGTERM)
+        process.wait(timeout=5)
+        fake.closed.set()
+        server.stop(0).wait()
+        pool.shutdown(wait=True)
 
 
 @pytest.mark.parametrize(
@@ -241,10 +447,12 @@ def test_motion_pose_frame_requires_fixed_coincident_root(
     server, pool, endpoint = start_services(fake)
     standing = tmp_path / "standing.zip"
     standing.write_bytes(bundle(source))
-    settings = control_settings(endpoint, standing)
-    settings["motion"]["pose"]["tracked_frame"] = frame
+    settings = control_settings(endpoint, standing, source)
+    settings["motions"][0]["settings"]["pose"]["tracked_frame"] = frame
     try:
-        result = run(content=motion_bundle(source), hardware_config=settings)
+        result = run_motion(
+            run, standing, content=motion_bundle(source), hardware_config=settings
+        )
         assert (result.returncode == 0) == (error is None), result.stderr
         if error is not None:
             assert error in result.stderr
@@ -289,7 +497,13 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
     server, pool, endpoint = start_services(
         fake, pose_enabled=observation_mode == "full_state"
     )
-    succeeds = failure in (None, "entry_interrupt", "interrupt", "deep_tilt") or (
+    succeeds = failure in (
+        None,
+        "entry_interrupt",
+        "interrupt",
+        "deep_tilt",
+        "wrong_direction",
+    ) or (
         observation_mode == "proprioceptive"
         and failure
         in ("stale", "outage", "repeated", "frame", "orientation", "missing_velocity")
@@ -315,14 +529,13 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
         )
     )
     log = tmp_path / "policy.jsonl"
-    settings = control_settings(endpoint, standing, log)
+    settings = control_settings(endpoint, standing, source, log)
     if failure == "entry_interrupt":
-        settings["motion"]["transition_seconds"] = 0.3
+        settings["motions"][0]["settings"]["transition_seconds"] = 0.3
     if observation_mode == "proprioceptive":
-        del settings["motion"]["pose"]
+        del settings["motions"][0]["settings"]["pose"]
     if tilted:
-        settings["motion"]["transition_seconds"] = 0.5
-        settings["control"]["max_duration_seconds"] = 4.5
+        settings["motions"][0]["settings"]["transition_seconds"] = 0.5
     config = tmp_path / "hardware.json"
     config.write_text(json.dumps(settings))
     master, slave = pty.openpty()
@@ -332,7 +545,7 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
             "--source",
             str(source),
             "--policy",
-            str(motion),
+            str(standing),
             "--hardware-config",
             str(config),
             "--arm",
@@ -358,16 +571,18 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
                 transcript.decode(errors="replace")
             )
 
+    operator = None
     try:
-        wait_for("Type HOLD")
+        wait_for("Operator service listening")
         assert not fake.calls
-        os.write(master, b"HOLD\n")
-        wait_for("then type RUN")
-        os.write(master, b"RUN\n")
-        wait_for("Type MOTION")
+        operator = OperatorClient(settings["control"]["operator_listen"], fake)
+        operator.stand()
+        operator.select("Wave")
+        operator.buttons = {"a": True}
+        wait_for("Transitioning to motion tracking")
+        operator.buttons = {}
         if tilted:
             fake.pitch_ramp = (0.6, 1.3, time.monotonic(), 0.5)
-        os.write(master, b"MOTION\n")
         if failure == "entry_interrupt":
             wait_for("Transitioning to motion tracking")
             time.sleep(0.04)
@@ -380,7 +595,7 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
             time.sleep(0.1)
             assert "Control stopped:" not in transcript.decode()
             if failure == "wrong_direction":
-                fake.pitch_ramp = (1.3, -1.3, time.monotonic(), 0.8)
+                fake.pitch_ramp = (1.3, -0.4, time.monotonic(), 0.6)
             else:
                 os.kill(process.pid, signal.SIGINT)
                 wait_for("requesting return to standing")
@@ -403,14 +618,30 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
             fake.pose_failure = failure
         if succeeds:
             wait_for("Standing policy resumed")
+            operator.wait(lambda status: status.mode == operator_pb.MODE_STAND)
+            deadline = time.monotonic() + 2
+            while not np.allclose(fake.targets[-1], [0.2, -0.3, 0.4], atol=1e-6):
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
             assert "stop" not in fake.calls
-        wait_for("Type IDLE")
-        assert "stop" in fake.calls and "disable" not in fake.calls
-        os.write(master, b"IDLE\n")
-        assert (process.wait(timeout=3) == 0) == succeeds, transcript.decode(
-            errors="replace"
-        )
-        assert fake.calls[-2:] == ["disable", "release"]
+            process.send_signal(signal.SIGTERM)
+        deadline = time.monotonic() + 12
+        while "release" not in fake.calls:
+            assert time.monotonic() < deadline, transcript.decode(errors="replace")
+            time.sleep(0.02)
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+        deadline = time.monotonic() + 5
+        while process.poll() is None and time.monotonic() < deadline:
+            if select.select([master], [], [], 0.05)[0]:
+                try:
+                    transcript.extend(os.read(master, 65536))
+                except OSError:
+                    break
+        assert process.wait(timeout=3) != 0, transcript.decode(errors="replace")
+        assert fake.calls[-1] == "release"
+        assert "disable" not in fake.calls
+        assert fake.state == fake.pb.GROUP_STATE_DAMPED
         events = [json.loads(line) for line in log.read_text().splitlines()]
         if failure is None:
             assert_motor_rail_log([row for row in events if "motion" in row])
@@ -442,7 +673,7 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
             bound = (
                 abs(motion_gains - starting_gains)
                 * 0.02
-                / settings["motion"]["transition_seconds"]
+                / settings["motions"][0]["settings"]["transition_seconds"]
             )
             assert np.all(np.abs(np.diff(wire_gains, axis=0)) <= bound + 1e-6)
         if observation_mode == "proprioceptive":
@@ -458,8 +689,13 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
             motion_rows = [row for row in rows if row["phase"] == "motion"]
             assert len(motion_rows) >= 3
             assert all(row["tilt_error_radians"] < 0.1 for row in motion_rows[:3])
-            if failure != "deep_tilt":
+            if failure == "wrong_direction":
                 assert "motion tilt deviation" in transcript.decode()
+            if failure == "return_still_tilted":
+                assert (
+                    "robot tilt exceeds safety limit after return to standing"
+                    in transcript.decode()
+                )
                 assert "Standing policy resumed" not in transcript.decode()
         if failure == "reject":
             assert any(row.get("event") == "command_rejected" for row in events)
@@ -475,7 +711,7 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
         if succeeds:
             assert "transition_to_standing" in phases
             assert phases[-1] == "standing"
-            np.testing.assert_allclose(targets[-1], [0.2, -0.3, 0.4], atol=1e-6)
+            np.testing.assert_allclose(fake.targets[-1], [0.2, -0.3, 0.4], atol=1e-6)
         if failure is None:
             assert targets[:, 0].max() > 0.6
             returning = [
@@ -483,8 +719,13 @@ def test_motion_lifecycle_returns_to_standing_or_stops_safely(
                 for row in applied
                 if row["motion"]["phase"] == "transition_to_standing"
             ]
-            assert len(returning) * 0.02 > settings["motion"]["transition_seconds"]
+            assert (
+                len(returning) * 0.02
+                > settings["motions"][0]["settings"]["transition_seconds"]
+            )
     finally:
+        if operator is not None:
+            operator.close()
         if process.poll() is None:
             process.kill()
         process.wait(timeout=3)
@@ -514,11 +755,13 @@ def test_motion_preflight_never_acquires_control(
         )
     )
     try:
-        result = run(
+        result = run_motion(
+            run,
+            standing,
             content=motion_bundle(source, **{failure: [101.0] * 3})
             if failure in ("kp", "kd")
             else motion_bundle(source),
-            hardware_config=control_settings(endpoint, standing),
+            hardware_config=control_settings(endpoint, standing, source),
         )
         assert (result.returncode == 0) == (failure is None), result.stderr
         assert not fake.calls
@@ -541,19 +784,174 @@ def test_motion_rejects_pose_configuration_inconsistent_with_bundle(
     server, pool, endpoint = start_services(fake, pose_enabled=False)
     standing = tmp_path / "standing.zip"
     standing.write_bytes(bundle(source))
-    settings = control_settings(endpoint, standing)
+    settings = control_settings(endpoint, standing, source)
     if mode == "full_state":
-        del settings["motion"]["pose"]
+        del settings["motions"][0]["settings"]["pose"]
     try:
-        result = run(
+        result = run_motion(
+            run,
+            standing,
             content=motion_bundle(source, observation_mode=mode),
             hardware_config=settings,
         )
         assert result.returncode != 0
-        assert "motion.pose" in result.stderr
+        assert "motions[].settings.pose" in result.stderr
         assert not fake.calls
         assert fake.pose_requests == 0
     finally:
+        fake.closed.set()
+        server.stop(0).wait()
+        pool.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("connection_loss", ["close", "stall", "invalid_sample"])
+def test_two_named_motions_and_operator_loss(
+    rust_policy, hardware_proto, tmp_path, connection_loss
+):
+    """Exercise the complete operator path without a CAN device or physical robot."""
+    _, _, source = rust_policy
+    fake = MotionHardware(hardware_proto)
+    server, pool, endpoint = start_services(fake, pose_enabled=False)
+    standing = tmp_path / "standing.zip"
+    standing.write_bytes(bundle(source))
+    motion = tmp_path / "motion.zip"
+    motion.write_bytes(
+        motion_bundle(source, frames=8, observation_mode="proprioceptive")
+    )
+    log = tmp_path / "operator.jsonl"
+    settings = control_settings(endpoint, standing, source, log)
+    settings["control"]["ramp_seconds"] = 0.6
+    entry = settings["motions"][0]
+    entry["name"] = "Wave"
+    del entry["settings"]["pose"]
+    settings["motions"].append(dict(entry, name="Bow"))
+    config = tmp_path / "operator.json"
+    config.write_text(json.dumps(settings))
+    output = tmp_path / "runner.log"
+    operator = None
+    with output.open("w") as stream:
+        process = subprocess.Popen(
+            [
+                os.environ["BELLO_POLICY_BIN"],
+                "--source",
+                str(source),
+                "--policy",
+                str(standing),
+                "--hardware-config",
+                str(config),
+                "--arm",
+            ],
+            stdout=stream,
+            stderr=stream,
+            start_new_session=True,
+        )
+    address = settings["control"]["operator_listen"]
+
+    def lose_connection():
+        if connection_loss == "stall":
+            operator.paused.set()
+        elif connection_loss == "invalid_sample":
+            operator.buttons = {"forward": float("nan")}
+        if connection_loss != "close":
+            deadline = time.monotonic() + 2
+            while operator.error is None:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+        operator.close()
+
+    def assert_control_retained():
+        assert fake.state == fake.pb.GROUP_STATE_RUNNING
+        assert not {"damp", "stop", "disable", "release"}.intersection(fake.calls)
+
+    try:
+        operator = OperatorClient(address, fake)
+        operator.press(0.2, back=True, start=True)
+        assert not fake.calls
+        lose_connection()
+        operator = OperatorClient(
+            address, fake, buttons={"back": True, "start": True}, wait_neutral=False
+        )
+        operator.wait(lambda status: status.neutral_required)
+        time.sleep(0.3)
+        assert not fake.calls
+        operator.buttons = {}
+        operator.wait(lambda status: not status.neutral_required)
+        other = OperatorClient(address, wait_neutral=False)
+        try:
+            deadline = time.monotonic() + 2
+            while other.error is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert other.error.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+        finally:
+            other.close()
+        operator.press(2.1, back=True, start=True)
+        operator.wait(lambda status: status.phase == "ramping")
+        lose_connection()
+        time.sleep(0.3)
+        held = np.array(fake.targets[-1])
+        time.sleep(0.2)
+        np.testing.assert_array_equal(fake.targets[-1], held)
+        assert_control_retained()
+        operator = OperatorClient(address, fake)
+        operator.wait(lambda status: status.phase == "holding")
+        lose_connection()
+        time.sleep(0.3)
+        held = np.array(fake.targets[-1])
+        time.sleep(0.2)
+        np.testing.assert_array_equal(fake.targets[-1], held)
+        assert_control_retained()
+        operator = OperatorClient(address, fake)
+        operator.press(1.1, a=True)
+        operator.wait(lambda status: status.mode == operator_pb.MODE_STAND)
+        lose_connection()
+        time.sleep(0.3)
+        assert_control_retained()
+        operator = OperatorClient(address, fake)
+        operator.wait(lambda status: status.mode == operator_pb.MODE_STAND)
+        operator.select("Locomotion")
+        operator.press(1.1, a=True)
+        operator.wait(lambda status: status.mode == operator_pb.MODE_LOCOMOTION)
+        lose_connection()
+        time.sleep(0.3)
+        operator = OperatorClient(
+            address, fake, buttons={"forward": 1.0}, wait_neutral=False
+        )
+        operator.wait(
+            lambda status: (
+                status.mode == operator_pb.MODE_STAND and status.neutral_required
+            )
+        )
+        operator.buttons = {}
+        operator.wait(lambda status: not status.neutral_required)
+        for name in ("Wave", "Bow"):
+            operator.select(name)
+            operator.buttons = {"a": True}
+            operator.wait(
+                lambda status, selected=name: (
+                    status.active_motion == selected and status.phase == "motion"
+                )
+            )
+            lose_connection()
+            time.sleep(0.3)
+            operator = OperatorClient(address, fake)
+            operator.wait(lambda status: status.mode == operator_pb.MODE_STAND)
+            assert_control_retained()
+        operator.press(1.1, l1=True, r1=True)
+        operator.wait(lambda status: status.mode == operator_pb.MODE_FAULT)
+        deadline = time.monotonic() + 3
+        while "release" not in fake.calls and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert fake.calls[-1] == "release"
+        assert "disable" not in fake.calls
+        assert fake.state == fake.pb.GROUP_STATE_DAMPED
+        process.terminate()
+        assert process.wait(timeout=5) != 0
+    finally:
+        if operator:
+            operator.close()
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
         fake.closed.set()
         server.stop(0).wait()
         pool.shutdown(wait=True)

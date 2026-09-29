@@ -2,6 +2,7 @@
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::collections::BTreeSet;
+use std::error::Error;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
@@ -99,6 +100,15 @@ fn multiply(matrix: &[Vec<f64>], vector: &[f64]) -> Vec<f64> {
         .collect()
 }
 
+fn connection_lost(status: &tonic::Status) -> bool {
+    matches!(
+        status.code(),
+        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded
+    ) || status
+        .source()
+        .is_some_and(|source| source.is::<tonic::transport::Error>())
+}
+
 impl Following {
     pub fn new(config: Config, policy: &crate::Policy) -> Result<Self> {
         for value in [
@@ -185,39 +195,49 @@ impl Following {
             robot: robot.clone(),
         };
         let (tx, latest) = watch::channel(Ok(None));
-        let task =
-            tokio::spawn(async move {
-                let mut client = ReferenceServiceClient::new(endpoint.connect_lazy())
-                    .max_decoding_message_size(64 * 1024);
-                loop {
-                    let requested = Instant::now();
-                    let sample =
-                        match tokio::time::timeout(timeout, client.get_reference(request.clone()))
-                            .await
-                        {
-                            Ok(Ok(response)) => Ok(Some(Sample {
-                                message: response.into_inner(),
-                                requested,
-                            })),
-                            Err(_) => Ok(None),
-                            Ok(Err(status))
-                                if matches!(
-                                    status.code(),
-                                    tonic::Code::Unavailable | tonic::Code::DeadlineExceeded
-                                ) =>
-                            {
-                                Ok(None)
-                            }
-                            Ok(Err(status)) => Err(format!("reference producer failed: {status}")),
-                        };
-                    let terminal = sample.is_err();
-                    let _ = tx.send_replace(sample);
-                    if terminal {
-                        return;
+        let address = config.endpoint.clone();
+        let task = tokio::spawn(async move {
+            let mut client = ReferenceServiceClient::new(endpoint.connect_lazy())
+                .max_decoding_message_size(64 * 1024);
+            let mut last_error = None;
+            loop {
+                let requested = Instant::now();
+                let sample = match tokio::time::timeout(
+                    timeout,
+                    client.get_reference(request.clone()),
+                )
+                .await
+                {
+                    Ok(Ok(response)) => {
+                        if last_error.take().is_some() {
+                            eprintln!("Reference producer reconnected: {address}");
+                        }
+                        Ok(Some(Sample {
+                            message: response.into_inner(),
+                            requested,
+                        }))
                     }
-                    tokio::time::sleep(period.saturating_sub(requested.elapsed())).await;
+                    Err(_) => Ok(None),
+                    Ok(Err(status)) if connection_lost(&status) => {
+                        let message = status.to_string();
+                        if last_error.as_ref() != Some(&message) {
+                            eprintln!(
+                                "Reference producer unavailable at {address}; returning upper body to nominal and retrying: {message}"
+                            );
+                            last_error = Some(message);
+                        }
+                        Ok(None)
+                    }
+                    Ok(Err(status)) => Err(format!("reference producer failed: {status}")),
+                };
+                let terminal = sample.is_err();
+                let _ = tx.send_replace(sample);
+                if terminal {
+                    return;
                 }
-            });
+                tokio::time::sleep(period.saturating_sub(requested.elapsed())).await;
+            }
+        });
         Ok(Self {
             config,
             mapping,
@@ -230,13 +250,22 @@ impl Following {
         })
     }
 
-    pub fn update(&mut self, measured: &[f64], dt: f64) -> Result<(bool, [f32; 3])> {
+    pub fn reset(&mut self) {
+        self.transition = Transition::default();
+        self.last_sequence = None;
+    }
+
+    pub fn update(&mut self, measured: &[f64], dt: f64, enabled: bool) -> Result<(bool, [f32; 3])> {
         let m = &self.mapping;
         ensure!(
             measured.len() == m.joint_names.len(),
             "following feedback shape mismatch"
         );
-        let sample = self.latest.borrow().clone().map_err(anyhow::Error::msg)?;
+        let sample = if enabled {
+            self.latest.borrow().clone().map_err(anyhow::Error::msg)?
+        } else {
+            None
+        };
         let mut desired: Vec<_> = self
             .indices
             .iter()
@@ -348,6 +377,44 @@ impl Drop for Following {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn http2_protocol_error_is_connection_loss_not_a_terminal_reference_fault() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut preface = [0; 24];
+            socket.read_exact(&mut preface).unwrap();
+            socket
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+        let endpoint =
+            tonic::transport::Endpoint::from_shared(format!("http://{address}")).unwrap();
+        let mut client = ReferenceServiceClient::new(endpoint.connect_lazy());
+        let error = tokio::time::timeout(
+            Duration::from_secs(3),
+            client.get_reference(GetReferenceRequest {
+                robot: "test".into(),
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        server.join().unwrap();
+        assert_eq!(error.code(), tonic::Code::Unknown, "{error:?}");
+        assert!(connection_lost(&error), "{error:?}");
+        assert!(!connection_lost(&tonic::Status::invalid_argument(
+            "wrong robot"
+        )));
+        assert!(!connection_lost(&tonic::Status::unknown(
+            "producer calculation failed"
+        )));
+    }
     #[test]
     fn outage_returns_to_nominal_without_target_jumps() {
         let mut state = Transition::default();

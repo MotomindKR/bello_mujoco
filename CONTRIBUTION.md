@@ -28,10 +28,9 @@ Start documentation changes from [docs/index.md](docs/index.md). Public command
 fields belong in [docs/commands.md](docs/commands.md); training settings belong
 in [docs/training_configuration.md](docs/training_configuration.md).
 
-The private pose and remote-command Python modules are generated from the
-authoritative schemas under `deps/bello-stack/components/bello-*-api/proto`.
-Treat the submodule as read-only here and regenerate the bindings after
-advancing the pinned revision to a version that changes either protocol:
+The private pose Python module comes from the pinned stack pose API. Operator
+bindings come from `rust/bello-policy/proto/operator.proto`. Regenerate bindings
+when either authoritative schema changes:
 
 ```bash
 uv run bash scripts/protobuf.sh generate

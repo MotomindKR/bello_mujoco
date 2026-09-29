@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{self, BufRead};
 use std::path::PathBuf;
 
@@ -21,7 +22,7 @@ struct Args {
     /// Hardware settings; read-only preflight unless --arm is also supplied.
     #[arg(long, conflicts_with_all = ["check", "telemetry"])]
     hardware_config: Option<PathBuf>,
-    /// Requires interactive HOLD/RUN/IDLE confirmation and explicit control settings.
+    /// Enables the runner-owned operator service; motors remain off until the gamepad chord.
     #[arg(long, requires = "hardware_config")]
     arm: bool,
 }
@@ -48,28 +49,39 @@ async fn main() -> Result<()> {
 
         let mut config: Config = serde_yaml::from_reader(std::fs::File::open(path)?)?;
         let control = config.control.take();
-        let (mut runtime, mut live) = if policy.metadata.task == "motion_tracking" {
-            let settings = config.motion.take().ok_or_else(|| {
-                anyhow::anyhow!("motion hardware control requires motion settings")
-            })?;
-            let standing = Locomotion::new(Policy::load(&settings.standing_policy, &args.source)?)?;
-            let live = bello_policy::motion::live::Live::connect(
-                bello_policy::motion::Motion::new(policy)?,
-                &standing,
-                settings,
+
+        anyhow::ensure!(
+            policy.metadata.task == "locomotion",
+            "hardware operator control requires a standing/locomotion --policy; configure named motions in hardware YAML"
+        );
+        let mut runtime = Locomotion::new(policy)?;
+        let configured_motions = std::mem::take(&mut config.motions);
+        let mut motions = BTreeMap::new();
+        for bundle in configured_motions {
+            anyhow::ensure!(
+                !bundle.name.trim().is_empty()
+                    && !["Stand", "Locomotion", "Motion"].contains(&bundle.name.as_str())
+                    && !motions.contains_key(&bundle.name),
+                "invalid or duplicate motion name"
+            );
+            let motion_policy = Policy::load(&bundle.policy, &bundle.source)?;
+            let motion = bello_policy::motion::live::Live::connect(
+                bello_policy::motion::Motion::new(motion_policy)?,
+                &runtime,
+                bundle.settings,
             )
             .await?;
-            (standing, Some(live))
-        } else {
-            anyhow::ensure!(
-                config.motion.is_none(),
-                "motion settings require a motion bundle"
-            );
-            (Locomotion::new(policy)?, None)
-        };
-        let hardware = Hardware::connect(config, &runtime).await?;
-        if let Some(live) = &mut live {
-            live.configure_hardware(&hardware)?;
+            motions.insert(bundle.name, motion);
+        }
+        let hardware = Hardware::connect(
+            config,
+            &runtime.policy.metadata,
+            &runtime.policy.target_limits,
+            runtime.imu_frame(),
+        )
+        .await?;
+        for motion in motions.values_mut() {
+            motion.configure_hardware(&hardware)?;
         }
         if args.arm {
             return bello_policy::control::run(
@@ -77,7 +89,7 @@ async fn main() -> Result<()> {
                 runtime,
                 control
                     .ok_or_else(|| anyhow::anyhow!("armed execution requires control settings"))?,
-                live,
+                motions,
             )
             .await;
         }
@@ -86,8 +98,8 @@ async fn main() -> Result<()> {
             &sample.motor_position,
             hardware.config.startup_feedback_margin_radians,
         )?;
-        if let Some(live) = &live {
-            live.check_feedback(&sample)?;
+        for motion in motions.values() {
+            motion.check_feedback(&sample)?;
         }
         let preview = runtime.step(&sample)?;
         println!(

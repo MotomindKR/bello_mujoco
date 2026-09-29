@@ -73,16 +73,15 @@ does not continue pointing at the old path.
 
 ## Network topology
 
-Lima forwards guest services only to Mac loopback. Port 50054 is deliberately
-not forwarded from guest to host because it belongs to the native visualizer.
+Lima forwards guest services only to Mac loopback. The console connects directly
+to guest hardwared, estimator and runner services. Port 50054 is unused.
 
 | Service | Actual listener | Client route |
 | --- | --- | --- |
 | Hardware daemon | Lima guest, `0.0.0.0:50051` | Mac visualizer: `http://127.0.0.1:50051` |
 | MuJoCo ground-truth pose | Lima guest, `0.0.0.0:50052` | Mac: `http://127.0.0.1:50052` |
 | State estimator | Lima guest, `0.0.0.0:50053` | Mac visualizer: `http://127.0.0.1:50053` |
-| Visualizer remote commands | Mac, `127.0.0.1:50054` | Guest policy: `http://host.lima.internal:50054` |
-| Reserved service | Lima guest port 50055, when used | Mac: `http://127.0.0.1:50055` |
+| Runner operator stream | Lima guest, `0.0.0.0:50055` | Mac console: `127.0.0.1:50055` |
 
 `host.lima.internal` is Lima's stable guest-side name for the Mac. The guest
 Nix shell adds it to `NO_PROXY` so a host proxy cannot intercept local gRPC
@@ -131,7 +130,7 @@ active TCP ports. This command should print nothing:
 
 ```bash
 lsof -nP \
-  -iTCP:50051 -iTCP:50052 -iTCP:50053 -iTCP:50054 \
+  -iTCP:50051 -iTCP:50052 -iTCP:50053 -iTCP:50055 \
   -sTCP:LISTEN
 ```
 
@@ -164,7 +163,7 @@ This makes the hardware service reachable on guest loopback port 50051.
 
 The locomotion policy does not require the state estimator, but the native
 visualizer configuration below uses its pelvis pose on port 50053. Start it
-when using Terminal 4A or when collecting estimator output:
+when using Terminal 4 or when collecting estimator output:
 
 ```bash
 ./scripts/lima_vcan.sh run bash -c \
@@ -176,54 +175,20 @@ The estimator uses the same robot profile for physical hardware and emulation;
 only hardwared selects the CAN and serial transports. MuJoCo ground-truth pose
 remains available independently on port 50052.
 
-### Terminal 4A: native macOS visualizer
+### Terminal 4: policy console
 
-Use this option for visualization, gamepad commands, or walking tests. On the
-Mac, create the ignored local visualizer configuration once:
-
-```bash
-cp deps/bello-stack/components/bello-visualizer/config/bello-mini.example.yaml \
-  deps/bello-stack/components/bello-visualizer/config/bello-mini.yaml
-```
-
-In `bello-mini.yaml`, change only the remote listener from
-`0.0.0.0:50054` to `127.0.0.1:50054`. Its hardware and external-pose endpoints
-already use Mac loopback ports 50051 and 50053. Then start the native binary:
-
-Run this command from the `bello_mujoco-vcan` repository root. Staying at the
-root avoids entering the submodule's Linux-only direnv shell:
+On the Mac, connect a mapped gamepad and start the Electron console:
 
 ```bash
-nix develop .#macos-visualizer --command \
-  cargo run --locked \
-  --manifest-path deps/bello-stack/Cargo.toml \
-  -p bello-visualizer -- \
-  --config deps/bello-stack/components/bello-visualizer/config/bello-mini.yaml
+cd console
+npm ci
+npm start
 ```
 
-The dedicated shell supplies Rust and `protoc`, and keeps Cargo downloads
-and build output below the Mac's cache directory instead of the shared source
-tree. Keep the visualizer's direct group control disabled while the policy owns
-the lower-body control lease; use its monitoring and gamepad remote-command
-functions during a policy run.
-
-### Terminal 4B: zero-only guest remote command
-
-Locomotion requires a fresh `RemoteCommandService` sample even when upper-body
-tracking is disabled. The internal headless service verifies that `vcan0` and
-`vcan1` are real vCAN links, binds only to `127.0.0.1:50054`, and continuously
-publishes armed zero velocity intent:
-
-```bash
-./scripts/lima_vcan.sh run \
-  uv run python -m bello_mujoco.hardware.headless_remote
-```
-
-This service cannot request forward, lateral, or yaw motion. It is suitable for
-read-only preflight and zero-command standing tests only. To command walking,
-use Terminal 4A instead. Do not run the native visualizer and the headless
-remote service at the same time: they are alternative command authorities, and
-a mistaken endpoint can select the wrong one.
+The default endpoints use Mac loopback ports 50051, 50053 and 50055. See the
+[console guide](policy_console.md) for configuration and packaged builds.
+The Kiss3d visualizer is optional diagnostic tooling. Keep its direct group
+control disabled during policy runs; it no longer supplies gamepad commands.
 
 ### Terminal 5: read-only policy preflight
 
@@ -234,10 +199,7 @@ mkdir -p outputs
 cp rust/bello-policy/config/hardware.yaml outputs/policy-hardware.yaml
 ```
 
-In that YAML, set `control.remote.endpoint` to
-`http://host.lima.internal:50054` for the Mac visualizer, or
-`http://127.0.0.1:50054` for the zero-only guest service. Set
-`control.max_duration_seconds: 30` for a bounded commissioning run and keep
+In that YAML, keep `control.operator_listen: 0.0.0.0:50055` and
 `control.following.enabled: false` unless the reference producer is running.
 Run preflight before every armed simulated run:
 
@@ -255,7 +217,7 @@ and sends no motor command. Do not continue unless its result contains
 
 ## Run an armed simulation
 
-Keep Terminals 1, 2, and exactly one Terminal 4 option running. Start a bounded
+Keep Terminals 1, 2, and Terminal 4 running. Start a bounded
 simulated run in Terminal 5:
 
 ```bash
@@ -267,23 +229,22 @@ simulated run in Terminal 5:
 
 Use the same local hardware YAML and command authority validated during preflight.
 
-Follow the interactive sequence exactly:
+Use the controller sequence:
 
-1. With the emulator's torso guide still engaged, type the exact word `HOLD` in
-   Terminal 5. The runner acquires control and performs its nominal-pose ramp.
-2. When Terminal 5 displays the `RUN` prompt, switch to Terminal 1 and press
-   Enter once to release the torso guide.
-3. Let the simulated robot settle, return to Terminal 5, and type the exact word
-   `RUN` to start the policy.
-4. Allow the bounded run to finish, or press Ctrl-C in Terminal 5 to enter the
-   normal stop sequence. Follow any resulting `IDLE` confirmation prompt.
+1. With the torso guide engaged, release all controls, then hold Back+Start for
+   two seconds. The runner acquires control and ramps to Hold.
+2. Wait for phase `holding`, then press Enter in the emulator terminal to release
+   its guide. Let the simulated robot settle.
+3. Hold A for one second to enter Stand. D-pad left/right selects Locomotion or a named
+   motion; another one-second A press confirms it.
+4. Use L1 + R1 to abort. There is no run-duration limit. The runner damps and
+   releases leases; Ctrl-C exits the final status display.
 
-`HOLD` and `RUN` belong in the policy-runner terminal. The bare Enter used to
-release or reset the torso belongs only in the emulator terminal. When using
-Terminal 4B, the headless remote keeps the commanded velocity at zero throughout
-this sequence, so it tests standing and the complete vCAN policy path but not
-commanded locomotion. When using Terminal 4A, keep the gamepad neutral through
-the hold-and-release sequence and command motion only after the run starts.
+The emulator's Enter key only controls its torso guide. Test two named motions,
+short/repeated presses, rejected transitions, abort and reconnect neutrality.
+Disconnect each console display stream independently: it must not create a
+control command. Loss of the operator stream preserves Hold, returns Locomotion
+to Stand and allows a healthy named motion to finish. Feedback/lease faults remain authoritative. See [console behavior](policy_console.md).
 
 ## Inspect and remove the guest
 

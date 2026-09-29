@@ -11,13 +11,14 @@ use glam::DVec3;
 use serde::Deserialize;
 
 use crate::PolicyMetadata;
-use crate::locomotion::{Feedback, Locomotion, projected_gravity};
+use crate::locomotion::{Feedback, projected_gravity};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub control: Option<crate::control::Config>,
-    pub motion: Option<crate::motion::live::Config>,
+    #[serde(default)]
+    pub motions: Vec<MotionBundle>,
     pub endpoint: String,
     pub groups: Vec<String>,
     pub imu_name: String,
@@ -32,6 +33,15 @@ pub struct Config {
     pub max_tilt_radians: f64,
     pub max_angular_velocity: f64,
     pub max_linear_acceleration: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MotionBundle {
+    pub name: String,
+    pub policy: std::path::PathBuf,
+    pub source: std::path::PathBuf,
+    pub settings: crate::motion::live::Config,
 }
 
 impl Config {
@@ -118,7 +128,12 @@ impl Hardware {
         Ok(limits)
     }
 
-    pub async fn connect(config: Config, runtime: &Locomotion) -> Result<Self> {
+    pub async fn connect(
+        config: Config,
+        metadata: &PolicyMetadata,
+        policy_target_limits: &crate::target_limits::TargetLimits,
+        imu_frame: &str,
+    ) -> Result<Self> {
         config.validate()?;
         let duration = Duration::from_secs_f64(config.connection_timeout_seconds);
         let robot = tokio::time::timeout(
@@ -132,12 +147,11 @@ impl Hardware {
             .iter()
             .map(|name| robot.group(name))
             .collect::<Result<_, _>>()?;
-        let metadata = &runtime.policy.metadata;
         let mut by_coordinate = BTreeMap::new();
         for group in &groups {
             ensure!(
-                group.initial_state() == GroupState::Idle,
-                "group {} must start IDLE",
+                matches!(group.initial_state(), GroupState::Idle | GroupState::Damped),
+                "group {} must start Idle or Damped",
                 group.name()
             );
             ensure!(
@@ -174,11 +188,11 @@ impl Hardware {
             "IMU is not online"
         );
         ensure!(
-            imu.output_frame() == runtime.imu_frame(),
+            imu.output_frame() == imu_frame,
             "hardware/policy IMU frame mismatch"
         );
         let mut motors = Vec::new();
-        let mut target_limits = runtime.policy.target_limits.clone();
+        let mut target_limits = policy_target_limits.clone();
         for (i, coordinate) in metadata.coordinates.iter().enumerate() {
             let motor = by_coordinate[coordinate.as_str()];
             let limits = motor.limits();
@@ -206,9 +220,25 @@ impl Hardware {
             .await
     }
 
+    pub async fn ready_feedback(&self) -> Result<Feedback> {
+        self.feedback_states(
+            &[proto::GroupState::Idle, proto::GroupState::Damped],
+            Some(self.config.max_tilt_radians),
+        )
+        .await
+    }
+
     pub async fn feedback_with_tilt(
         &self,
         expected: proto::GroupState,
+        max_tilt: Option<f64>,
+    ) -> Result<Feedback> {
+        self.feedback_states(&[expected], max_tilt).await
+    }
+
+    async fn feedback_states(
+        &self,
+        expected: &[proto::GroupState],
         max_tilt: Option<f64>,
     ) -> Result<Feedback> {
         let start = Instant::now();
@@ -264,7 +294,7 @@ fn decode_feedback(
     frame: &proto::GetStateFrameResponse,
     motor_names: &[String],
     config: &Config,
-    expected: proto::GroupState,
+    expected: &[proto::GroupState],
     transport: Duration,
     max_tilt: Option<f64>,
 ) -> Result<Feedback> {
@@ -324,7 +354,7 @@ fn decode_feedback(
             config.max_group_age_ms,
         )?;
         ensure!(
-            group.state == expected as i32,
+            expected.iter().any(|state| group.state == *state as i32),
             "group {} is not {:?}: {}",
             group.group,
             expected,
@@ -391,7 +421,7 @@ mod tests {
     fn fixture() -> (Config, proto::GetStateFrameResponse, Vec<String>) {
         let config = Config {
             control: None,
-            motion: None,
+            motions: Vec::new(),
             endpoint: "http://localhost:1".into(),
             groups: vec!["limb".into()],
             imu_name: "sensor".into(),
@@ -442,6 +472,31 @@ mod tests {
     }
 
     #[test]
+    fn ready_feedback_accepts_damping_but_rejects_running_and_fault() {
+        let (config, mut frame, motors) = fixture();
+        for (state, accepted) in [
+            (proto::GroupState::Idle, true),
+            (proto::GroupState::Damped, true),
+            (proto::GroupState::Running, false),
+            (proto::GroupState::Fault, false),
+        ] {
+            frame.groups[0].state = state as i32;
+            assert_eq!(
+                decode_feedback(
+                    &frame,
+                    &motors,
+                    &config,
+                    &[proto::GroupState::Idle, proto::GroupState::Damped],
+                    Duration::ZERO,
+                    Some(config.max_tilt_radians)
+                )
+                .is_ok(),
+                accepted
+            );
+        }
+    }
+
+    #[test]
     fn snapshot_validation_includes_transport_delay() {
         let (config, frame, motors) = fixture();
         let decode = |latency| {
@@ -449,7 +504,7 @@ mod tests {
                 &frame,
                 &motors,
                 &config,
-                proto::GroupState::Idle,
+                &[proto::GroupState::Idle],
                 Duration::from_millis(latency),
                 Some(config.max_tilt_radians),
             )
@@ -473,7 +528,7 @@ mod tests {
                 frame,
                 &motors,
                 &config,
-                proto::GroupState::Idle,
+                &[proto::GroupState::Idle],
                 Duration::ZERO,
                 limit,
             )
@@ -510,7 +565,7 @@ mod tests {
                 frame,
                 &motors,
                 &config,
-                proto::GroupState::Idle,
+                &[proto::GroupState::Idle],
                 Duration::ZERO,
                 Some(config.max_tilt_radians),
             )

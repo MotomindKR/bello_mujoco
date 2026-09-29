@@ -2,7 +2,7 @@
 # Prepare the host interfaces required by the Bello hardware emulator.
 set -euo pipefail
 
-readonly queue_length=10000
+readonly queue_length=65536
 readonly interfaces=(vcan0 vcan1)
 readonly action=${1:-start}
 

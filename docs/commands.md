@@ -51,7 +51,7 @@ nix develop .#rust-runtime --command cargo run --locked -p bello-policy -- \
   --hardware-config rust/bello-policy/config/hardware.yaml
 ```
 
-Start hardwared and the visualizer/remote service separately; see [Lima](macos_vcan.md).
+Start hardwared and the [policy console](policy_console.md) separately; see [Lima](macos_vcan.md).
 The emulator and policy runner are native commands, not Hydra/Python entrypoints.
 See [emulator configuration](emulator.md) and the
 [policy runtime](../rust/bello-policy/README.md).

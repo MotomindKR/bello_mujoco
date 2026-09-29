@@ -5,6 +5,7 @@
 - [Training and evaluation](training_and_evaluation.md)
 - [Robot descriptions](robot_assets.md)
 - [BeyondMimic tracking](motion_tracking.md)
+- [Bello Mini policy console](policy_console.md)
 - [Hardware](hardware.md), [emulator](emulator.md), and [Lima](macos_vcan.md)
 - [PICO tracking and hand-control startup](pico_startup.md)
 - [Robot and tracking systemd workflow](systemd.md)
@@ -21,7 +22,7 @@
 | `envs/` | Task stepping, shared scalar/batch transitions, observations, gait, geometry, rewards, diagnostics |
 | `training/` | PPO optimization/rollouts, explicit environment contract, normalization, metrics, shared host update loop, checkpoints and remote training |
 | `evaluation/` | Native CPU rollouts, shared video resources, isolated software workers |
-| `hardware/` | Direct XRoboToolkit body and FastSAM retargeting, reference/neutral-command producers, pose diagnostics, and independent hands |
+| `hardware/` | Direct XRoboToolkit body and FastSAM retargeting, reference producers, pose diagnostics, and independent hands |
 | `motion/` | Reference clip loading and runtime reconstruction |
 | `robots/` | Robot task defaults and coordinate mappings |
 | `deployment.py` | Self-contained ONNX/reference deployment bundles |

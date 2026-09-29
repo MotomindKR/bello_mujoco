@@ -165,22 +165,7 @@ impl Locomotion {
         self.last_action.fill(0.);
     }
 
-    pub fn nominal_tolerance(&self, index: usize, direct: f64, coupled: f64) -> f64 {
-        if self
-            .settings
-            .joint_from_motor
-            .iter()
-            .filter(|row| row[index].abs() > 1e-12)
-            .count()
-            > 1
-        {
-            coupled
-        } else {
-            direct
-        }
-    }
-
-    pub fn remote_command(&self, axes: [f32; 3], scale: f32) -> Result<[f32; 3]> {
+    pub fn controller_command(&self, axes: [f32; 3], scale: f32) -> Result<[f32; 3]> {
         ensure!(
             axes.iter()
                 .all(|v| v.is_finite() && (-1. ..=1.).contains(v))
@@ -229,6 +214,10 @@ impl Locomotion {
             };
         }
         Ok(output)
+    }
+
+    pub fn operator_velocity(&self, command: [f32; 3]) -> [f32; 3] {
+        operator_velocity(command, self.settings.left_axis)
     }
 
     pub fn step(&mut self, sample: &Feedback) -> Result<Step> {
@@ -372,4 +361,25 @@ pub fn projected_gravity(q: [f64; 4]) -> Result<[f64; 3]> {
         "invalid IMU quaternion"
     );
     Ok((q.normalize().conjugate() * DVec3::NEG_Z).to_array())
+}
+
+fn operator_velocity([x, y, yaw]: [f32; 3], [lx, ly]: [f32; 2]) -> [f32; 3] {
+    [x * ly - y * lx, -x * lx - y * ly, yaw]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::operator_velocity;
+
+    #[test]
+    fn command_display_projects_into_forward_right_and_yaw() {
+        assert_eq!(
+            operator_velocity([0.3, -0.2, 0.4], [0., 1.]),
+            [0.3, 0.2, 0.4]
+        );
+        assert_eq!(
+            operator_velocity([-0.2, -0.3, -0.4], [1., 0.]),
+            [0.3, 0.2, -0.4]
+        );
+    }
 }

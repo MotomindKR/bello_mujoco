@@ -11,7 +11,6 @@ max_state_sample_span_ms: 40.0
 max_tilt_radians: 0.7
 max_angular_velocity: 20.0
 max_linear_acceleration: 100.0
-motion: null
 control:
   following:
     enabled: true
@@ -24,7 +23,7 @@ control:
     max_target_speed_rps: 9.42477796076938
     connection_transition_duration_seconds: 1.0
   client_name: bello-policy
-  remote: {endpoint: http://192.168.0.216:50054, staleness_ms: 200}
+  operator_listen: 0.0.0.0:50055
   command_validity_seconds: 0.08
   acknowledgement_timeout_seconds: 0.5
   rpc_timeout_seconds: 2.0
@@ -32,8 +31,5 @@ control:
   gain_scale: 1.0
   joystick_command_scale: 1.0
   max_loop_lag_seconds: 0.1
-  max_duration_seconds: null
-  max_nominal_error_radians: 0.5
-  max_coupled_nominal_error_radians: 1.0
   # The launcher creates a unique working directory for each armed run.
   policy_log_path: policy.jsonl
