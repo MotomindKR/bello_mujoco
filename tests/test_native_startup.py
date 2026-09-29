@@ -136,6 +136,7 @@ def test_back_down_startup(rust_policy, hardware_proto, tmp_path, scenario):
             assert list(operator.status.startups) == ["Crane", "Back-down"]
             operator.press(dpad_right=True)
             operator.wait(lambda s: s.selected_startup == "Back-down")
+            operator.wait(lambda s: not s.fault and not s.neutral_required)
             operator.press(2.1, back=True, start=True)
             operator.wait(lambda s: s.phase == "awaiting lift", timeout=25)
             if scenario == "abort_lift":

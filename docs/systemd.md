@@ -94,8 +94,12 @@ requires neutral controller input. See [console controls](policy_console.md).
 
 The service starts after the four supporting daemons and stops before them.
 Ordering does not imply telemetry readiness: the runner validates feedback at
-startup. Startup/process failures retry with systemd's rate limit; each new
-process starts Disarmed and requires a new neutral input and Hold chord.
+startup. Missing or stale feedback, unsafe group state, tilt, and joint-limit
+violations keep the operator service online in Disarmed, with the blocking reason
+in the console. Readiness is checked again automatically; recovery requires
+neutral input and a fresh Hold chord. These conditions do not consume systemd
+restart attempts. Configuration, connection-setup and process failures still
+retry with systemd's rate limit; each new process starts Disarmed.
 Runtime faults remain visible in the console for explicit fault clearing.
 Reference or console connection loss does not trigger a systemd restart.
 

@@ -342,6 +342,11 @@ impl State {
                 self.status.hold_progress = 0.;
                 self.hold_consumed = sample.back || sample.start;
             }
+            if !self.status.fault.is_empty() {
+                self.hold_since = None;
+                self.status.hold_progress = 0.;
+                return Ok(());
+            }
             if !(sample.back && sample.start) {
                 self.hold_consumed = false;
             }
@@ -611,6 +616,25 @@ impl Source {
             state.confirm_since = None;
             state.status.confirm_progress = 0.;
         }
+    }
+
+    pub fn set_startup_error(&self, message: &str) {
+        let mut state = self.state.lock().unwrap();
+        if state.status.mode != Mode::Disarmed as i32 {
+            return;
+        }
+        if state.status.fault.is_empty() != message.is_empty() {
+            state.disconnect();
+            eprintln!(
+                "{}",
+                if message.is_empty() {
+                    "Startup ready; release inputs before the Hold chord."
+                } else {
+                    message
+                }
+            );
+        }
+        state.status.fault = message.into();
     }
 
     pub fn set_velocity_command(&self, [forward, right, yaw]: [f32; 3]) {

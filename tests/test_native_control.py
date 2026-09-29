@@ -86,6 +86,7 @@ class SyntheticHardware:
         self.targets = []
         self.command_frames = []
         self.orientation = pb.Quaternion(w=1)
+        self.imu_online = True
 
     def ListHardware(self, request, context):
         p = self.pb
@@ -139,7 +140,11 @@ class SyntheticHardware:
                     serial_device="serial",
                     source_frame="imu",
                     output_frame="imu",
-                    status=status,
+                    status=p.DeviceStatus(
+                        state=p.DEVICE_STATE_ONLINE
+                        if self.imu_online
+                        else p.DEVICE_STATE_STARTING
+                    ),
                 )
             ],
             power_boards=[
@@ -180,6 +185,8 @@ class SyntheticHardware:
 
     def GetStateFrame(self, request, context):
         p = self.pb
+        if not self.imu_online:
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, "IMU has no sample yet")
         now = time.monotonic_ns()
         age = 1_000_000_000 if self.failure == "stale" else 0
         stamp = now - age
@@ -765,26 +772,84 @@ def test_readonly_preflight_quantization_tolerance(
         else:
             assert result.returncode != 0
             assert "startup feedback constraint" in result.stderr
-            armed = subprocess.run(
-                [
-                    os.environ["BELLO_POLICY_BIN"],
-                    "--policy",
-                    str(tmp_path / "deployment.zip"),
-                    "--source",
-                    str(source),
-                    "--hardware-config",
-                    str(tmp_path / "hardware.yaml"),
-                    "--arm",
-                ],
-                stdin=subprocess.DEVNULL,
-                text=True,
-                capture_output=True,
-                timeout=5,
-            )
-            assert armed.returncode != 0
-            assert "startup feedback constraint" in armed.stderr
         assert not fake.calls
     finally:
         fake.closed.set()
         server.stop(0).wait()
         pool.shutdown(wait=True)
+
+
+def test_operator_survives_unready_boot_and_requires_a_fresh_hold_chord(
+    rust_policy, hardware_proto, tmp_path
+):
+    _, _, source = rust_policy
+    fake = SyntheticHardware(hardware_proto)
+    fake.imu_online = False
+    fake.positions[0] = -0.1
+    server, pool, endpoint = start_services(fake)
+    policy = tmp_path / "policy.zip"
+    policy.write_bytes(
+        bundle(source, metadata_updates=dict(motor_limits=[[0, 1.2], [-3, 3], [-3, 3]]))
+    )
+    settings = yaml.safe_load(
+        (
+            Path(__file__).parents[1] / "rust/bello-policy/config/hardware.yaml"
+        ).read_text()
+    )
+    address = operator_endpoint()
+    settings.update(endpoint=endpoint, groups=["limb"])
+    settings["control"].update(
+        operator_listen=address, ramp_seconds=0.1, policy_log_path=None
+    )
+    config = tmp_path / "hardware.yaml"
+    config.write_text(yaml.safe_dump(settings))
+    client = None
+    with (tmp_path / "runner.log").open("w+") as log:
+        process = subprocess.Popen(
+            [
+                os.environ["BELLO_POLICY_BIN"],
+                "--policy",
+                str(policy),
+                "--source",
+                str(source),
+                "--hardware-config",
+                str(config),
+                "--arm",
+            ],
+            stdout=log,
+            stderr=log,
+        )
+        try:
+            client = OperatorClient(address)
+            client.wait(lambda s: s.mode == operator_pb.MODE_DISARMED and s.fault)
+            assert process.poll() is None
+            assert not fake.calls
+            fake.imu_online = True
+            client.wait(lambda s: "startup feedback constraint" in s.fault)
+            client.buttons = {"back": True, "start": True}
+            time.sleep(2.2)
+            assert not fake.calls
+            fake.positions[0] = 0.2
+            client.wait(lambda s: not s.fault and s.neutral_required)
+            time.sleep(2.2)
+            assert not fake.calls
+            client.buttons = {}
+            client.wait(lambda s: not s.neutral_required)
+            # Readiness continues to update even after a successful boot check.
+            fake.positions[0] = -0.1
+            client.wait(lambda s: "startup feedback constraint" in s.fault)
+            assert not fake.calls
+            fake.positions[0] = 0.2
+            client.wait(lambda s: not s.fault and not s.neutral_required)
+            client.stand()
+            assert "acquire" in fake.calls
+        finally:
+            if client is not None:
+                client.close()
+            process.send_signal(signal.SIGTERM)
+            process.wait(timeout=5)
+            fake.closed.set()
+            server.stop(0).wait()
+            pool.shutdown(wait=True)
+            log.seek(0)
+            print(log.read())

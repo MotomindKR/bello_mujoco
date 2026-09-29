@@ -1,26 +1,15 @@
-## Bello Mini Console 0.2.5
+## Bello Mini Console 0.2.6
 
 ### Changes
 
-- Add assisted **Sit** from Stand: confirm support, bend with the left stick, confirm lowering onto the back, then confirm floor support before unloading motors and entering Idle.
-- Share the bent pose, joint-speed limits and ankle-gain handling with Back-down startup. Push the stick up to reverse before lowering; return to nominal and confirm to restore ankle control and Stand.
-- Pause assisted targets, gains and phase on console/network or gamepad loss. Retain motor control without damping or disabling; require neutral input after reconnecting. Explicit aborts and hardware/lease faults retain their damping response.
-- Show velocity sticks only during Locomotion and one left-stick widget during assisted leg movement. Highlight up/down glyphs from the selected PlayStation, Xbox or Switch prompt set.
-- Keep the controller card and abort control fixed across phases. Show confirmation prompts without competing progress text.
+- Show **Startup blocked** when the runner is waiting for safe, fresh feedback instead of offering the Hold chord.
+- Keep the operator service online and Disarmed while IMU samples are missing, telemetry is stale, or startup feedback violates joint or tilt limits. Retry readiness checks without exhausting systemd restart attempts.
+- Require released controller inputs and a fresh Back+Start hold after startup readiness recovers. No motor lease or commands are issued while startup is blocked; joint limits remain enforced.
+- Allow the supported torso to tilt during assisted Sit lowering. Upright checks still apply before returning to Stand; hardware faults and explicit aborts retain their damping response.
 
-### Runner configuration
+### Runner update
 
-Upgrade the runner with the console. A configured `control.lying_start` enables both Back-down startup and Sit. The deployment preset uses:
-
-```yaml
-lying_start:
-  hip_pitch_radians: -0.8
-  knee_radians: 1.2
-  straighten_speed_rps: 0.1
-  ankle_engage_seconds: 2.0
-```
-
-The runner validates these joint angles against the selected policy and hardware limits before acquiring control. The operator supports the torso throughout the assisted sequence and explicitly confirms floor support. The runner does not lower the torso autonomously. Native loopback tests cover completion, reversal, reconnect neutrality, gamepad loss, aborts and hardware faults; physical lowering remains an operator commissioning step.
+Update the runner alongside the console to get startup recovery. Select **Back-down** for a supported lying start, or **Crane** for an upright suspended start. The shared bent pose remains hip pitch -0.8 rad / knee 1.2 rad. Policy bundles and hardware calibration are unchanged.
 
 ### Installers
 

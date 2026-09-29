@@ -118,7 +118,12 @@ cargo run --locked -p bello-policy -- --policy outputs/standing.zip --source . \
 
 Without `--arm`, hardware mode runs read-only preflight and exits. With `--arm`,
 the operator service starts Disarmed; no lease or motor control begins until
-the entry chord. Commission with vCAN before physical deployment.
+the entry chord. While Disarmed, the runner checks readiness continuously.
+Missing IMU samples, stale feedback, unsafe group state, tilt, or out-of-range
+joints appear as **Startup blocked**; the operator service stays online and
+acquires no control. Correct the reported condition, release all controller
+inputs, then hold a fresh entry chord. Joint limits remain enforced.
+Commission with vCAN before physical deployment.
 
 ```bash
 cd console

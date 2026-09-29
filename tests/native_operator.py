@@ -82,6 +82,8 @@ class OperatorClient:
         self.wait(
             lambda status: status.mode == pb.MODE_HOLD and status.phase == "holding"
         )
+        # Phase changes require a released A sample before a new confirmation.
+        self.press()
         self.press(1.1, a=True)
         self.wait(lambda status: status.mode == pb.MODE_STAND)
 

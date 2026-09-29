@@ -258,21 +258,8 @@ pub async fn run(
     let power = log
         .as_ref()
         .map(|_| crate::power::Source::start(&hardware.robot, rpc));
-    let preflight = hardware
-        .ready_feedback_with_tilt(if lying_pose.is_some() {
-            None
-        } else {
-            Some(hardware.config.max_tilt_radians)
-        })
-        .await?;
     let limits = hardware.target_limits.clone();
     let startup_margin = hardware.config.startup_feedback_margin_radians;
-    limits.startup_target(&preflight.motor_position, startup_margin)?;
-    for motion in motions.values() {
-        motion.check_feedback(&preflight)?;
-    }
-    policy.step(&preflight)?;
-    policy.reset();
     eprintln!(
         "Operator service listening on {}; waiting for neutral input and Back+Start.",
         config.operator_listen
@@ -300,24 +287,42 @@ pub async fn run(
         let motion_interrupt = Arc::new(Mutex::new(None::<crate::motion::live::Interrupt>));
         let operation = async {
             let (startup_target, measured_startup, lying) = loop {
-                let lying = loop {
-                    let input = operator.snapshot();
-                    ensure!(input.request != Some(RequestMode::Abort), "operator abort");
-                    if !input.lost && input.request == Some(RequestMode::Hold) {
-                        break input.lying_start;
+                let input = operator.snapshot();
+                ensure!(input.request != Some(RequestMode::Abort), "operator abort");
+                let lying = input.lying_start;
+                let readiness: Result<_> = async {
+                    let initial = hardware
+                        .ready_feedback_with_tilt(if lying {
+                            None
+                        } else {
+                            Some(hardware.config.max_tilt_radians)
+                        })
+                        .await?;
+                    let target = limits.startup_target(&initial.motor_position, startup_margin)?;
+                    for motion in motions.values() {
+                        motion.check_feedback(&initial)?;
                     }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    policy.step(&initial)?;
+                    policy.reset();
+                    Ok((target, initial))
+                }
+                .await;
+                let (startup_target, initial) = match readiness {
+                    Ok(ready) => {
+                        operator.set_startup_error("");
+                        ready
+                    }
+                    Err(error) => {
+                        operator.set_startup_error(&format!("Startup blocked: {error:#}"));
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        continue;
+                    }
                 };
+                if input.lost || input.request != Some(RequestMode::Hold) {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
                 operator.set_mode(Mode::Disarmed, "acquiring", "", 0.);
-                let initial = hardware
-                    .ready_feedback_with_tilt(if lying {
-                        None
-                    } else {
-                        Some(hardware.config.max_tilt_radians)
-                    })
-                    .await?;
-                let startup_target =
-                    limits.startup_target(&initial.motor_position, startup_margin)?;
                 for group in &hardware.groups {
                     let input = operator.snapshot();
                     ensure!(input.request != Some(RequestMode::Abort), "operator abort");

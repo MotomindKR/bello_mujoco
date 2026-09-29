@@ -12,6 +12,8 @@ export function operatorGuide(state) {
           ? "Clearing fault"
           : "Control stopped",
     };
+  if (operator.mode === "MODE_DISARMED" && operator.fault)
+    return { title: "Startup blocked" };
   if (!state.controller.connected) return { title: "Connect a controller" };
   if (!operator.controllerConnected)
     return { title: "Waiting for controller link" };

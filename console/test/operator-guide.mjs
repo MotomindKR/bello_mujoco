@@ -122,3 +122,12 @@ test("Sit distinguishes support, movement, lowering and unloading", () => {
   assert.equal(sit("lowering onto back").duration, "1 s · Supported on floor");
   assert.equal(sit("unloading").keys, undefined);
 });
+
+test("blocked startup does not offer an arming action", () => {
+  assert.deepEqual(
+    operatorGuide(
+      state({ mode: "MODE_DISARMED", fault: "IMU has no sample yet" }),
+    ),
+    { title: "Startup blocked" },
+  );
+});

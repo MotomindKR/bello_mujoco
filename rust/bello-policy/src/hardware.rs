@@ -4,9 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
-use bello_hardware_client::{
-    ConnectOptions, DeviceState, GroupState, MotorGroup, Robot, raw::proto,
-};
+use bello_hardware_client::{ConnectOptions, MotorGroup, Robot, raw::proto};
 use glam::DVec3;
 use serde::Deserialize;
 
@@ -151,23 +149,11 @@ impl Hardware {
         let mut by_coordinate = BTreeMap::new();
         for group in &groups {
             ensure!(
-                matches!(group.initial_state(), GroupState::Idle | GroupState::Damped),
-                "group {} must start Idle or Damped",
-                group.name()
-            );
-            ensure!(
                 group.control_rate_hz() + 1e-6 >= 1. / metadata.control_timestep,
                 "group {} is slower than the policy",
                 group.name()
             );
             for motor in group.motors() {
-                ensure!(
-                    motor
-                        .initial_status()
-                        .is_some_and(|status| status.state() == DeviceState::Online),
-                    "motor {} is not online",
-                    motor.name()
-                );
                 ensure!(
                     by_coordinate.insert(motor.coordinate(), motor).is_none(),
                     "duplicate hardware coordinate"
@@ -183,11 +169,6 @@ impl Hardware {
             .imus()
             .find(|imu| imu.name() == config.imu_name)
             .context("configured IMU is missing")?;
-        ensure!(
-            imu.initial_status()
-                .is_some_and(|status| status.state() == DeviceState::Online),
-            "IMU is not online"
-        );
         ensure!(
             imu.output_frame() == imu_frame,
             "hardware/policy IMU frame mismatch"
