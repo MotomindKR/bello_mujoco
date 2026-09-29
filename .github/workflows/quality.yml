@@ -20,6 +20,7 @@ jobs:
           echo "gmr=$(git rev-parse HEAD:deps/GMR)" >> "$GITHUB_OUTPUT"
           echo "fast_sam=$(git rev-parse HEAD:deps/Fast-SAM-3D-Body)" >> "$GITHUB_OUTPUT"
           echo "smplx=$(git rev-parse HEAD:deps/pico-smplx-bridge)" >> "$GITHUB_OUTPUT"
+          echo "sonic=$(git rev-parse HEAD:deps/gear_sonic)" >> "$GITHUB_OUTPUT"
       - name: Check out pinned Bello stack revision
         uses: actions/checkout@v6
         with:
@@ -51,12 +52,20 @@ jobs:
           ssh-key: ${{ secrets.PICO_SMPLX_DEPLOY_KEY }}
           persist-credentials: false
       - name: Register dependency checkouts as pinned submodules
+        uses: actions/checkout@v6
+        with:
+          repository: Ming827/any2any_sonic2Oli
+          ref: ${{ steps.dependencies.outputs.sonic }}
+          path: deps/gear_sonic
+          persist-credentials: false
+      - name: Register dependency checkouts as pinned submodules
         run: |
           git submodule absorbgitdirs
           for submodule_path in \
             deps/bello-stack \
             deps/GMR \
             deps/Fast-SAM-3D-Body \
+            deps/gear_sonic \
             deps/pico-smplx-bridge
           do
             test "$(git rev-parse "HEAD:$submodule_path")" = \

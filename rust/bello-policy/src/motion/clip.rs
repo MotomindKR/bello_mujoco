@@ -117,8 +117,16 @@ impl Clip {
         (self.frames - 1) as f64 / self.fps
     }
 
+    pub fn fps(&self) -> f64 {
+        self.fps
+    }
+
     pub fn sample(&self, time: f64) -> Sample {
-        let frame = (time * self.fps).clamp(0., (self.frames - 1) as f64);
+        self.sample_frame(time * self.fps)
+    }
+
+    pub fn sample_frame(&self, frame: f64) -> Sample {
+        let frame = frame.clamp(0., (self.frames - 1) as f64);
         let lower = frame.floor() as usize;
         let upper = (lower + 1).min(self.frames - 1);
         let alpha = frame - lower as f64;

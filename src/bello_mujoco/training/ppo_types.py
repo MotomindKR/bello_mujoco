@@ -66,6 +66,7 @@ class TrainState:
     policy: ActorCritic
     opt_state: optax.OptState
     update: jax.Array
+    critic_norm: ObservationNormState | None = None
 
 
 class Transition(NamedTuple):

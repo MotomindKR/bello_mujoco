@@ -50,6 +50,10 @@ def normalize_critic_observation(
 ) -> jax.Array:
     if not config.normalize_critic_observations:
         return observation
+    if config.critic_normalization_mode == "any2any":
+        return jnp.clip(
+            (observation - state.mean) / jnp.sqrt(state.var + 1.0e-5), -5.0, 5.0
+        )
     return normalize_observation(observation, state, config)
 
 
@@ -84,9 +88,22 @@ def update_critic_observation_norm_state(
     state: ObservationNormState,
     observation: jax.Array,
     config: PPOConfig,
+    *,
+    during_optimization: bool = False,
 ) -> ObservationNormState:
     if not config.normalize_critic_observations:
         return state
+    if config.critic_normalization_mode == "any2any":
+        if not during_optimization:
+            return state
+        values = observation.reshape((-1, observation.shape[-1]))
+        return _merge_moments(
+            state,
+            jnp.asarray(values.shape[0], dtype=jnp.float32),
+            values.mean(axis=0),
+            values.var(axis=0, ddof=1),
+            array_is_plausible(values, config.rollout_observation_max_abs),
+        )
     return update_observation_norm_state(state, observation, config)
 
 

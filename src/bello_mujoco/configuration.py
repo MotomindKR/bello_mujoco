@@ -30,6 +30,7 @@ ExperimentName = Literal[
     "bello_mini_standing",
     "motion",
     "bello_mini_motion",
+    "bello_mini_sonic_transfer",
 ]
 CONFIG_ROOT = project_data_path("configs")
 _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
@@ -39,11 +40,16 @@ _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
     "bello_mini_standing": Path("profiles/train/bello_mini_standing.yaml"),
     "motion": Path("profiles/train/motion.yaml"),
     "bello_mini_motion": Path("profiles/train/bello_mini_motion.yaml"),
+    "bello_mini_sonic_transfer": Path("profiles/train/bello_mini_sonic_transfer.yaml"),
 }
 
 
 def is_motion_experiment(name: ExperimentName) -> bool:
     return name in ("motion", "bello_mini_motion")
+
+
+def is_sonic_transfer_experiment(name: ExperimentName) -> bool:
+    return name == "bello_mini_sonic_transfer"
 
 
 def dataclass_from_dict(
@@ -268,6 +274,28 @@ def motion_training_profile(
         merged.motion.directory = str(resolved.parent)
         merged.motion.sequence = resolved.stem
     return structured_config(MotionTrainingRunConfig, merged)
+
+
+def sonic_transfer_training_profile(
+    dataset_directory: Path,
+    pretrained_checkpoint: Path,
+    pretrained_revision: str,
+):
+    from bello_mujoco.training.sonic_transfer import SonicTransferTrainingRunConfig
+
+    paths = [
+        _config("train_motion/default.yaml"),
+        _config("profiles/train/motion.yaml"),
+        _config("profiles/train/bello_mini_motion.yaml"),
+        _config("profiles/train/bello_mini_sonic_transfer.yaml"),
+    ]
+    merged = _merged_profile(paths)
+    merged.pop("motion")
+    merged.pop("video_config")
+    merged.dataset.directory = str(dataset_directory.expanduser().resolve())
+    merged.pretrained.checkpoint = str(pretrained_checkpoint.expanduser().resolve())
+    merged.pretrained.revision = pretrained_revision
+    return structured_config(SonicTransferTrainingRunConfig, merged)
 
 
 def profile_config_relative_path(name: ExperimentName) -> Path:

@@ -190,7 +190,9 @@ def render_motion_policy(
                 nonfinite = bool(jax.device_get(info["done/nonfinite"]))
                 terminal = terminal or step_terminal
                 timeout = timeout or step_timeout
-                if step_timeout or nonfinite or (stop_on_terminal and step_terminal):
+                if nonfinite:
+                    raise RuntimeError("motion evaluation encountered nonfinite state")
+                if step_timeout or (stop_on_terminal and step_terminal):
                     break
     finally:
         resources.close()
@@ -270,6 +272,7 @@ def make_native_motion_step(env: BelloMotionTrackingEnv):
         )
         requested_ctrl = target(state, action)
         for index in range(env.decimation):
+            last_substep_qvel = np.asarray(mj_data.qvel).copy()
             mj_data.ctrl[:] = np.asarray(
                 delayed(state.data.ctrl, requested_ctrl, index)
             )
@@ -278,12 +281,15 @@ def make_native_motion_step(env: BelloMotionTrackingEnv):
             env,
             mj_data,
             last_action=np.asarray(action, dtype=np.float32),
-            reference_time=state.reference_time + env.control_timestep,
+            reference_time=env.advance_reference_time(state.reference_time),
             alignment_xy=state.alignment_xy,
             alignment_yaw=state.alignment_yaw,
             joint_default_offset=state.joint_default_offset,
             step_count=int(state.step_count) + 1,
             episode_return=float(state.episode_return),
+        )
+        stepped = stepped.replace(
+            last_substep_qvel=jax.numpy.asarray(last_substep_qvel)
         )
         return outcome(state, stepped, rng)
 
@@ -382,6 +388,7 @@ def native_motion_state(
     actor_feedback = env._actor_feedback(data)
     return MotionTrackingState(
         data=data,
+        last_substep_qvel=data.qvel,
         last_action=jax.numpy.asarray(last_action, dtype=jax.numpy.float32),
         actor_feedback_history=jax.numpy.repeat(
             actor_feedback[None, :],

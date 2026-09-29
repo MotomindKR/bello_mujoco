@@ -8,6 +8,7 @@ from pathlib import Path
 
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 _BELLO_STACK_SUBMODULE = "deps/bello-stack"
+_SONIC_REFERENCE_SUBMODULE = "deps/gear_sonic"
 
 
 def capture_repository_commit() -> str:
@@ -147,13 +148,26 @@ def _require_clean_worktree(root: Path) -> None:
 
 
 def _require_pinned_submodules(root: Path) -> None:
+    paths = [_BELLO_STACK_SUBMODULE]
+    sonic_is_tracked = (
+        _run_git(
+            root,
+            "cat-file",
+            "-e",
+            f"HEAD:{_SONIC_REFERENCE_SUBMODULE}",
+            text=True,
+        ).returncode
+        == 0
+    )
+    if sonic_is_tracked:
+        paths.append(_SONIC_REFERENCE_SUBMODULE)
     result = _run_git(
         root,
         "submodule",
         "status",
         "--recursive",
         "--",
-        _BELLO_STACK_SUBMODULE,
+        *paths,
         text=True,
     )
     if result.returncode != 0:
@@ -164,7 +178,7 @@ def _require_pinned_submodules(root: Path) -> None:
                 "status",
                 "--recursive",
                 "--",
-                _BELLO_STACK_SUBMODULE,
+                *paths,
             ),
         )
     assert isinstance(result.stdout, str)
@@ -172,7 +186,7 @@ def _require_pinned_submodules(root: Path) -> None:
     lines = status.splitlines()
     if not lines:
         raise RuntimeError(
-            "exact-source operations require the pinned bello-stack submodule"
+            "exact-source operations require the pinned runtime submodules"
         )
     invalid = [line for line in lines if not line.startswith(" ")]
     if invalid:

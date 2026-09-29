@@ -25,6 +25,7 @@ dependencies = [
   "pillow>=11",
   "pygame-ce>=2.5.7",
   "protobuf>=7.35.1,<8",
+  "pyyaml>=6,<7",
   "rerun-sdk==0.34.1",
   "tqdm>=4.67.0",
   "trimesh>=4.6.0",
@@ -42,6 +43,7 @@ bello-export-policy = "bello_mujoco.cli:export_entrypoint"
 bello-vast-train = "bello_mujoco.cli:vast_train_entrypoint"
 bello-run-hands = "bello_mujoco.cli:hands_entrypoint"
 bello-run-reference = "bello_mujoco.cli:reference_entrypoint"
+bello-validate-sonic = "bello_mujoco.tools.validate_sonic_parity:main"
 
 [dependency-groups]
 training = [
@@ -56,6 +58,10 @@ retargeting = [
   "daqp==0.8.7",
   "mink==1.2.0",
   "qpsolvers==4.12.0",
+]
+reference-validation = [
+  "huggingface-hub>=0.35,<2",
+  "torch>=2.7,<3",
 ]
 
 [build-system]

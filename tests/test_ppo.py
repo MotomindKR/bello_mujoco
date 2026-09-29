@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from bello_mujoco.models.compiler import CompiledRobot
@@ -486,6 +487,41 @@ def test_gae_bootstraps_timeout_but_not_terminal_transition() -> None:
     assert terminal_advantage == pytest.approx(jnp.ones((1, 4)))
 
 
+def test_any2any_gae_matches_current_value_timeout_bootstrap():
+    config = small_config(
+        num_steps=3, total_timesteps=12, gamma=0.9, timeout_bootstrap="current_state"
+    )
+    state, _ = init_train_state(jax.random.PRNGKey(0), 3, 1, config)
+    base = transitions(config, state.policy)
+    # Timeout, failure, simultaneous timeout/failure, and uninterrupted rollout.
+    done = jnp.array([[False] * 4, [True, True, True, False], [False] * 4])
+    timeout = jnp.array([[False] * 4, [True, False, True, False], [False] * 4])
+    terminal = jnp.array([[False] * 4, [False, True, True, False], [False] * 4])
+    values = jnp.arange(12, dtype=jnp.float32).reshape(3, 4) / 4
+    batch = base._replace(
+        done=done,
+        terminal=terminal,
+        value=values,
+        bootstrap_value=jnp.full((3, 4), 999.0),
+        info={"done/timeout": timeout},
+    )
+    last = jnp.ones(4)
+    advantages, returns = compute_gae(batch, last, config)
+    expected = np.zeros((3, 4))
+    carry = np.zeros(4)
+    for t in reversed(range(3)):
+        next_value = np.asarray(last if t == 2 else values[t + 1])
+        live = 1 - np.asarray(done[t])
+        reward = np.asarray(batch.reward[t]) + config.gamma * np.asarray(
+            timeout[t]
+        ) * np.asarray(values[t])
+        delta = reward + config.gamma * live * next_value - np.asarray(values[t])
+        carry = delta + config.gamma * config.gae_lambda * live * carry
+        expected[t] = carry
+    np.testing.assert_allclose(advantages, expected, atol=1e-6)
+    np.testing.assert_allclose(returns, expected + values, atol=1e-6)
+
+
 def test_squashed_entropy_gradient_moves_saturated_mean_toward_center() -> None:
     config = small_config()
     state, _ = init_train_state(jax.random.PRNGKey(0), 2, 1, config)
@@ -734,6 +770,26 @@ def test_implausible_target_and_gradient_norm_are_skipped() -> None:
     assert gradient_metrics["ppo_update_fraction"] == 0
     assert target_metrics["invalid/target"] == 1
     assert target_metrics["ppo_update_fraction"] == 0
+
+
+def test_optional_raw_gradient_cutoff_preserves_clipping_and_finite_checks() -> None:
+    config = small_config(gradient_norm_max=None, max_grad_norm=0.1)
+    train_state, optimizer = init_train_state(jax.random.PRNGKey(0), 3, 2, config)
+    batch = transitions(config, train_state.policy)
+    targets = jnp.ones((config.num_steps, config.num_envs)) * 100
+    _, metrics = update_ppo(
+        train_state,
+        optimizer,
+        batch,
+        jnp.arange(config.batch_size, dtype=jnp.float32).reshape(targets.shape),
+        targets,
+        jax.random.PRNGKey(1),
+        config,
+    )
+    assert metrics["gradient_norm"] > config.max_grad_norm
+    assert metrics["invalid/gradient_norm"] == 0
+    assert metrics["nonfinite/gradients"] == 0
+    assert metrics["ppo_update_fraction"] > 0
 
 
 def test_action_diagnostics_use_each_worlds_joint_angle_offset() -> None:

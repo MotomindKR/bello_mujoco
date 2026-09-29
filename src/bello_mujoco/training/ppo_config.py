@@ -80,6 +80,12 @@ class PPOConfig:
     update_epochs: int = _validated(5, _positive_integer)
     num_minibatches: int = _validated(4, _positive_integer)
     learning_rate: float = _validated(1.0e-3, _positive_finite)
+    critic_learning_rate: float | None = _validated(None, _optional_positive_finite)
+    adaptive_lr_interval: str = _validated("update", _one_of("update", "minibatch"))
+    minibatch_sampling: str = _validated(
+        "transitions", _one_of("transitions", "trajectories")
+    )
+    advantage_std_ddof: int = _validated(0, _one_of(0, 1))
     schedule: LearningRateSchedule = _validated(
         "adaptive",
         _one_of(*get_args(LearningRateSchedule)),
@@ -95,6 +101,9 @@ class PPOConfig:
     )
     gamma: float = _validated(0.99, _unit_interval)
     gae_lambda: float = _validated(0.95, _unit_interval)
+    timeout_bootstrap: str = _validated(
+        "next_state", _one_of("next_state", "current_state")
+    )
     clip_eps: float = _validated(0.2, _positive_finite)
     ent_coef: float = _validated(0.01, _nonnegative_finite)
     vf_coef: float = _validated(1.0, _nonnegative_finite)
@@ -105,6 +114,7 @@ class PPOConfig:
     value_norm_eps: float = _validated(1.0e-8, _positive_finite)
     normalize_observations: bool = _validated(False, _no_scalar_constraint)
     normalize_critic_observations: bool = _validated(True, _no_scalar_constraint)
+    critic_normalization_mode: str = _validated("shared", _one_of("shared", "any2any"))
     observation_norm_update_mode: ObservationNormUpdateMode = _validated(
         "online", _one_of("online", "rollout")
     )
@@ -120,7 +130,7 @@ class PPOConfig:
     rollout_reward_max_abs: float = _validated(1.0e3, _positive_finite)
     rollout_value_max_abs: float = _validated(1.0e4, _positive_finite)
     target_max_abs: float = _validated(1.0e4, _positive_finite)
-    gradient_norm_max: float = _validated(1.0e4, _positive_finite)
+    gradient_norm_max: float | None = _validated(1.0e4, _optional_positive_finite)
     policy: ActorCriticConfig = _validated(
         ActorCriticConfig(),
         _no_scalar_constraint,
@@ -174,6 +184,18 @@ def validate_ppo_config(config: PPOConfig) -> None:
         )
     if config.batch_size % config.num_minibatches != 0:
         raise ValueError("num_envs * num_steps must be divisible by num_minibatches")
+    if (
+        config.minibatch_sampling == "trajectories"
+        and config.num_envs % config.num_minibatches
+    ):
+        raise ValueError(
+            "trajectory minibatches require num_envs divisible by num_minibatches"
+        )
+    if (
+        config.adaptive_lr_interval == "minibatch"
+        and config.policy.action_distribution != "gaussian"
+    ):
+        raise ValueError("minibatch adaptive KL requires a Gaussian policy")
     if config.min_learning_rate > config.max_learning_rate:
         raise ValueError(
             "min_learning_rate must be <= max_learning_rate, got "
@@ -241,3 +263,18 @@ def validate_ppo_config(config: PPOConfig) -> None:
             f"{config.policy.init_log_std} outside "
             f"[{config.policy.min_log_std}, {config.policy.max_log_std}]"
         )
+
+
+def parameter_learning_rate(
+    config: PPOConfig,
+    actor_learning_rate,
+    path,
+):
+    """Resolve the update rate without creating a second PPO implementation."""
+
+    if config.critic_learning_rate is None:
+        return actor_learning_rate
+    first = path[0] if path else None
+    if getattr(first, "name", None) == "critic":
+        return config.critic_learning_rate
+    return actor_learning_rate

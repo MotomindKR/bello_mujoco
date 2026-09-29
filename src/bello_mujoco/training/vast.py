@@ -21,6 +21,7 @@ import keyring
 from bello_mujoco.configuration import (
     ExperimentName,
     is_motion_experiment,
+    is_sonic_transfer_experiment,
     profile_config_relative_path,
 )
 from bello_mujoco.training.vast_provider import (
@@ -51,6 +52,7 @@ class VastOfferConfig:
     gpu_name: str = "RTX_5090"
     num_gpus: int = 1
     min_cpu_ram_gb: int = 64
+    min_gpu_ram_gb: int = 0
     disk_gb: int = 80
     min_reliability: float = 0.98
     min_cuda: float = 13.0
@@ -64,7 +66,11 @@ class VastTrainConfig:
 
     experiment: ExperimentName = "bello_locomotion"
     motion_path: Path | None = None
+    motion_dataset_artifact: str | None = None
+    pretrained_revision: str | None = None
+    evaluation_clips: tuple[str, ...] = ()
     total_timesteps: int | None = None
+    num_envs: int | None = None
     learning_rate: float | None = None
     end_effector_payload_mass_kg: float | None = None
     max_price: float | None = None
@@ -113,6 +119,11 @@ def credential(env_name: str, service: str, username: str, *, required: bool) ->
 def validate_config(config: VastTrainConfig) -> None:
     if config.experiment not in get_args(ExperimentName):
         raise ValueError("--experiment is invalid")
+    if len(set(config.evaluation_clips)) != len(config.evaluation_clips) or any(
+        not name or Path(name).name != name or Path(name).suffix
+        for name in config.evaluation_clips
+    ):
+        raise ValueError("evaluation_clips must be unique clip stems")
     if is_motion_experiment(config.experiment):
         if config.motion_path is None:
             raise ValueError("--motion-path is required for the motion experiment")
@@ -128,16 +139,50 @@ def validate_config(config: VastTrainConfig) -> None:
             raise ValueError(
                 "--end-effector-payload-mass-kg must be finite and nonnegative"
             )
+    elif is_sonic_transfer_experiment(config.experiment):
+        if (
+            not config.motion_dataset_artifact
+            or re.fullmatch(
+                r".+:(?:v[0-9]+|[0-9a-f]{32,})", config.motion_dataset_artifact
+            )
+            is None
+        ):
+            raise ValueError(
+                "--motion-dataset-artifact must include an immutable version or digest"
+            )
+        if (
+            config.pretrained_revision is None
+            or re.fullmatch(r"[0-9a-f]{40}", config.pretrained_revision) is None
+        ):
+            raise ValueError(
+                "--pretrained-revision must be a 40-character lowercase commit"
+            )
+        if config.motion_path is not None:
+            raise ValueError("SONIC uses a dataset artifact, not --motion-path")
     elif (
         config.motion_path is not None
+        or config.motion_dataset_artifact is not None
+        or config.pretrained_revision is not None
+        or config.evaluation_clips
         or config.end_effector_payload_mass_kg is not None
     ):
         raise ValueError(
-            "--motion-path and --end-effector-payload-mass-kg are only valid "
-            "for the motion experiment"
+            "motion and SONIC inputs are only valid for their matching experiments"
         )
     if config.total_timesteps is not None and config.total_timesteps <= 0:
         raise ValueError("--total-timesteps must be positive")
+    if config.num_envs is not None and config.num_envs <= 0:
+        raise ValueError("num_envs must be positive")
+    if config.offer.num_gpus != 1:
+        raise ValueError(
+            "training currently supports exactly one GPU, not distributed PPO"
+        )
+    if (
+        config.offer.min_gpu_ram_gb < 0
+        or config.offer.min_cpu_ram_gb <= 0
+        or config.offer.disk_gb <= 0
+    ):
+        raise ValueError("invalid offer RAM or disk constraint")
     if config.learning_rate is not None and (
         not math.isfinite(config.learning_rate) or config.learning_rate <= 0.0
     ):
@@ -243,16 +288,21 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
             run_git(repo_root, "cat-file", "-e", f"{commit}:{path}")
         except subprocess.CalledProcessError as exc:
             raise ValueError(f"{path!r} does not exist on origin/{branch}") from exc
-    submodule_path = "deps/bello-stack"
-    submodule_entry = run_git(
-        repo_root, "ls-tree", commit, "--", submodule_path
-    ).split()
-    if (
-        len(submodule_entry) != 4
-        or submodule_entry[:2] != ["160000", "commit"]
-        or submodule_entry[3] != submodule_path
-    ):
-        raise ValueError(f"{submodule_path!r} is not a submodule on origin/{branch}")
+    submodule_paths = ["deps/bello-stack"]
+    if is_sonic_transfer_experiment(config.experiment):
+        submodule_paths.append("deps/gear_sonic")
+    for submodule_path in submodule_paths:
+        submodule_entry = run_git(
+            repo_root, "ls-tree", commit, "--", submodule_path
+        ).split()
+        if (
+            len(submodule_entry) != 4
+            or submodule_entry[:2] != ["160000", "commit"]
+            or submodule_entry[3] != submodule_path
+        ):
+            raise ValueError(
+                f"{submodule_path!r} is not a submodule on origin/{branch}"
+            )
     repo_url = normalized_repo_url(run_git(repo_root, "remote", "get-url", "origin"))
     return GitSelection(
         branch=branch,
@@ -263,6 +313,8 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
 
 
 def _task_name(config: VastTrainConfig) -> str:
+    if is_sonic_transfer_experiment(config.experiment):
+        return "sonic-transfer"
     if is_motion_experiment(config.experiment):
         return "motion-tracking"
     return "locomotion"
@@ -290,6 +342,7 @@ def offer_query(config: VastTrainConfig) -> str:
         "direct_port_count>=1",
         f"reliability>={offer.min_reliability}",
         f"cpu_ram>={offer.min_cpu_ram_gb}",
+        f"gpu_ram>={offer.min_gpu_ram_gb}",
         f"disk_space>={offer.disk_gb}",
         f"cuda_max_good>={offer.min_cuda}",
         f"dph_total<={config.max_price}",
@@ -337,6 +390,7 @@ def offer_matches(offer: VastOffer, config: VastTrainConfig) -> bool:
         and offer.num_gpus == desired.num_gpus
         and offer.reliability >= desired.min_reliability
         and offer.cpu_ram_mb >= desired.min_cpu_ram_gb * 1000
+        and offer.gpu_ram_mb >= desired.min_gpu_ram_gb * 1000
         and offer.cuda_max_good >= desired.min_cuda
         and offer.disk_space_gb >= desired.disk_gb
         and offer.direct_port_count >= 1

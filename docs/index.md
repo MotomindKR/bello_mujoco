@@ -6,6 +6,7 @@
 - [Robot descriptions](robot_assets.md)
 - [BeyondMimic tracking](motion_tracking.md)
 - [Bello Mini policy console](policy_console.md)
+- [SONIC LoRA transfer](sonic_transfer.md)
 - [Hardware](hardware.md), [emulator](emulator.md), and [Lima](macos_vcan.md)
 - [PICO tracking and hand-control startup](pico_startup.md)
 - [Robot and tracking systemd workflow](systemd.md)
@@ -32,4 +33,6 @@ Python paths are relative to `src/bello_mujoco/`. Generated models, checkpoints,
 videos, and caches are local artifacts, not source. Compatibility is the root
 Git commit; there is no parallel asset-manifest or fingerprint versioning system.
 Live messages still require shape, frame, freshness, and confidence validation.
-Offline GMR/dataset tooling is outside this repository's current scope.
+Offline AMASS-to-Mini corpus preparation is documented under
+[SONIC transfer](sonic_transfer.md#amass-research-corpus). It uses the pinned
+GMR implementation without modifying it; source datasets remain read-only.
