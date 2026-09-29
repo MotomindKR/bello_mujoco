@@ -513,7 +513,43 @@ async function serve(service, implementation) {
         await page.waitForTimeout(120);
       }
     };
-    await verifyStableOperatorCard();
+    const originalViewport = await page.evaluate(() => ({
+      width: innerWidth,
+      height: innerHeight,
+    }));
+    for (const [width, height] of [
+      [1280, 720],
+      [1366, 768],
+      [1920, 1080],
+      [2560, 1440],
+    ]) {
+      await page.setViewportSize({ width, height });
+      await capture(page, {
+        path: path.join(root, `console/out/overview-${width}x${height}.png`),
+      });
+      assert(
+        await page.evaluate(
+          () =>
+            document.documentElement.scrollHeight <= innerHeight &&
+            document.documentElement.scrollWidth <= innerWidth,
+        ),
+        `Overview must fit ${width}x${height} without page scrolling`,
+      );
+      assert(
+        await page
+          .locator(".stick-velocity")
+          .evaluateAll((elements) =>
+            elements.every(
+              (element) =>
+                element.scrollHeight <= element.clientHeight &&
+                element.scrollWidth <= element.clientWidth,
+            ),
+          ),
+        "Stick values must fit without internal scrolling",
+      );
+      await verifyStableOperatorCard();
+    }
+    await page.setViewportSize(originalViewport);
     const temperature = page.getByRole("status", { name: "Motor temperature" });
     await page.waitForFunction(() =>
       document

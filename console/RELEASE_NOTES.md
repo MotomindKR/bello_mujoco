@@ -1,13 +1,11 @@
-## Bello Mini Console 0.2.0
+## Bello Mini Console 0.2.1
 
 ### Changes
 
-- Buffered SONIC Tracking mode, with reference readiness and return to Stand on reference loss.
-- Crane and optional Front-down startup: bent-leg Hold with free ankles, explicit balance confirmation, stick-paced straightening, and gradual ankle engagement before Stand.
-- Startup straightening respects joint speed and motor step limits; releasing the stick pauses movement.
-- Compact controller guidance, fixed card geometry, motion selection and upper-body teleop controls.
-- Direct hardware, estimator and XRoboToolkit views, power and temperature indicators, persistent settings, and Light/Dark/System appearance.
-- Improved native controller, window resizing, fault recovery and software-renderer behavior.
+- Overview fits 16:9 fullscreen displays from 1280 x 720 upward without page scrolling.
+- Compact stick indicators on shorter desktop screens keep Abort and fault recovery visible.
+- Controller positions remain fixed across startup, motion, tracking and fault states; long fault details scroll within their own panel.
+- Electron layout checks cover 1280 x 720, 1366 x 768, 1920 x 1080 and 2560 x 1440.
 
 ### Installers
 

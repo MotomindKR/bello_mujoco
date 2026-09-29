@@ -361,6 +361,10 @@ transport failures, including HTTP/2 errors, return upper-body targets smoothly
 to nominal while the reference client retries; they do not damp the robot.
 Malformed reference payloads and producer application errors remain faults.
 
+The desktop Overview fills the available window height. At 16:9 fullscreen
+sizes from 1280 x 720 upward, the robot view and controller card fit without
+page scrolling. Shorter desktop screens use compact stick indicators; small
+windows and mobile layouts remain scrollable so controls stay accessible.
 The controller/status card has fixed geometry across modes and faults. Mode
 choices share the full row equally, with left/right hints at its outer edges.
 Long fault details scroll within their panel.
