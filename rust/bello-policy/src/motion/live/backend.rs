@@ -6,8 +6,8 @@ use glam::DQuat;
 use serde_json::{Value, json};
 
 pub(super) enum Backend {
-    Mimic(Motion),
-    Sonic(tracking::Tracking),
+    Mimic(Box<Motion>),
+    Sonic(Box<tracking::Tracking>),
 }
 
 pub(super) struct Inference {

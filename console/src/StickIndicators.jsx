@@ -32,7 +32,7 @@ function Stick({ label, x, y, connected, children }) {
     </div>
   );
 }
-function Velocity({ label, value, unit }) {
+function Metric({ label, value, unit }) {
   return (
     <div>
       <dt>{label}</dt>
@@ -48,14 +48,23 @@ export function StickIndicators({ state }) {
   const active =
     state.services.runner.fresh && operator.mode === "MODE_LOCOMOTION";
   const velocity = active ? operator.velocityCommand : null;
+  const straightening =
+    operator.mode === "MODE_HOLD" && operator.phase === "straightening";
+  const lifting =
+    straightening &&
+    state.services.runner.fresh &&
+    !operator.neutralRequired &&
+    operator.controllerConnected;
   return (
     <section
       className="sticks"
       aria-label="Controller sticks and command velocity"
     >
       <div className="mode-heading">
-        <span>Command velocity</span>
-        <span>{active ? "Active" : "Inactive"}</span>
+        <span>{straightening ? "Straightening" : "Command velocity"}</span>
+        <span>
+          {straightening ? "Release to pause" : active ? "Active" : "Inactive"}
+        </span>
       </div>
       <div className="stick-grid">
         <Stick
@@ -64,8 +73,20 @@ export function StickIndicators({ state }) {
           y={-sample.forward}
           connected={sample.connected}
         >
-          <Velocity label="Forward" value={velocity?.forwardMps} unit="m/s" />
-          <Velocity label="Right" value={velocity?.rightMps} unit="m/s" />
+          {straightening ? (
+            <Metric label="Upright" value={operator.progress * 100} unit="%" />
+          ) : (
+            <Metric label="Forward" value={velocity?.forwardMps} unit="m/s" />
+          )}
+          {straightening ? (
+            <Metric
+              label="Input"
+              value={lifting ? Math.max(0, sample.forward || 0) * 100 : 0}
+              unit="%"
+            />
+          ) : (
+            <Metric label="Right" value={velocity?.rightMps} unit="m/s" />
+          )}
         </Stick>
         <Stick
           label="Right stick"
@@ -73,7 +94,7 @@ export function StickIndicators({ state }) {
           y={0}
           connected={sample.connected}
         >
-          <Velocity label="Turn" value={velocity?.yawRps} unit="rad/s" />
+          <Metric label="Turn" value={velocity?.yawRps} unit="rad/s" />
         </Stick>
       </div>
     </section>

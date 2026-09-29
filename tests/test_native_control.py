@@ -84,6 +84,8 @@ class SyntheticHardware:
         self.reference_mode = None
         self.reference_started = None
         self.targets = []
+        self.command_frames = []
+        self.orientation = pb.Quaternion(w=1)
 
     def ListHardware(self, request, context):
         p = self.pb
@@ -206,7 +208,7 @@ class SyntheticHardware:
             imus=[
                 p.StateImu(
                     imu_name="imu",
-                    orientation=p.Quaternion(w=1),
+                    orientation=self.orientation,
                     angular_velocity=p.Vector3(),
                     linear_acceleration=p.Vector3(),
                     sample_monotonic_ns=stamp,
@@ -260,6 +262,7 @@ class SyntheticHardware:
         return self.pb.DisableGroupResponse(state=self.state)
 
     def apply(self, commands):
+        self.command_frames.append(list(commands))
         assert len(commands) == len(self.names)
         assert {c.motor_name for c in commands} == {
             f"motor_{i}" for i in range(len(self.names))

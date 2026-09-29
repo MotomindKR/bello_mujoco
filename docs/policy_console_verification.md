@@ -412,3 +412,42 @@ Read-only preflight against the existing Lima stack loaded the locomotion,
 named-motion and real SONIC bundles together, but stopped at hardwared's existing
 `control lease lost; damping applied` fault. No trained-policy physics HIL run
 is claimed by this record.
+
+## 2026-09-29: Assisted startup review and console 0.2.0
+
+Reviewed startup transitions, lease recovery, controller/IPC boundaries, the
+shared motion/Tracking backend, and desktop packaging. The runner offers Crane
+and explicitly configured Front-down startup. Front-down keeps ankle gains and
+feedforward at zero until the operator confirms the final Stand transition.
+
+Review fixes:
+
+- Startup phases use an enum internally, with wire labels defined in one place.
+- Straightening duration accounts for both logical joint speed and motor step
+  limits. This prevents a delayed target from continuing after stick release.
+- Fault recovery still requires Idle, while allowing a supported flat torso.
+  Startup readiness is cleared on fault/recovery.
+- Removed the console's fabricated Crane fallback; startup choices come from
+  the runner. Shared motion backends use one allocation each at initialization
+  instead of a large inline enum. Clippy findings were resolved.
+- Console 0.2.0 adds a tag-only release job. It requires all four native desktop
+  jobs, checks that each supplies exactly one installer, and publishes distinct
+  architecture names and SHA-256 checksums. The asset collection/checksum script
+  was exercised locally with publishing mocked.
+
+Validation includes the full default CPU suite (790 passed, five skipped),
+58 Rust unit tests, a Linux release build, warning-free library Clippy, 28 native
+startup/control cases, seven Motion/Tracking lifecycle regressions, and a
+separate flat-torso fault recovery check. The native
+startup test covers differential ankles, balance confirmation, reconnect
+neutrality, stick release under tight step limits, gradual ankle engagement,
+abort damping, and invalid configuration before acquisition. Console validation
+includes 21 unit tests and the macOS Electron SDL/WebGL smoke with fixed startup
+card geometry. Production npm dependencies reported zero audit advisories.
+Lockfile, generated protobuf, Python lint/format, console format and whitespace
+checks passed.
+
+These tests use loopback hardware and synthetic policies. Front-down pose angles
+remain opt-in configuration; no physical lift or trained-policy physics HIL
+validation is claimed. Platform installers are independently verified by the
+release workflow before publication.

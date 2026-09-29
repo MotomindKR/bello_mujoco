@@ -31,7 +31,7 @@ message ControllerSample {
   bool dpad_right = 17;
   // Console hold-to-abort request, independent of gamepad connection.
   bool abort = 18;
-  // Console selection only; never starts control. Accepted only in Stand.
+  // Console selection only; never starts control. Accepted in Stand; startup choice only in Disarmed.
   Selection selection = 19;
   // Rising edge toggles upper-body tracking in Locomotion when configured.
   bool y = 20;
@@ -43,6 +43,7 @@ message Selection {
     string motion = 2;
     bool motion_menu_open = 3;
     bool tracking_enabled = 4;
+    string startup = 5;
   }
 }
 
@@ -88,6 +89,9 @@ message OperatorStatus {
   double sonic_buffered_ms = 25;
   double sonic_delay_ms = 26;
   string sonic_status = 27;
+  repeated string startups = 28;
+  string selected_startup = 29;
+  bool startup_ready = 30;
 }
 
 message VelocityCommand {

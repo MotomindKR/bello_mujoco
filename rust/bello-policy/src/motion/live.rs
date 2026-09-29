@@ -87,7 +87,7 @@ pub struct Live {
 
 impl Live {
     pub async fn connect(motion: Motion, standing: &Locomotion, config: Config) -> Result<Self> {
-        Self::connect_backend(Backend::Mimic(motion), standing, config).await
+        Self::connect_backend(Backend::Mimic(Box::new(motion)), standing, config).await
     }
 
     pub async fn connect_tracking(
@@ -96,7 +96,7 @@ impl Live {
         config: &crate::tracking::Config,
     ) -> Result<Self> {
         Self::connect_backend(
-            Backend::Sonic(tracking),
+            Backend::Sonic(Box::new(tracking)),
             standing,
             Config {
                 pose: None,

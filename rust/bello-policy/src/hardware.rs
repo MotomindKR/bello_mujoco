@@ -221,10 +221,10 @@ impl Hardware {
             .await
     }
 
-    pub async fn ready_feedback(&self) -> Result<Feedback> {
+    pub async fn ready_feedback_with_tilt(&self, max_tilt: Option<f64>) -> Result<Feedback> {
         self.feedback_states(
             &[proto::GroupState::Idle, proto::GroupState::Damped],
-            Some(self.config.max_tilt_radians),
+            max_tilt,
         )
         .await
     }

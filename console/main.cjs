@@ -436,7 +436,13 @@ app.whenReady().then(() => {
   ipcMain.handle("select-choice", (event, kind, name) => {
     if (
       !isConsoleSender(event) ||
-      !["mode", "motion", "motionMenuOpen", "trackingEnabled"].includes(kind) ||
+      ![
+        "mode",
+        "motion",
+        "motionMenuOpen",
+        "trackingEnabled",
+        "startup",
+      ].includes(kind) ||
       typeof name !==
         (["motionMenuOpen", "trackingEnabled"].includes(kind)
           ? "boolean"
@@ -445,6 +451,16 @@ app.whenReady().then(() => {
       return { error: "Invalid selection." };
     if (!runnerReady()) return { error: "Runner unavailable." };
     const status = snapshot.operator;
+    if (kind === "startup") {
+      if (
+        status?.mode !== "MODE_DISARMED" ||
+        status.phase !== "disarmed" ||
+        !status.startups?.includes(name)
+      )
+        return { error: "Select startup while Disarmed." };
+      pendingSelection = { startup: name };
+      return {};
+    }
     if (kind === "trackingEnabled") {
       if (
         status?.mode !== "MODE_LOCOMOTION" ||
@@ -608,7 +624,9 @@ app.whenReady().then(() => {
         snapshot.operator?.mode ===
           ("trackingEnabled" in pendingSelection
             ? "MODE_LOCOMOTION"
-            : "MODE_STAND") &&
+            : "startup" in pendingSelection
+              ? "MODE_DISARMED"
+              : "MODE_STAND") &&
         !sample.abort
       )
         sample.selection = pendingSelection;

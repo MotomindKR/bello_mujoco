@@ -22,6 +22,21 @@ export function operatorGuide(state) {
         ? { title: "Ready", keys: ["Back", "Start"], duration: "2 s · Hold" }
         : { title: "Preparing Hold" };
     case "MODE_HOLD":
+      if (operator.phase === "bending") return { title: "Bending legs" };
+      if (operator.phase === "awaiting lift")
+        return operator.startupReady
+          ? {
+              title: "Confirm balance",
+              keys: ["A"],
+              duration: "1 s · Balanced",
+            }
+          : { title: "Lift and balance upright" };
+      if (operator.phase === "straightening")
+        return { title: "Left stick up · Straighten" };
+      if (operator.phase === "upright")
+        return { title: "Upright", keys: ["A"], duration: "1 s · Stand" };
+      if (operator.phase === "engaging ankles")
+        return { title: "Restoring ankle control" };
       return operator.phase === "holding"
         ? { title: "Holding", keys: ["A"], duration: "1 s · Stand" }
         : { title: "Ramping to Hold" };

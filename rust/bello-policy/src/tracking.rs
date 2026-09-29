@@ -166,10 +166,10 @@ impl Buffer {
             .requested
             .checked_sub(Duration::from_secs_f64(message.source_age_ms / 1000.))
             .ok_or_else(|| anyhow::anyhow!("invalid tracking timestamp"))?;
-        if let Some(previous) = self.frames.back() {
-            if at <= previous.at || at.duration_since(previous.at) > self.gap {
-                self.unavailable("Refilling reference buffer");
-            }
+        if let Some(previous) = self.frames.back()
+            && (at <= previous.at || at.duration_since(previous.at) > self.gap)
+        {
+            self.unavailable("Refilling reference buffer");
         }
         self.last_sequence = Some(message.sequence);
         self.frames.push_back(TimedFrame { at, frame });
