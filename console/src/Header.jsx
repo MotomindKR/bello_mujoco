@@ -10,6 +10,7 @@ const modeName = (value) =>
     MODE_STAND: "Stand",
     MODE_LOCOMOTION: "Locomotion",
     MODE_MOTION: "Motion",
+    MODE_TRACKING: "Tracking",
     MODE_FAULT: "Fault",
   })[value] || "Waiting";
 

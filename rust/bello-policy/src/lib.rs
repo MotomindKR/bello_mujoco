@@ -20,9 +20,11 @@ pub mod locomotion;
 pub mod motion;
 pub mod operator;
 pub mod power;
+pub mod reference;
 pub mod sonic;
 pub mod target_limits;
 pub mod torso;
+pub mod tracking;
 
 #[derive(Debug, Deserialize)]
 pub struct PolicyMetadata {

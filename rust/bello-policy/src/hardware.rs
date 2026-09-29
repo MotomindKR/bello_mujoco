@@ -19,6 +19,7 @@ pub struct Config {
     pub control: Option<crate::control::Config>,
     #[serde(default)]
     pub motions: Vec<MotionBundle>,
+    pub tracking: Option<crate::tracking::Config>,
     pub endpoint: String,
     pub groups: Vec<String>,
     pub imu_name: String,
@@ -421,6 +422,7 @@ mod tests {
     fn fixture() -> (Config, proto::GetStateFrameResponse, Vec<String>) {
         let config = Config {
             control: None,
+            tracking: None,
             motions: Vec::new(),
             endpoint: "http://localhost:1".into(),
             groups: vec!["limb".into()],

@@ -368,3 +368,40 @@ Validation on this isolated branch:
 This audit did not restart the live HIL services or command physical motors.
 Linux and x64 installers were not rebuilt in this maintenance pass; the earlier
 Linux arm64 result above and the CI matrix describe their separate coverage.
+
+## 2026-09-29: SONIC merge and buffered Tracking
+
+Merged the committed, validated SONIC history from
+`experiment/sonic-amass-all-20260929` (`34e90d4`) into the isolated console branch.
+The original workspace and its uncommitted SONIC work remain untouched.
+
+Tracking uses a bounded delayed reference window and the existing motion task
+transition lifecycle. The full-body and upper-body reference payloads come from
+one GMR sample. Operator status exposes readiness, age, buffer duration and delay;
+the console adds a fourth mode only when configured. Reference failures return
+to Stand; hardware faults and the one-second abort chord still damp.
+
+Validation:
+
+- 55 Rust unit tests and the Linux release build passed, including interpolation,
+  sequence duplication/restart, stale/gapped references, bounded retention and
+  the Tracking confirmation gate.
+- Native synthetic SONIC parity passed for 25/50 Hz clips, history resets and clip
+  boundaries. Synthetic Tracking lifecycle passed for lost, stale and malformed
+  references, console lease expiry, reconnect neutrality, rebuffering/re-entry,
+  return to Stand, and abort damping.
+- Console unit tests and macOS SDL/WebGL smoke passed with four modes and stable
+  controller geometry. Source format, protobuf consistency and lockfile checks
+  passed. The full default CPU suite passed.
+- Requested W&B run `7qvvdxi1`, display name
+  `sonic-amass-upright-v1-kr-20260928-r5-sampler`, exported from update 6000,
+  artifact `gyungmin/bello-mujoco/sonic-amass-upright-v1-kr-20260928-r5-sampler_20260928_132430_423700:v59`.
+  Export retained its exact clean source revision
+  `9d6dcf0c23d5235439e5f252090115aa92e9a3f8` and verified corpus. Linux native
+  bundle validation and eight telemetry samples across two held-out clips passed.
+  Comparing native actions with the restored JAX actor gave maximum absolute error
+  `1.8914703370231933e-06`.
+
+These checks do not establish live-headset retargeting quality or physical SONIC
+stability. No physical motor commands were sent. Checkpoints, observations,
+source snapshots and generated installers remain ignored local artifacts.

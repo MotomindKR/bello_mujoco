@@ -29,6 +29,7 @@ pub enum RequestMode {
     Stand,
     Locomotion,
     Motion(String),
+    Tracking,
     Abort,
     SetTracking(bool),
 }
@@ -66,7 +67,8 @@ impl State {
             motions.iter().all(|name| !name.is_empty()
                 && name != "Stand"
                 && name != "Locomotion"
-                && name != "Motion")
+                && name != "Motion"
+                && name != "Tracking")
                 && motions
                     .iter()
                     .collect::<std::collections::BTreeSet<_>>()
@@ -102,6 +104,7 @@ impl State {
                 tracking_available: false,
                 tracking_enabled: false,
                 tracking_live: false,
+                ..OperatorStatus::default()
             },
             last_sequence: None,
             received: None,
@@ -342,7 +345,7 @@ impl State {
         }
         let can_confirm = matches!(
             Mode::try_from(self.status.mode),
-            Ok(Mode::Stand | Mode::Locomotion)
+            Ok(Mode::Stand | Mode::Locomotion | Mode::Tracking)
         ) || (self.status.mode == Mode::Hold as i32
             && self.status.phase == "holding");
         if !sample.a {
@@ -360,7 +363,11 @@ impl State {
             self.confirm_consumed = true;
             return Ok(());
         }
+        let ready = self.status.mode != Mode::Stand as i32
+            || self.status.selected != "Tracking"
+            || self.status.sonic_ready;
         self.confirm_since = if can_confirm
+            && ready
             && sample.a
             && !self.confirm_consumed
             && axes.iter().all(|v| v.abs() <= NEUTRAL)
@@ -382,11 +389,12 @@ impl State {
             .is_some_and(|start| now.duration_since(start) >= Duration::from_secs(1))
         {
             let request = match Mode::try_from(self.status.mode) {
-                Ok(Mode::Hold | Mode::Locomotion) => RequestMode::Stand,
+                Ok(Mode::Hold | Mode::Locomotion | Mode::Tracking) => RequestMode::Stand,
                 Ok(Mode::Stand) => match self.status.selected.as_str() {
                     "Stand" => RequestMode::Stand,
                     "Locomotion" => RequestMode::Locomotion,
                     "Motion" => RequestMode::Motion(self.status.selected_motion.clone()),
+                    "Tracking" => RequestMode::Tracking,
                     _ => unreachable!("validated mode selection"),
                 },
                 _ => unreachable!(),
@@ -522,6 +530,22 @@ impl Source {
         state.status.tracking_available = available;
         state.status.tracking_enabled = enabled;
         state.status.tracking_live = live;
+    }
+
+    pub fn set_sonic(&self, status: &crate::tracking::Status) {
+        let mut state = self.state.lock().unwrap();
+        if !state.status.modes.iter().any(|mode| mode == "Tracking") {
+            state.status.modes.push("Tracking".into());
+        }
+        if !status.ready && state.status.selected == "Tracking" {
+            state.confirm_since = None;
+            state.status.confirm_progress = 0.;
+        }
+        state.status.sonic_ready = status.ready;
+        state.status.sonic_reference_age_ms = status.age_ms;
+        state.status.sonic_buffered_ms = status.buffered_ms;
+        state.status.sonic_delay_ms = status.delay_ms;
+        state.status.sonic_status.clone_from(&status.message);
     }
 
     pub fn fault(&self, message: &str) {
@@ -698,6 +722,31 @@ mod tests {
         let mut controller = Controller::new();
         controller.send(&mut state, ControllerSample::default(), 20);
         (state, controller)
+    }
+    #[test]
+    fn tracking_needs_a_ready_window_and_a_full_confirm_hold() {
+        let (mut state, mut controller) = fixture();
+        state.status.mode = Mode::Stand as i32;
+        state.status.modes.push("Tracking".into());
+        state.status.selected = "Tracking".into();
+        let a = ControllerSample {
+            a: true,
+            ..Default::default()
+        };
+        controller.send(&mut state, a.clone(), 1500);
+        assert!(state.pending.is_none());
+        assert_eq!(state.status.confirm_progress, 0.);
+        state.status.sonic_ready = true;
+        controller.send(&mut state, a.clone(), 800);
+        assert!(state.pending.is_none());
+        controller.send(&mut state, a.clone(), 240);
+        assert_eq!(state.pending.take(), Some(RequestMode::Tracking));
+        state.status.mode = Mode::Tracking as i32;
+        controller.send(&mut state, a.clone(), 1400);
+        assert!(state.pending.is_none());
+        controller.send(&mut state, ControllerSample::default(), 20);
+        controller.send(&mut state, a, 1040);
+        assert_eq!(state.pending.take(), Some(RequestMode::Stand));
     }
     #[tokio::test]
     async fn fault_clear_requires_completed_cleanup_and_neutral_then_disarms() {

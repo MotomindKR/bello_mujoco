@@ -104,7 +104,8 @@ motions are proprioceptive. Full-state bundles require `settings.pose`; see the
 [native runtime](../rust/bello-policy/README.md). Every bundle is loaded and
 validated against the source checkout, motor mapping, limits, gains and required
 feedback before acquisition. Names must be unique and cannot be `Stand`,
-`Locomotion`, or `Motion`. SONIC hardware arming is not supported in this release.
+`Locomotion`, `Motion`, or `Tracking`. Optional buffered SONIC Tracking uses the
+same runner and transition lifecycle; see [buffered Tracking](#buffered-tracking-hil).
 
 ```bash
 nix develop .#rust-runtime
@@ -163,13 +164,14 @@ new owner must release all controls before operating.
 | --- | --- | --- |
 | Disarmed | Release all sticks/buttons, then Back + Start for 2 seconds | Acquire control and ramp to Hold |
 | Hold, ramp complete | A for 1 second | Stand |
-| Stand | D-pad left/right | Select Stand, Locomotion, or Motion |
+| Stand | D-pad left/right | Select Stand, Locomotion, Motion, or configured Tracking |
 | Stand, Motion selected | D-pad up/down | Select a named motion in the dropdown |
 | Motion dropdown open | Press A | Accept the highlighted motion and close the menu |
 | Stand | A for 1 second with neutral sticks | Enter the selected mode or motion |
 | Locomotion | Left stick and right horizontal stick | Forward/lateral velocity and yaw command |
 | Locomotion, following configured | Press Y (Triangle on PlayStation) | Toggle upper-body tracking |
 | Locomotion | A for 1 second with neutral sticks | Stand |
+| Tracking, reference buffer ready | A for 1 second with neutral sticks | Blend back to Stand |
 | Named motion | Completion | Blend back to Stand |
 | Named motion | Policy inference/action, tilt deviation, or tracking termination failure | Blend back to Stand; retain control |
 | Any state | L1 + R1 for 1 second | Latched abort and Fault |
@@ -189,7 +191,8 @@ returns to zero.
 Before acquisition, connection loss leaves the runner Disarmed. Hold retains
 its current target (a ramp pauses). Locomotion zeros its velocity command and
 returns to Stand. A healthy named motion finishes and returns to Stand even if
-the console disappears. Control has no run-duration limit. Abort and feedback/lease faults
+the console disappears. Tracking blends back to Stand if the controller session or
+retargeted reference is lost. Control has no run-duration limit. Abort and feedback/lease faults
 take priority. Remove `control.max_duration_seconds` from older hardware profiles. The first Ctrl-C during a motion requests a blended return;
 another Ctrl-C or SIGTERM stops control. Stop cleanup damps and
 releases leases automatically. A group already in Fault retains its daemon safety
@@ -199,6 +202,54 @@ Recovery must pass hardware guards and fresh Idle feedback. Failure leaves the
 fault visible with the recovery error. Successful recovery resets policy history
 and requires neutral input and a new Back+Start chord; it never enables motors.
 Time-limit faults can be cleared through the same explicit action.
+
+## Buffered Tracking (HIL)
+
+Tracking follows the full-body XRoboToolkit/GMR reference with a configured
+delay. This first version targets HIL commissioning. It shares the motion
+transition, joint/motor limits, gain blending, fault handling and lease owner;
+the console never sends joint targets. Upper-body following remains a separate
+Locomotion option. The console's direct XRoboToolkit stream is display-only.
+
+Run `bello-run-reference` on the robot service host, then add this explicit
+section to the runner's hardware YAML (`tracking: null` leaves the mode absent):
+
+```yaml
+tracking:
+  policy: /absolute/path/to/sonic.zip
+  source: /absolute/path/to/sonic-checkpoint-source
+  endpoint: http://127.0.0.1:50056
+  rpc_timeout_seconds: 0.1
+  poll_period_seconds: 0.02
+  max_reference_age_ms: 100.0
+  max_sample_gap_seconds: 0.1
+  delay_seconds: 1.05
+  transition_seconds: 1.0
+  max_tilt_error_radians: 0.5
+  max_raw_action_abs: 5.0
+```
+
+Continue using the locomotion bundle for `--policy`. The SONIC source checkout
+must be clean and match its exported checkpoint revision; both policies must
+agree on robot, motor coordinates, logical joints and transmission. Models load
+and warm before any lease is acquired. No prerecorded clip is selected for live
+Tracking.
+
+Reach Stand, select Tracking with left/right, and wait for **Ready**. Hold A for
+one second with neutral sticks to enter; release and hold A again to return.
+The card shows buffered time and configured delay. The runner consumes ten future
+reference frames, interpolating joint positions/velocities and root orientation.
+The delay must cover `9 * future_dt + control_timestep + max_sample_gap_seconds`.
+It never extrapolates, and the retained window is bounded. Input age includes
+producer age and time since the request began. Duplicate sequences do not extend
+the buffer; stale data, gaps or producer restarts require a fresh full window.
+
+Reference loss, malformed references, inference failure and motion tilt deviation
+blend back to Stand without releasing control. Reconnection cannot automatically
+reenter Tracking. L1+R1 held for one second still damps the robot and latches Fault;
+hardware feedback and lease faults retain that priority. Physical deployment and
+live headset quality require separate commissioning; synthetic lifecycle and
+prerecorded checkpoint parity do not establish either.
 
 ## Build and verify
 

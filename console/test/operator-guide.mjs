@@ -67,3 +67,26 @@ test("instructions follow runner phases and transition restrictions", () => {
     undefined,
   );
 });
+test("buffered Tracking offers entry only when the runner is ready", () => {
+  assert.equal(
+    operatorGuide(
+      state({
+        mode: "MODE_STAND",
+        selected: "Tracking",
+        sonicReady: false,
+        sonicStatus: "Buffering reference",
+      }),
+    ).keys,
+    undefined,
+  );
+  assert.deepEqual(
+    operatorGuide(
+      state({ mode: "MODE_STAND", selected: "Tracking", sonicReady: true }),
+    ).keys,
+    ["A"],
+  );
+  assert.match(
+    operatorGuide(state({ mode: "MODE_TRACKING", phase: "motion" })).duration,
+    /Stand/,
+  );
+});

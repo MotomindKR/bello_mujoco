@@ -11,6 +11,9 @@ use glam::{DQuat, DVec3, Vec2};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+mod backend;
+use backend::Backend;
+
 use super::tilt::Envelope;
 use super::{Feedback, Motion, ObservationMode, PolicyFailure, pose};
 use crate::hardware::Hardware;
@@ -71,7 +74,7 @@ enum RootFeedback {
 }
 
 pub struct Live {
-    motion: Motion,
+    motion: Backend,
     root_feedback: RootFeedback,
     config: Config,
     root_from_imu: DQuat,
@@ -83,12 +86,35 @@ pub struct Live {
 }
 
 impl Live {
-    pub async fn connect(
-        mut motion: Motion,
+    pub async fn connect(motion: Motion, standing: &Locomotion, config: Config) -> Result<Self> {
+        Self::connect_backend(Backend::Mimic(motion), standing, config).await
+    }
+
+    pub async fn connect_tracking(
+        tracking: crate::tracking::Tracking,
+        standing: &Locomotion,
+        config: &crate::tracking::Config,
+    ) -> Result<Self> {
+        Self::connect_backend(
+            Backend::Sonic(tracking),
+            standing,
+            Config {
+                pose: None,
+                start_time_seconds: 0.,
+                transition_seconds: config.transition_seconds,
+                max_tilt_error_radians: config.max_tilt_error_radians,
+                max_raw_action_abs: config.max_raw_action_abs,
+            },
+        )
+        .await
+    }
+
+    async fn connect_backend(
+        mut motion: Backend,
         standing: &Locomotion,
         config: Config,
     ) -> Result<Self> {
-        let a = &motion.policy.metadata;
+        let a = &motion.policy().metadata;
         let b = &standing.policy.metadata;
         ensure!(
             a.robot == b.robot && a.coordinates == b.coordinates,
@@ -96,12 +122,12 @@ impl Live {
         );
         for key in ["joint_names", "joint_from_motor"] {
             ensure!(
-                motion.policy.document.get(key) == standing.policy.document.get(key),
+                motion.policy().document.get(key) == standing.policy.document.get(key),
                 "standing/motion {key} differ"
             );
         }
         ensure!(
-            motion.policy.document["hardware_imu_frame"].as_str() == Some(standing.imu_frame()),
+            motion.policy().document["hardware_imu_frame"].as_str() == Some(standing.imu_frame()),
             "standing/motion IMU frame mismatch"
         );
         ensure!(
@@ -128,8 +154,8 @@ impl Live {
         let observation_size = a.observation_size;
         let root_from_imu = motion.root_from_fixed_frame(standing.imu_frame())?;
         // Warm up the graph before acquiring a lease, not on the first motion tick.
-        motion.policy.infer(&vec![0.; observation_size])?;
-        let root_feedback = match (motion.settings.environment.observation_mode, &config.pose) {
+        motion.policy_mut().infer(&vec![0.; observation_size])?;
+        let root_feedback = match (motion.observation_mode(), &config.pose) {
             (ObservationMode::FullState, Some(pose)) => {
                 motion.require_root_pose_frame(&pose.tracked_frame)?;
                 RootFeedback::Estimated {
@@ -152,13 +178,10 @@ impl Live {
                 )
             }
         };
-        eprintln!(
-            "Motion observation mode: {:?}",
-            motion.settings.environment.observation_mode
-        );
+        eprintln!("Motion observation mode: {:?}", motion.observation_mode());
         let standing_limits = standing.policy.target_limits.clone();
         let transition_limits =
-            standing_limits.transition_envelope(&motion.policy.target_limits)?;
+            standing_limits.transition_envelope(&motion.policy().target_limits)?;
         Ok(Self {
             motion,
             root_feedback,
@@ -172,8 +195,15 @@ impl Live {
         })
     }
 
+    pub fn refresh_tracking(&mut self) {
+        self.motion.refresh();
+    }
+    pub fn tracking_status(&self) -> Option<&crate::tracking::Status> {
+        self.motion.tracking_status()
+    }
+
     pub fn motion_period(&self) -> f64 {
-        self.motion.policy.metadata.control_timestep
+        self.motion.policy().metadata.control_timestep
     }
 
     pub fn reset(&mut self) {
@@ -192,11 +222,11 @@ impl Live {
     }
 
     pub fn motion_limits(&self) -> &TargetLimits {
-        &self.motion.policy.target_limits
+        &self.motion.policy().target_limits
     }
 
     pub fn configure_hardware(&mut self, hardware: &Hardware) -> Result<()> {
-        hardware.validate_policy_gains(&self.motion.policy.metadata)?;
+        hardware.validate_policy_gains(&self.motion.policy().metadata)?;
         ensure!(
             hardware
                 .groups
@@ -208,7 +238,7 @@ impl Live {
         let motion = hardware.restrict_target_limits(self.motion_limits())?;
         self.transition_limits = standing.transition_envelope(&motion)?;
         self.standing_limits = standing;
-        self.motion.policy.target_limits = motion;
+        self.motion.policy_mut().target_limits = motion;
         Ok(())
     }
 
@@ -229,8 +259,7 @@ impl Live {
     }
 
     fn reference_tilt(&self, time: f64) -> Envelope {
-        let sample = self.motion.clip.sample(time);
-        let root = super::rotation::from_wxyz(sample.qpos[3..7].try_into().unwrap());
+        let root = self.motion.reference_orientation(time);
         Envelope::new(
             root * self.root_from_imu,
             self.config.max_tilt_error_radians,
@@ -308,9 +337,9 @@ impl Live {
     fn motor_gains(&self, standing: &Locomotion) -> Vec<[f32; 2]> {
         let (destination, transition) = match &self.phase {
             Phase::Standing => (&standing.policy.metadata, None),
-            Phase::Motion(_) => (&self.motion.policy.metadata, None),
+            Phase::Motion(_) => (&self.motion.policy().metadata, None),
             Phase::ToStanding(t) => (&standing.policy.metadata, Some(t)),
-            Phase::ToMotion(t) => (&self.motion.policy.metadata, Some(t)),
+            Phase::ToMotion(t) => (&self.motion.policy().metadata, Some(t)),
         };
         destination
             .kp
@@ -442,7 +471,7 @@ impl Live {
                     _ => 0.,
                 };
             sample.initialize = matches!(&self.phase, Phase::ToMotion(t) if t.step == 0);
-            let result = self.motion.step(&sample).and_then(|step| {
+            let result = self.motion.step(&sample, feedback).and_then(|step| {
                 ensure!(
                     step.raw_action
                         .iter()
@@ -486,7 +515,7 @@ impl Live {
                 };
                 (
                     step.motor_target.clone(),
-                    json!(step),
+                    step.log,
                     name,
                     Some(sample.reference_time),
                     self.motion_period(),
@@ -515,7 +544,7 @@ impl Live {
         let motor_gains = self.motor_gains(standing);
         Ok(Output {
             log: json!({"phase": phase_name, "reference_time": reference_time,
-            "observation_mode": self.motion.settings.environment.observation_mode,
+            "observation_mode": self.motion.observation_mode(),
             "policy": policy_log, "motor_target": target, "motor_gains": motor_gains,
             "destination_target_limited": destination_target_limited,
             "failure": self.failure,

@@ -110,7 +110,8 @@ async fn main() -> Result<()> {
         for bundle in configured_motions {
             anyhow::ensure!(
                 !bundle.name.trim().is_empty()
-                    && !["Stand", "Locomotion", "Motion"].contains(&bundle.name.as_str())
+                    && !["Stand", "Locomotion", "Motion", "Tracking"]
+                        .contains(&bundle.name.as_str())
                     && !motions.contains_key(&bundle.name),
                 "invalid or duplicate motion name"
             );
@@ -122,6 +123,18 @@ async fn main() -> Result<()> {
             )
             .await?;
             motions.insert(bundle.name, motion);
+        }
+        if let Some(settings) = config.tracking.take() {
+            let sonic = bello_policy::sonic::Sonic::live(Policy::load(
+                &settings.policy,
+                &settings.source,
+            )?)?;
+            let tracking = bello_policy::tracking::Tracking::new(sonic, &settings)?;
+            motions.insert(
+                "Tracking".into(),
+                bello_policy::motion::live::Live::connect_tracking(tracking, &runtime, &settings)
+                    .await?,
+            );
         }
         let hardware = Hardware::connect(
             config,

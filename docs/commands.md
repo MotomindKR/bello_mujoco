@@ -84,6 +84,10 @@ uv run bello-run-hands \
   duration_seconds=10
 ```
 
+The reference service emits both the held-joint subset for upper-body following
+and named full-body joints plus world-frame root orientation for buffered SONIC
+Tracking, from the same retargeted sample. See the runner's
+[Tracking configuration](policy_console.md#buffered-tracking-hil).
 The reference service listens on `127.0.0.1:50056` by default; `listen` changes
 that address. The hand command defaults to unarmed preflight and opens no CAN
 connection. Armed independent hand control uses classic CAN directly. Neither

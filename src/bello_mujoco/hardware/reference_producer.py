@@ -1,4 +1,4 @@
-"""Latest XRoboToolkit/GMR arm and torso references; no motor IO."""
+"""Latest XRoboToolkit/GMR upper-body and full-body references; no motor IO."""
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -32,6 +32,8 @@ class ReferenceService:
         qvel_indices,
         nq: int,
         nv: int,
+        *,
+        full_body=None,
     ):
         self.robot = robot
         self.source = source
@@ -39,6 +41,7 @@ class ReferenceService:
         self.qpos_indices = np.asarray(qpos_indices)
         self.qvel_indices = np.asarray(qvel_indices)
         self.nq, self.nv = nq, nv
+        self.full_body = None
         if not self.names or len(set(self.names)) != len(self.names):
             raise ValueError("reference producer requires unique held joints")
         for indices, size in ((self.qpos_indices, nq), (self.qvel_indices, nv)):
@@ -49,6 +52,25 @@ class ReferenceService:
                 or np.any(indices >= size)
             ):
                 raise ValueError("invalid reference joint indices")
+        if full_body is not None:
+            names, positions, velocities = full_body
+            names = tuple(names)
+            positions, velocities = np.array(positions), np.array(velocities)
+            if nq < 7 or nv < 6 or not names or len(set(names)) != len(names):
+                raise ValueError(
+                    "full-body reference requires a free root and unique joints"
+                )
+            for indices, lower, size in ((positions, 7, nq), (velocities, 6, nv)):
+                if (
+                    indices.shape != (len(names),)
+                    or not np.issubdtype(indices.dtype, np.integer)
+                    or np.any(indices < lower)
+                    or np.any(indices >= size)
+                    or len(set(indices)) != len(names)
+                ):
+                    raise ValueError("invalid full-body joint indices")
+                indices.flags.writeable = False
+            self.full_body = names, positions, velocities
 
     def get(self, request, context):
         if request.robot != self.robot:
@@ -77,6 +99,18 @@ class ReferenceService:
             context.abort(
                 grpc.StatusCode.INTERNAL, "invalid retargeted joint reference"
             )
+        full_body = None
+        if self.full_body is not None:
+            names, positions, velocities = self.full_body
+            orientation = qpos[3:7]
+            if not 0.9 <= np.linalg.norm(orientation) <= 1.1:
+                context.abort(grpc.StatusCode.INTERNAL, "invalid root orientation")
+            full_body = pb.FullBodyReference(
+                joint_names=names,
+                position=qpos[positions].tolist(),
+                velocity=qvel[velocities].tolist(),
+                root_orientation_wxyz=orientation.tolist(),
+            )
         return pb.GetReferenceResponse(
             robot=self.robot,
             available=True,
@@ -86,6 +120,7 @@ class ReferenceService:
             position=qpos[self.qpos_indices].tolist(),
             velocity=qvel[self.qvel_indices].tolist(),
             torso_command=torso.tolist(),
+            full_body=full_body,
         )
 
     def handler(self):
@@ -128,6 +163,11 @@ def run(config: ProducerConfig) -> None:
                 model.actuator_qvel_indices[indices],
                 model.mj_model.nq,
                 model.mj_model.nv,
+                full_body=(
+                    model.actuator_joint_names,
+                    model.actuator_qpos_indices,
+                    model.actuator_qvel_indices,
+                ),
             )
             with ThreadPoolExecutor(max_workers=4) as executor:
                 server = grpc.server(

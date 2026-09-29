@@ -227,9 +227,18 @@ pub async fn run(
         .map(|(&kp, &kd)| [kp, kd])
         .collect();
     let rpc = Duration::from_secs_f64(config.rpc_timeout_seconds);
-    let operator =
-        operator::Source::bind(config.operator_listen, motions.keys().cloned().collect())?;
+    let operator = operator::Source::bind(
+        config.operator_listen,
+        motions
+            .keys()
+            .filter(|name| name.as_str() != "Tracking")
+            .cloned()
+            .collect(),
+    )?;
     operator.set_tracking(config.following.enabled, false, false);
+    if let Some(status) = motions.get("Tracking").and_then(|m| m.tracking_status()) {
+        operator.set_sonic(status);
+    }
     let mut log: Option<File> = config
         .policy_log_path
         .as_ref()
@@ -428,8 +437,15 @@ pub async fn run(
             let mut tracking_enabled = false;
             operator.set_tracking(following.is_some(), false, false);
             loop {
+                if let Some(tracking) = motions.get_mut("Tracking") {
+                    tracking.refresh_tracking();
+                    operator.set_sonic(tracking.tracking_status().expect("Tracking backend"));
+                }
                 let input = operator.snapshot();
                 ensure!(input.request != Some(RequestMode::Abort), "operator abort");
+                if input.lost && mode == Mode::Tracking {
+                    motions["Tracking"].interrupt.request_return();
+                }
                 if input.lost && mode == Mode::Locomotion {
                     mode = Mode::Stand;
                     policy.reset();
@@ -441,6 +457,25 @@ pub async fn run(
                         if mode == Mode::Locomotion && following.is_some() =>
                     {
                         tracking_enabled = enabled;
+                    }
+                    Some(RequestMode::Stand) if mode == Mode::Tracking => {
+                        motions["Tracking"].interrupt.request_return();
+                    }
+                    Some(RequestMode::Tracking)
+                        if mode == Mode::Stand
+                            && motions
+                                .get("Tracking")
+                                .and_then(|m| m.tracking_status())
+                                .is_some_and(|s| s.ready) =>
+                    {
+                        *motion_interrupt.lock().unwrap() =
+                            Some(motions["Tracking"].interrupt.clone());
+                        active_motion = Some("Tracking".into());
+                        start_motion = true;
+                        mode = Mode::Tracking;
+                        if let Some(following) = &mut following {
+                            following.reset();
+                        }
                     }
                     Some(RequestMode::Stand) if mode == Mode::Locomotion => {
                         mode = Mode::Stand;

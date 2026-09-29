@@ -51,7 +51,7 @@ jobs:
           path: deps/pico-smplx-bridge
           ssh-key: ${{ secrets.PICO_SMPLX_DEPLOY_KEY }}
           persist-credentials: false
-      - name: Register dependency checkouts as pinned submodules
+      - name: Check out pinned SONIC reference revision
         uses: actions/checkout@v6
         with:
           repository: Ming827/any2any_sonic2Oli

@@ -71,10 +71,11 @@ def hardware_proto(tmp_path_factory):
 
 
 class SyntheticHardware:
-    def __init__(self, pb):
+    def __init__(self, pb, names=("first", "held", "last"), positions=(0.2, -0.3, 0.4)):
         self.pb = pb
         self.state = pb.GROUP_STATE_IDLE
-        self.positions = [0.2, -0.3, 0.4]
+        self.names = names
+        self.positions = list(positions)
         self.calls = []
         self.failure = None
         self.lease_duration_ms = 10000
@@ -87,7 +88,9 @@ class SyntheticHardware:
     def ListHardware(self, request, context):
         p = self.pb
         status = p.DeviceStatus(state=p.DEVICE_STATE_ONLINE)
-        addresses = [p.MotorAddress(bus="synthetic", id=i + 1) for i in range(3)]
+        addresses = [
+            p.MotorAddress(bus="synthetic", id=i + 1) for i in range(len(self.names))
+        ]
         return p.ListHardwareResponse(
             buses=[p.BusInfo(name="synthetic", interface="none", status=status)],
             groups=[
@@ -115,7 +118,7 @@ class SyntheticHardware:
                         kd_max=10,
                     ),
                 )
-                for i, name in enumerate(("first", "held", "last"))
+                for i, name in enumerate(self.names)
             ],
             serial_devices=[
                 p.SerialDeviceInfo(
@@ -257,10 +260,14 @@ class SyntheticHardware:
         return self.pb.DisableGroupResponse(state=self.state)
 
     def apply(self, commands):
-        assert len(commands) == 3
-        assert {c.motor_name for c in commands} == {f"motor_{i}" for i in range(3)}
+        assert len(commands) == len(self.names)
+        assert {c.motor_name for c in commands} == {
+            f"motor_{i}" for i in range(len(self.names))
+        }
         for command in commands:
-            self.positions[int(command.motor_name[-1])] = command.position
+            self.positions[int(command.motor_name.removeprefix("motor_"))] = (
+                command.position
+            )
         self.targets.append(self.positions.copy())
 
     def reference(self, request, context):
@@ -407,7 +414,7 @@ def bundle(
         )
         for name, values in [
             ("action", [0] * count),
-            ("motor_target", target or [0.2, -0.3, 0.4]),
+            ("motor_target", target or metadata["default_position"]),
         ]
     ]
     graph = helper.make_graph(
@@ -421,7 +428,9 @@ def bundle(
         [
             helper.make_tensor_value_info("action", onnx.TensorProto.FLOAT, [1, count]),
             helper.make_tensor_value_info(
-                "motor_target", onnx.TensorProto.FLOAT, [1, 3]
+                "motor_target",
+                onnx.TensorProto.FLOAT,
+                [1, len(metadata["coordinates"])],
             ),
         ],
     )

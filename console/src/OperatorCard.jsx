@@ -120,6 +120,28 @@ export function OperatorCard({ state, children }) {
           <DirectionHint direction="Right" sample={sample} />
         </div>
         <div className="mode-detail">
+          {operator.selected === "Tracking" && (
+            <div
+              className="tracking-toggle tracking-reference"
+              role="status"
+              aria-label="SONIC reference"
+              title={operator.sonicStatus || "Waiting for reference"}
+            >
+              <span
+                className={live && operator.sonicReady ? "text-success" : ""}
+              >
+                {!live
+                  ? "Stale"
+                  : operator.sonicReady
+                    ? "Ready"
+                    : operator.sonicStatus || "Waiting"}
+              </span>
+              <span className="tracking-toggle-state">
+                <span>Buffer {number(operator.sonicBufferedMs)} ms</span>
+                <span>Delay {number(operator.sonicDelayMs)} ms</span>
+              </span>
+            </div>
+          )}
           {operator.selected === "Motion" && (
             <MotionPicker
               operator={operator}

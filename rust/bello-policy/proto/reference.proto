@@ -19,4 +19,14 @@ message GetReferenceResponse {
   // relative to level ground and yaw relative to pelvis heading, with the
   // nominal robot CAD orientation removed. Same sample as the joint references.
   repeated double torso_command = 8;
+  // Same retargeted sample, with all actuated joints for SONIC. Optional for
+  // producers that only support upper-body following. Root is world Z-up.
+  FullBodyReference full_body = 9;
+}
+
+message FullBodyReference {
+  repeated string joint_names = 1;
+  repeated double position = 2;
+  repeated double velocity = 3;
+  repeated double root_orientation_wxyz = 4;
 }

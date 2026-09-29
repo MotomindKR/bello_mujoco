@@ -54,8 +54,8 @@ Output contains the stacked observation, raw/clipped action, and motor target.
 No action low-pass filter is applied. Quaternion/vector operations use `glam`;
 `npyz` reads the bundled NumPy arrays without a Python process.
 
-SONIC bundles contain only the clips selected at export and require one to be
-chosen before history initialization:
+SONIC bundles contain only the clips selected at export. Prerecorded playback
+requires one to be chosen before history initialization:
 
 ```bash
 cargo run --locked -p bello-policy -- --policy /path/to/sonic.zip \
@@ -69,8 +69,11 @@ cargo run --locked -p bello-policy -- --policy /path/to/sonic.zip \
 
 SONIC telemetry accepts `motor_position`, `motor_velocity`,
 `orientation_xyzw`, `angular_velocity_local`, `reference_time`, and
-`initialize`. Physical arming is intentionally rejected until trained-policy
-commissioning is approved.
+`initialize`. A primary SONIC bundle cannot be armed. Buffered live HIL uses a
+locomotion primary bundle and the optional `tracking` task in hardware YAML;
+see [Tracking configuration and controller behavior](../../docs/policy_console.md#buffered-tracking-hil).
+It shares the named-motion transition lifecycle and keeps physical commissioning
+as a separate validation step.
 
 Read-only hardware preflight:
 

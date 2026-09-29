@@ -26,6 +26,8 @@ export function operatorGuide(state) {
         ? { title: "Holding", keys: ["A"], duration: "1 s · Stand" }
         : { title: "Ramping to Hold" };
     case "MODE_STAND":
+      if (operator.selected === "Tracking" && !operator.sonicReady)
+        return { title: operator.sonicStatus || "Waiting for reference" };
       return operator.selected === "Motion" && operator.motionMenuOpen
         ? { title: "Choose motion" }
         : {
@@ -36,6 +38,14 @@ export function operatorGuide(state) {
     case "MODE_LOCOMOTION":
       return {
         title: "Walking",
+        keys: ["A"],
+        duration: "1 s · Stand",
+      };
+    case "MODE_TRACKING":
+      return {
+        title: operator.phase?.startsWith("returning")
+          ? "Returning to Stand"
+          : "Body tracking",
         keys: ["A"],
         duration: "1 s · Stand",
       };

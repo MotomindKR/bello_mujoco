@@ -43,7 +43,11 @@ const runnerStatus = {
   selected: "Motion",
   selectedMotion: "Wave",
   phase: "standing",
-  modes: ["Stand", "Locomotion", "Motion"],
+  modes: ["Stand", "Locomotion", "Motion", "Tracking"],
+  sonicReady: true,
+  sonicBufferedMs: 1100,
+  sonicDelayMs: 1050,
+  sonicStatus: "Ready",
   motions: ["Wave", "Bow"],
   controllerConnected: false,
   neutralRequired: true,
@@ -377,6 +381,14 @@ async function serve(service, implementation) {
           { mode: "MODE_HOLD", phase: "holding", progress: 1 },
           { mode: "MODE_LOCOMOTION", phase: "locomotion" },
           {
+            mode: "MODE_TRACKING",
+            phase: "motion",
+            selected: "Tracking",
+            sonicReady: false,
+            sonicStatus:
+              "Reference disconnected. Waiting for a fresh full-body reference.",
+          },
+          {
             mode: "MODE_MOTION",
             phase: "returning",
             activeMotion: "Long named motion for geometry verification",
@@ -390,7 +402,19 @@ async function serve(service, implementation) {
           },
         ]) {
           Object.assign(runnerStatus, update);
-          await page.waitForTimeout(120);
+          await page.waitForFunction(
+            (mode) =>
+              document.querySelector(".header-status strong")?.textContent ===
+              {
+                MODE_DISARMED: "Disarmed",
+                MODE_HOLD: "Hold",
+                MODE_LOCOMOTION: "Locomotion",
+                MODE_TRACKING: "Tracking",
+                MODE_MOTION: "Motion",
+                MODE_FAULT: "Fault",
+              }[mode],
+            update.mode,
+          );
           assert.deepEqual(
             await bounds(),
             baseline,
@@ -483,7 +507,7 @@ async function serve(service, implementation) {
     motorAge = 0;
     assert.deepEqual(
       await page.locator(".mode-option > span").allTextContents(),
-      ["Stand", "Locomotion", "Motion"],
+      ["Stand", "Locomotion", "Motion", "Tracking"],
     );
     assert.equal(await page.locator(".mode-option em").count(), 0);
     const modeWidths = await page

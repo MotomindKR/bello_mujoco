@@ -1445,6 +1445,21 @@ kbd.pressed {
   align-items: center;
   gap: 8px;
 }
+.tracking-reference > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tracking-reference .tracking-toggle-state {
+  flex-direction: column;
+  align-items: flex-end;
+  flex-shrink: 0;
+  gap: 0;
+  font-size: 12px;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+}
 .toggle-track {
   display: flex;
   align-items: center;

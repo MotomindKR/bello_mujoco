@@ -53,6 +53,7 @@ enum Mode {
   MODE_LOCOMOTION = 3;
   MODE_MOTION = 4;
   MODE_FAULT = 5;
+  MODE_TRACKING = 6;
 }
 
 message OperatorStatus {
@@ -81,6 +82,12 @@ message OperatorStatus {
   bool tracking_available = 20;
   bool tracking_enabled = 21;
   bool tracking_live = 22;
+  // Full-body SONIC readiness is independent of upper-body teleop above.
+  bool sonic_ready = 23;
+  double sonic_reference_age_ms = 24;
+  double sonic_buffered_ms = 25;
+  double sonic_delay_ms = 26;
+  string sonic_status = 27;
 }
 
 message VelocityCommand {

@@ -314,9 +314,8 @@ uv run bello-export-policy \
   output_path=/data/bello-mini-sonic.zip
 ```
 
-The Rust runner requires one bundled clip to be selected before it initializes
-history. Offline checking and telemetry playback are available; physical arming
-remains a later commissioning gate:
+For prerecorded playback, the Rust runner requires one bundled clip before it
+initializes history. Offline checking and telemetry playback are available:
 
 ```bash
 cargo run --locked -p bello-policy -- \
@@ -330,7 +329,12 @@ cargo run --locked -p bello-policy -- \
 
 The hardware form is read-only: it validates the IDLE inventory, coordinate
 coverage, gains, target limits, IMU frame and fresh telemetry, then assembles
-one initialized SONIC observation. `--arm` is rejected for SONIC bundles.
+one initialized SONIC observation. `--arm` is rejected when SONIC is the primary
+bundle. For buffered live HIL, start with a locomotion bundle and configure the
+optional [Tracking task](policy_console.md#buffered-tracking-hil). It reuses SONIC's
+observation/history codec with a delayed full-body reference window and the
+runner's shared transitions to and from Stand. Physical commissioning remains
+a separate validation gate.
 
 ## Validation boundary
 

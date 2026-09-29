@@ -83,3 +83,49 @@ def test_unavailability_is_distinct_from_malformed_or_failed_producer(failure):
             if failure == "robot"
             else grpc.StatusCode.INTERNAL
         )
+
+
+def test_full_body_and_held_joints_come_from_the_same_frame():
+    frame = RobotReferenceFrame(
+        np.array([0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.4]),
+        np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.6]),
+        19,
+        0,
+        time.monotonic(),
+        np.zeros(3),
+    )
+    service = ReferenceService(
+        "test",
+        SimpleNamespace(latest=lambda: frame),
+        ["b"],
+        [8],
+        [7],
+        9,
+        8,
+        full_body=(["a", "b"], [7, 8], [6, 7]),
+    )
+    result = service.get(pb.GetReferenceRequest(robot="test"), Context())
+    assert result.sequence == 19
+    assert list(result.position) == [0.4]
+    assert list(result.full_body.joint_names) == ["a", "b"]
+    assert list(result.full_body.position) == [0.3, 0.4]
+    assert list(result.full_body.velocity) == [0.5, 0.6]
+    assert list(result.full_body.root_orientation_wxyz) == [1.0, 0.0, 0.0, 0.0]
+    frame.qpos[3:7] = 0
+    with pytest.raises(ValueError, match="invalid root orientation"):
+        service.get(pb.GetReferenceRequest(robot="test"), Context())
+
+
+@pytest.mark.parametrize("indices", [[6, 8], [7, 7], [7, 9], [7.0, 8.0]])
+def test_full_body_indices_are_validated_before_serving(indices):
+    with pytest.raises(ValueError, match="full-body joint indices"):
+        ReferenceService(
+            "test",
+            None,
+            ["b"],
+            [8],
+            [7],
+            9,
+            8,
+            full_body=(["a", "b"], indices, [6, 7]),
+        )

@@ -41,10 +41,17 @@ pub struct Step {
     pub motor_target: Vec<f32>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ReferenceFrame {
+    pub position: Vec<f64>,
+    pub velocity: Vec<f64>,
+    pub orientation: DQuat,
+}
+
 pub struct Sonic {
     pub policy: Policy,
     settings: Settings,
-    clip: Clip,
+    clip: Option<Clip>,
     alignment: Option<DQuat>,
     history: Vec<f32>,
     last_action: Vec<f32>,
@@ -52,27 +59,40 @@ pub struct Sonic {
 }
 
 impl Sonic {
-    pub fn new(mut policy: Policy, clip_name: &str) -> Result<Self> {
+    pub fn new(policy: Policy, clip_name: &str) -> Result<Self> {
+        Self::load(policy, Some(clip_name))
+    }
+
+    pub fn live(policy: Policy) -> Result<Self> {
+        Self::load(policy, None)
+    }
+
+    fn load(mut policy: Policy, clip_name: Option<&str>) -> Result<Self> {
         ensure!(
             policy.metadata.task == "sonic_transfer",
             "SONIC bundle required"
         );
         let settings: Settings = serde_json::from_value(policy.document.clone())?;
-        ensure!(
-            settings
-                .reference_clips
-                .iter()
-                .any(|name| name == clip_name),
-            "clip {clip_name:?} is not selected in this bundle"
-        );
-        let bytes = policy
-            .reference_clips
-            .remove(clip_name)
-            .with_context(|| format!("bundle has no clip {clip_name:?}"))?;
-        let clip = Clip::load(&bytes)?;
+        let clip = clip_name
+            .map(|name| {
+                ensure!(
+                    settings.reference_clips.iter().any(|clip| clip == name),
+                    "clip {name:?} is not selected in this bundle"
+                );
+                Clip::load(
+                    &policy
+                        .reference_clips
+                        .remove(name)
+                        .with_context(|| format!("bundle has no clip {name:?}"))?,
+                )
+            })
+            .transpose()?;
         let n = policy.metadata.policy_indices.len();
         ensure!(
-            clip.joint_names == settings.joint_names
+            n == 28
+                && clip
+                    .as_ref()
+                    .is_none_or(|clip| clip.joint_names == settings.joint_names)
                 && settings.joint_names.len() == n
                 && settings.joint_from_motor.len() == n
                 && settings
@@ -167,7 +187,52 @@ impl Sonic {
         &self.settings.hardware_imu_frame
     }
 
+    pub fn joint_names(&self) -> &[String] {
+        &self.settings.joint_names
+    }
+    pub fn future_dt(&self) -> f64 {
+        self.settings.future_dt
+    }
+    pub fn root_from_imu(&self) -> DQuat {
+        self.root_from_hardware_imu
+    }
+
     pub fn step(&mut self, feedback: &Feedback) -> Result<Step> {
+        let clip = self
+            .clip
+            .as_ref()
+            .context("SONIC playback requires a clip")?;
+        ensure!(
+            feedback.reference_time.is_finite()
+                && feedback.reference_time >= 0.
+                && feedback.reference_time < clip.duration(),
+            "invalid SONIC reference time"
+        );
+        let fps = clip.fps() as f32;
+        let initial = clip.sample_frame(f64::from(feedback.reference_time as f32 * fps));
+        let alignment = from_wxyz(initial.qpos[3..7].try_into()?);
+        let frame =
+            (feedback.reference_time as f32 + self.policy.metadata.control_timestep as f32) * fps;
+        let references = (0..self.settings.future_frames)
+            .map(|i| {
+                let offset = (i as f32 * self.settings.future_dt as f32 * fps).round_ties_even();
+                let sample = clip.sample_frame(f64::from(frame + offset));
+                ReferenceFrame {
+                    position: sample.qpos[7..].to_vec(),
+                    velocity: sample.qvel[6..].to_vec(),
+                    orientation: from_wxyz(sample.qpos[3..7].try_into().unwrap()),
+                }
+            })
+            .collect::<Vec<_>>();
+        self.step_reference(feedback, alignment, &references)
+    }
+
+    pub fn step_reference(
+        &mut self,
+        feedback: &Feedback,
+        alignment_root: DQuat,
+        references: &[ReferenceFrame],
+    ) -> Result<Step> {
         let n = self.settings.joint_names.len();
         ensure!(
             feedback.motor_position.len() == n && feedback.motor_velocity.len() == n,
@@ -180,21 +245,15 @@ impl Sonic {
                 .chain(&feedback.motor_velocity)
                 .chain(&feedback.orientation_xyzw)
                 .chain(&feedback.angular_velocity_local)
-                .all(|value| value.is_finite())
-                && feedback.reference_time.is_finite()
-                && feedback.reference_time >= 0.
-                && feedback.reference_time < self.clip.duration(),
-            "invalid SONIC feedback or reference time"
+                .all(|value| value.is_finite()),
+            "invalid SONIC feedback"
         );
         let hardware_orientation =
             checked_quaternion(DQuat::from_array(feedback.orientation_xyzw))?;
         let orientation = hardware_orientation * self.root_from_hardware_imu.conjugate();
         if feedback.initialize {
             self.reset();
-            let reference = self.clip.sample_frame(f64::from(
-                feedback.reference_time as f32 * self.clip.fps() as f32,
-            ));
-            let reference_root = from_wxyz(reference.qpos[3..7].try_into()?);
+            let reference_root = checked_quaternion(alignment_root)?;
             self.alignment = Some(DQuat::from_rotation_z(
                 orientation.to_euler(EulerRot::ZYX).0 - reference_root.to_euler(EulerRot::ZYX).0,
             ));
@@ -216,30 +275,36 @@ impl Sonic {
         let mut source_velocities =
             Vec::with_capacity(self.settings.future_frames * self.settings.source_neutral.len());
         let mut root_orientations = Vec::with_capacity(self.settings.future_frames);
-        // Match JAX's float32 clock and integer future-frame offsets, including
-        // ties-to-even rounding for clips whose rate is not a multiple of 10 Hz.
-        let fps = self.clip.fps() as f32;
-        let policy_reference_frame =
-            (feedback.reference_time as f32 + self.policy.metadata.control_timestep as f32) * fps;
-        for frame in 0..self.settings.future_frames {
-            let offset = (frame as f32 * self.settings.future_dt as f32 * fps).round_ties_even();
-            let sample = self
-                .clip
-                .sample_frame(f64::from(policy_reference_frame + offset));
+        ensure!(
+            references.len() == self.settings.future_frames,
+            "invalid SONIC reference window"
+        );
+        for sample in references {
+            ensure!(
+                sample.position.len() == n
+                    && sample.velocity.len() == n
+                    && sample
+                        .position
+                        .iter()
+                        .chain(&sample.velocity)
+                        .all(|v| v.is_finite()),
+                "invalid SONIC reference joints"
+            );
+            let reference_orientation = checked_quaternion(sample.orientation)?;
             let mut source_position = self.settings.source_neutral.clone();
             let mut source_velocity = vec![0.; source_position.len()];
             for target in 0..n {
                 let source = self.settings.source_joint_indices[target];
                 let sign = self.settings.source_signs[target];
                 source_position[source] = self.settings.source_neutral[source]
-                    + (sample.qpos[7 + target] - self.settings.default_joint_position[target])
+                    + (sample.position[target] - self.settings.default_joint_position[target])
                         * sign;
-                source_velocity[source] = sample.qvel[6 + target] * sign;
+                source_velocity[source] = sample.velocity[target] * sign;
             }
             source_positions.extend(source_position);
             source_velocities.extend(source_velocity);
             root_orientations.push(rotation_6d(
-                orientation.conjugate() * alignment * from_wxyz(sample.qpos[3..7].try_into()?),
+                orientation.conjugate() * alignment * reference_orientation,
             ));
         }
         // Preserve the pretrained release's historical non-flat reshape: the
