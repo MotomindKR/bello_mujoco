@@ -76,8 +76,15 @@ jobs:
       - if: runner.os == 'macOS'
         working-directory: console
         run: |
+          brew install vulkan-loader
+          prepare_software_renderer() {
+            cp "$(brew --prefix vulkan-loader)/lib/libvulkan.1.dylib" \
+              "$1/Contents/Frameworks/Electron Framework.framework/Libraries/libvulkan.dylib"
+          }
+          prepare_software_renderer node_modules/electron/dist/Electron.app
           npm test
           npm run make:mac
+          prepare_software_renderer "out/Bello Mini Console-darwin-$(node -p process.arch)/Bello Mini Console.app"
           BELLO_CONSOLE_EXECUTABLE="$PWD/out/Bello Mini Console-darwin-$(node -p process.arch)/Bello Mini Console.app/Contents/MacOS/bello-mini-console" node test/smoke.cjs
       - if: runner.os == 'Linux'
         working-directory: console

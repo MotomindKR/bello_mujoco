@@ -313,8 +313,11 @@ async function serve(service, implementation) {
           ? []
           : [path.join(root, "console")]),
         ...(process.env.CI && process.platform === "linux"
+          ? ["--no-sandbox"]
+          : []),
+        ...(process.env.CI
           ? [
-              "--no-sandbox",
+              "--use-gl=angle",
               "--use-angle=swiftshader",
               "--enable-unsafe-swiftshader",
             ]
@@ -324,6 +327,7 @@ async function serve(service, implementation) {
     };
     app = await electron.launch(launchOptions);
     const page = await app.firstWindow();
+    page.setDefaultTimeout(30000);
     const errors = [];
     page.on("console", (message) => {
       if (message.type() === "error") console.error(message.text());
@@ -414,7 +418,8 @@ async function serve(service, implementation) {
               }),
               "Fault recovery controls and hint must remain fully visible with long details",
             );
-            await page.locator(".operator-card").screenshot({
+            await page.screenshot({
+              fullPage: true,
               path: path.join(
                 root,
                 `console/out/console-fault-${await page.evaluate(() => innerWidth)}.png`,
@@ -880,9 +885,10 @@ async function serve(service, implementation) {
     await page
       .getByRole("button", { name: "Clear fault", exact: true })
       .waitFor();
-    await page
-      .locator(".operator-card")
-      .screenshot({ path: path.join(root, "console/out/console-fault.png") });
+    await page.screenshot({
+      fullPage: true,
+      path: path.join(root, "console/out/console-fault.png"),
+    });
     assert.deepEqual(
       await headerBoxes(),
       beforeDigits,
@@ -1332,6 +1338,7 @@ async function serve(service, implementation) {
     await app.close();
     app = await electron.launch(launchOptions);
     const restarted = await app.firstWindow();
+    restarted.setDefaultTimeout(30000);
     await restarted.waitForFunction(
       () =>
         document.querySelector(".header-status strong")?.textContent ===
