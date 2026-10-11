@@ -1378,6 +1378,11 @@ kbd.pressed {
   overflow: auto;
   overscroll-behavior: contain;
 }
+.fault-recovery-error {
+  max-height: 3.5em;
+  overflow: auto;
+  color: var(--error);
+}
 
 /* Fit the overview to desktop height while keeping small windows scrollable. */
 @media (min-width: 1100px) {

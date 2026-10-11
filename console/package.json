@@ -1,7 +1,7 @@
 {
   "name": "bello-mini-console",
   "desktopName": "bello-mini-console.desktop",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Bello Mini console with semantic operator actions and runner-owned control",
   "main": "main.cjs",

@@ -4,6 +4,8 @@ export function FaultStatus({ state, fault }) {
   const [clearingFault, setClearingFault] = useState(false);
   const [clearError, setClearError] = useState("");
   const operator = state.operator || {};
+  const recoveryError = clearError || operator.recoveryError;
+  const triggerHeld = state.controllerSample?.l2 || state.controllerSample?.r2;
   const faultStatusAvailable =
     state.services.runner.fresh || state.services.hardware.fresh;
   return (
@@ -23,10 +25,6 @@ export function FaultStatus({ state, fault }) {
               ? "No active fault reported."
               : "Waiting for fault status.")}
         </strong>
-        {(clearError || operator.recoveryError) &&
-          operator.mode === "MODE_FAULT" && (
-            <p role="alert">{clearError || operator.recoveryError}</p>
-          )}
       </div>
       {operator.mode === "MODE_FAULT" && (
         <>
@@ -34,11 +32,7 @@ export function FaultStatus({ state, fault }) {
             <button
               className="primary-button clear-fault"
               aria-describedby="fault-clear-hint"
-              disabled={
-                clearingFault ||
-                !state.services.runner.fresh ||
-                !operator.canClearFault
-              }
+              disabled={clearingFault}
               onClick={async () => {
                 setClearingFault(true);
                 setClearError("");
@@ -58,8 +52,20 @@ export function FaultStatus({ state, fault }) {
                 ? "Clearing fault…"
                 : "Clear fault"}
             </button>
-            <span id="fault-clear-hint" className="diagnostic-note">
-              Release inputs, then hold A for 1 s or click Clear fault.
+            <span
+              id="fault-clear-hint"
+              className={
+                "diagnostic-note" +
+                (recoveryError ? " fault-recovery-error" : "")
+              }
+              role={recoveryError ? "alert" : undefined}
+            >
+              {recoveryError ||
+                (triggerHeld
+                  ? "Release both triggers before clearing fault."
+                  : operator.canClearFault
+                    ? "Release inputs, then hold A for 1 s or click Clear fault."
+                    : "Wait for the runner to finish fault cleanup.")}
             </span>
           </div>
         </>

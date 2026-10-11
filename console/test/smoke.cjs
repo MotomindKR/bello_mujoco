@@ -1310,7 +1310,7 @@ async function serve(service, implementation) {
       mode: "MODE_FAULT",
       phase: "fault",
       fault: "CAN queue test fault",
-      canClearFault: true,
+      canClearFault: false,
     });
     await power.getByText("-123.125 A", { exact: true }).waitFor();
     assert.equal(
@@ -1320,6 +1320,14 @@ async function serve(service, implementation) {
     await page
       .getByRole("button", { name: "Clear fault", exact: true })
       .waitFor();
+    await page
+      .getByRole("button", { name: "Clear fault", exact: true })
+      .click();
+    await page
+      .getByRole("alert")
+      .filter({ hasText: "Wait for the runner to finish fault cleanup" })
+      .waitFor();
+    runnerStatus.canClearFault = true;
     await capture(page, {
       fullPage: true,
       path: path.join(root, "console/out/console-fault.png"),

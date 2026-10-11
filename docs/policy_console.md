@@ -408,6 +408,8 @@ Hold the Overview **Hold to abort** button for one second, or hold **L2 + R2**
 together for one second on the controller. Both send the same held `abort`
 action for the runner to time. The console button works without a gamepad. Releasing
 early, losing focus, or losing the runner connection cancels the button hold.
+An unfinished trigger hold keeps the current locomotion intent; it does not
+stop movement or enter Fault until the runner confirms the full second.
 Both paths request a runner abort and release hardware leases with damping,
 without disabling the motors. The runner keeps a latched Fault for explicit
 recovery. The button changes to **Hold to idle** after aborting, and becomes
@@ -416,7 +418,8 @@ button or **L2 + R2** again for one second with neutral sticks. This disables
 damped groups, recovers hardware faults and verifies fresh Idle feedback before
 returning to Disarmed. A continuous press cannot trigger both actions.
 **Clear fault** uses the same recovery path. If recovery fails, the error remains
-visible and the action can be retried. After success, release all inputs and hold
+visible and the action can be retried. Clicking it before cleanup completes
+shows why recovery is unavailable. After success, release all inputs and hold
 **Back + Start** for two seconds to re-enable Hold, then hold **A** for one second
 to enter Stand. No runner restart is needed.
 

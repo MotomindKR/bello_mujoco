@@ -230,7 +230,11 @@ impl State {
             }
             let since = *self.abort_since.get_or_insert(now);
             self.status.abort_progress = now.duration_since(since).as_secs_f64().min(1.);
-            self.axes = [0.; 3];
+            self.axes = if idle || !sample.connected || self.neutral_required {
+                [0.; 3]
+            } else {
+                axes.map(|v| if v.abs() <= NEUTRAL { 0. } else { v as f32 })
+            };
             self.hold_since = None;
             self.confirm_since = None;
             self.status.hold_progress = 0.;
@@ -238,6 +242,7 @@ impl State {
             self.confirm_consumed = true;
             self.pending = None;
             if now.duration_since(since) >= Duration::from_secs(1) {
+                self.axes = [0.; 3];
                 self.stop_consumed = true;
                 if idle {
                     self.request_clear(sample.sequence);
@@ -1946,6 +1951,33 @@ mod tests {
             assert!(state.aborted);
             assert_eq!(state.axes, [0.; 3]);
         }
+    }
+
+    #[test]
+    fn unfinished_abort_hold_keeps_locomotion_intent() {
+        let (mut state, mut controller) = fixture();
+        state.status.mode = Mode::Locomotion as i32;
+        let moving = GamepadSample {
+            forward: 0.4,
+            l2: true,
+            r2: true,
+            ..Default::default()
+        };
+        controller.send(&mut state, moving.clone(), 300);
+        assert!(!state.aborted);
+        assert_eq!(state.axes, [0.4, 0., 0.]);
+        controller.send(
+            &mut state,
+            GamepadSample {
+                forward: 0.4,
+                ..Default::default()
+            },
+            20,
+        );
+        assert_eq!(state.status.abort_progress, 0.);
+        controller.send(&mut state, moving, 1040);
+        assert!(state.aborted);
+        assert_eq!(state.axes, [0.; 3]);
     }
 
     #[test]
