@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 from zipfile import ZipFile
+import xml.etree.ElementTree as ET
 
 import jax
 import jax.numpy as jnp
@@ -17,6 +18,19 @@ from bello_mujoco.policy import ActorCritic, ActorCriticConfig
 from bello_mujoco.training.ppo_types import ObservationNormState
 from bello_mujoco.training.ppo_config import PPOConfig
 from bello_mujoco.training.normalization import normalize_observation
+
+
+def floating_joint_physics(joint_names):
+    """Minimal model with an explicit generalized-coordinate joint order."""
+    root = ET.Element("mujoco")
+    base = ET.SubElement(ET.SubElement(root, "worldbody"), "body")
+    ET.SubElement(base, "freejoint")
+    ET.SubElement(base, "geom", type="sphere", size=".1", mass="1")
+    for name in joint_names:
+        body = ET.SubElement(base, "body")
+        ET.SubElement(body, "joint", name=name)
+        ET.SubElement(body, "geom", type="sphere", size=".1", mass="1")
+    return ET.tostring(root)
 
 
 @pytest.fixture

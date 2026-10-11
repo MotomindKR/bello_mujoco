@@ -248,14 +248,31 @@ tracking:
   neutral_settle_timeout_seconds: 2.0
   standing_transition_seconds: 0.2
   max_tilt_error_radians: 0.5
-  max_raw_action_abs: 5.0
 ```
 
 Continue using the locomotion bundle for `--policy`. The SONIC source checkout
 must be clean and match its exported checkpoint revision; both policies must
 agree on robot, motor coordinates, logical joints and transmission. Models load
 and warm before any lease is acquired. No prerecorded clip is selected for live
-Tracking.
+Tracking. SONIC uses the bundle's exported `action_clip`, matching evaluation;
+finite raw outputs above that clip are clipped, not treated as policy failures.
+Nonfinite outputs, target limits, and tilt checks remain enforced. Remove the old
+`tracking.max_raw_action_abs` field from existing runner YAML files; that guard
+is only supported for named BeyondMimic motions.
+
+Live positions and velocities are named logical joints. The runner validates
+their mapping against the bundle's `physics.xml` before acquiring control.
+Existing SONIC checkpoints learned reference features in MuJoCo generalized
+coordinate order, which can differ from policy joint order. Both prerecorded
+and live references, including the generated return-to-neutral sequence, use
+that same checkpoint encoding. Feedback and motor commands retain policy order;
+the reference producer must not pre-permute its named joint values.
+
+For synchronized diagnostics, `FullBodyReference` also reports root position,
+world linear velocity and root-local angular velocity from the same retargeted
+sample. These fields use metres and seconds and do not change the runner's
+reference inputs. Match `sequence` to the raw PICO pose stream to recover its
+source timestamp; do not reconstruct root translation from joint positions.
 
 Reach Stand, select Tracking with left/right, and wait for **Ready**. Hold A for
 one second with neutral sticks to enter; release and hold A again to return.
@@ -264,7 +281,12 @@ reference frames, interpolating joint positions/velocities and root orientation.
 The delay must cover `9 * future_dt + control_timestep + max_sample_gap_seconds`.
 It never extrapolates, and the retained window is bounded. Input age includes
 producer age and time since the request began. Duplicate sequences do not extend
-the buffer; stale data, gaps or producer restarts require a fresh full window.
+the buffer. A newer sequence whose age-derived timestamp does not advance is
+discarded without clearing valid history; RPC timing jitter can cause this.
+Stale or unavailable input is rejected without discarding accepted history. A
+brief interruption can continue only while that history covers the entire delayed
+SONIC window; it never repeats or extrapolates missing future frames. Longer gaps
+between accepted samples and producer restarts require a fresh full window.
 
 On a normal return, console/reference loss, malformed reference, or motion tilt
 deviation, active SONIC first follows a locally generated neutral reference.

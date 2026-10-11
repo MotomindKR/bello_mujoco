@@ -109,6 +109,17 @@ separate, non-overwriting logs. Other paths in the runner YAML must be absolute.
 The journal prints the run directory. No builds, policy downloads or dependency
 installs happen on service start. Policy/source compatibility is still validated
 by the runner; the installer never rewrites checkpoint metadata.
+JSON records are serialized in memory and written by a separate thread. The
+control loop never waits for storage. The queue holds at most 32 records; if
+storage falls behind, new records are dropped and a `log_records_dropped` event
+and journal warning report the count when the writer resumes. A storage error
+stops logging and reports to the journal without stopping motor control. Each
+accepted record is flushed by the writer, but process exit can lose queued
+records. Opening the log still happens before control acquisition and must succeed.
+Deadline faults include measured lateness and the configured limit. Motion faults
+also report time spent in preparation, feedback, policy, command, and log/status
+work. `control_fault` records retain these details; Tracking records include
+reference age, buffer readiness, and the reference status message.
 
 For status and an explicit stop:
 

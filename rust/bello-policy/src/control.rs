@@ -11,8 +11,6 @@ use bello_hardware_client::{
 use futures_util::future::join_all;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -102,7 +100,7 @@ async fn send(
     config: &Config,
     targets: &mut CommandTargets,
     limits: &crate::target_limits::TargetLimits,
-    log: &mut Option<File>,
+    log: &mut Option<crate::policy_log::PolicyLog>,
 ) -> Result<crate::target_limits::LimitedTarget> {
     let command = limits.constrain(target, &targets.previous)?;
     let frames = controls
@@ -121,12 +119,9 @@ async fn send(
     for result in results {
         if let Err(error) = result {
             if let Some(log) = log {
-                serde_json::to_writer(
-                    &mut *log,
+                log.record(
                     &serde_json::json!({"event": "command_rejected", "command": command, "error": error.to_string()}),
                 )?;
-                log.write_all(b"\n")?;
-                log.flush()?;
             }
             return Err(error.into());
         }
@@ -141,12 +136,9 @@ async fn send(
             );
         }
         if let Some(log) = log {
-            serde_json::to_writer(
-                &mut *log,
+            log.record(
                 &serde_json::json!({"event": "target_limited", "command": command, "limited_count": targets.limited_count}),
             )?;
-            log.write_all(b"\n")?;
-            log.flush()?;
         }
     }
     Ok(command)
@@ -160,9 +152,13 @@ struct CommandTargets {
 
 async fn pace(deadline: &mut tokio::time::Instant, period: Duration, lag: Duration) -> Result<()> {
     *deadline += period;
+    let late = tokio::time::Instant::now().saturating_duration_since(*deadline);
     ensure!(
-        tokio::time::Instant::now().saturating_duration_since(*deadline) < lag,
-        "policy loop missed its deadline"
+        late < lag,
+        "policy loop missed its deadline: {:.3} ms late (limit {:.3} ms, period {:.3} ms)",
+        late.as_secs_f64() * 1000.,
+        lag.as_secs_f64() * 1000.,
+        period.as_secs_f64() * 1000.
     );
     tokio::time::sleep_until(*deadline).await;
     Ok(())
@@ -250,10 +246,10 @@ pub async fn run(
     if let Some(status) = motions.get("Tracking").and_then(|m| m.tracking_status()) {
         operator.set_sonic(status);
     }
-    let mut log: Option<File> = config
+    let mut log = config
         .policy_log_path
         .as_ref()
-        .map(|path| OpenOptions::new().write(true).create_new(true).open(path))
+        .map(|path| crate::policy_log::PolicyLog::open(path))
         .transpose()?;
     let power = log
         .as_ref()
@@ -355,15 +351,10 @@ pub async fn run(
                 break (startup_target, initial.motor_position, lying);
             };
             if let Some(log) = &mut log {
-                serde_json::to_writer(
-                    &mut *log,
-                    &serde_json::json!({"event": "startup_target",
+                log.record(&serde_json::json!({"event": "startup_target",
                 "motor_target": startup_target, "measured_motor_position": measured_startup,
                 "startup": if lying { "back_down" } else { "crane" },
-                "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}),
-                )?;
-                log.write_all(b"\n")?;
-                log.flush()?;
+                "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}))?;
             }
             let mut targets = CommandTargets {
                 coordinates: policy.policy.metadata.coordinates.clone(),
@@ -478,6 +469,7 @@ pub async fn run(
             let mut tracking_enabled = false;
             operator.set_tracking(following.is_some(), false, false);
             loop {
+                let tick_started = Instant::now();
                 if let Some(tracking) = motions.get_mut("Tracking") {
                     tracking.refresh_tracking();
                     operator.set_sonic(tracking.tracking_status().expect("Tracking backend"));
@@ -577,9 +569,11 @@ pub async fn run(
                             motion.absolute_tilt_limit(hardware.config.max_tilt_radians)
                         })
                 };
+                let feedback_started = Instant::now();
                 let mut sample = hardware
                     .feedback_with_tilt(proto::GroupState::Running, max_tilt)
                     .await?;
+                let feedback_finished = Instant::now();
                 if let Some(sequence) = &mut sit {
                     let gravity = crate::locomotion::projected_gravity(sample.orientation_xyzw)?;
                     let upright =
@@ -615,8 +609,7 @@ pub async fn run(
                     )
                     .await?;
                     if let Some(log) = &mut log {
-                        serde_json::to_writer(
-                            &mut *log,
+                        log.record(
                             &serde_json::json!({
                                 "elapsed_seconds": started.elapsed().as_secs_f64(), "feedback": sample,
                                 "sit": {"phase": sequence.phase().as_str(), "progress": sequence.progress,
@@ -625,8 +618,6 @@ pub async fn run(
                                 "motor_rails": power.as_ref().map(crate::power::Source::snapshot)
                             }),
                         )?;
-                        writeln!(log)?;
-                        log.flush()?;
                     }
                     operator.set_mode(Mode::Sit, sequence.phase().as_str(), "", sequence.progress);
                     operator.set_startup_ready(sequence.can_confirm(upright));
@@ -682,6 +673,7 @@ pub async fn run(
                         &targets.previous,
                         hardware.config.max_tilt_radians,
                     )?;
+                    let policy_finished = Instant::now();
                     if step.period != active_period {
                         deadline = tokio::time::Instant::now();
                         active_period = step.period;
@@ -707,15 +699,14 @@ pub async fn run(
                         &mut log,
                     )
                     .await?;
+                    let command_finished = Instant::now();
                     if let Some(log) = &mut log {
-                        serde_json::to_writer(
-                            &mut *log,
+                        log.record(
                             &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(),
                         "feedback": sample, "motion": step.log, "command": command,
+                        "tracking_reference": motion.tracking_status(),
                         "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}),
                         )?;
-                        log.write_all(b"\n")?;
-                        log.flush()?;
                     }
                     if motion.is_standing() {
                         *motion_interrupt.lock().unwrap() = None;
@@ -725,7 +716,15 @@ pub async fn run(
                     } else {
                         operator.set_mode(mode, &phase, name, progress);
                     }
-                    pace(&mut deadline, active_period, lag).await?;
+                    let published = Instant::now();
+                    pace(&mut deadline, active_period, lag).await.with_context(|| format!(
+                        "motion tick timing: prepare {:.3} ms, feedback {:.3} ms, policy {:.3} ms, command {:.3} ms, log/status {:.3} ms",
+                        (feedback_started - tick_started).as_secs_f64() * 1000.,
+                        (feedback_finished - feedback_started).as_secs_f64() * 1000.,
+                        (policy_finished - feedback_finished).as_secs_f64() * 1000.,
+                        (command_finished - policy_finished).as_secs_f64() * 1000.,
+                        (published - command_finished).as_secs_f64() * 1000.,
+                    ))?;
                     continue;
                 }
                 if active_period != period {
@@ -773,14 +772,11 @@ pub async fn run(
                 .await?;
                 operator.set_velocity_command(policy.operator_velocity(sample.command));
                 if let Some(log) = &mut log {
-                    serde_json::to_writer(
-                        &mut *log,
+                    log.record(
                         &serde_json::json!({"elapsed_seconds": started.elapsed().as_secs_f64(),
                     "feedback": sample, "policy": step, "following_live": following_live,
                     "command": command, "motor_rails": power.as_ref().map(crate::power::Source::snapshot)}),
                     )?;
-                    log.write_all(b"\n")?;
-                    log.flush()?;
                 }
                 pace(&mut deadline, period, lag).await?;
             }
@@ -826,6 +822,9 @@ pub async fn run(
                 "control result: {result:?}; cleanup failed: {cleanup_errors:?}"
             ));
         }
+        if let (Err(error), Some(log)) = (&result, &log) {
+            log.record(&serde_json::json!({"event": "control_fault", "error": format!("{error:#}"), "cleanup_errors": cleanup_errors}))?;
+        }
         if result.is_ok() && cleanup_errors.is_empty() && !shutdown_requested {
             if operator.disarm() {
                 policy.reset();
@@ -834,8 +833,7 @@ pub async fn run(
                     motion.reset();
                 }
                 if let Some(log) = &mut log {
-                    writeln!(log, "{{\"event\":\"sit_completed\"}}")?;
-                    log.flush()?;
+                    log.record(&serde_json::json!({"event": "sit_completed"}))?;
                 }
                 continue 'sessions;
             }
@@ -864,8 +862,7 @@ pub async fn run(
                             motion.reset();
                         }
                         if let Some(log) = &mut log {
-                            writeln!(log, "{{\"event\":\"fault_cleared\"}}")?;
-                            log.flush()?;
+                            log.record(&serde_json::json!({"event": "fault_cleared"}))?;
                         }
                         continue 'sessions;
                     }

@@ -110,6 +110,9 @@ class ReferenceService:
                 position=qpos[positions].tolist(),
                 velocity=qvel[velocities].tolist(),
                 root_orientation_wxyz=orientation.tolist(),
+                root_position_world=qpos[:3].tolist(),
+                root_linear_velocity_world=qvel[:3].tolist(),
+                root_angular_velocity_local=qvel[3:6].tolist(),
             )
         return pb.GetReferenceResponse(
             robot=self.robot,

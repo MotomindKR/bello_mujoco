@@ -19,6 +19,7 @@ pub mod hardware;
 pub mod locomotion;
 pub mod motion;
 pub mod operator;
+mod policy_log;
 pub mod power;
 pub mod reference;
 pub mod sonic;

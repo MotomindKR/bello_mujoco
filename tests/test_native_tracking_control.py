@@ -16,6 +16,7 @@ import yaml
 from bello_mujoco.hardware import _operator_pb2 as operator_pb
 from bello_mujoco.hardware import reference_pb2 as reference_pb
 from native_operator import OperatorClient, operator_endpoint
+from native_runtime import floating_joint_physics
 from test_native_control import SyntheticHardware, bundle, start_services
 from test_native_control import hardware_proto as hardware_proto
 
@@ -24,6 +25,8 @@ pytestmark = pytest.mark.integration
 
 class TrackingHardware(SyntheticHardware):
     reference_failure = None
+    reference_positions = tuple(0.4 + i * 0.001 for i in range(28))
+    reference_velocities = tuple(i * 0.01 for i in range(28))
 
     def reference(self, request, context):
         if self.reference_failure == "outage":
@@ -35,15 +38,17 @@ class TrackingHardware(SyntheticHardware):
             source_age_ms=1000 if self.reference_failure == "stale" else 0,
             full_body=reference_pb.FullBodyReference(
                 joint_names=self.names,
-                position=[float("nan") if self.reference_failure == "invalid" else 0.4]
-                * 28,
-                velocity=[0.0] * 28,
+                position=[
+                    float("nan") if self.reference_failure == "invalid" else value
+                    for value in self.reference_positions
+                ],
+                velocity=self.reference_velocities,
                 root_orientation_wxyz=[1.0, 0.0, 0.0, 0.0],
             ),
         )
 
 
-def tracking_bundles(source, *, sonic_target=None):
+def tracking_bundles(source, *, sonic_target=None, sonic_action=None):
     names = [f"joint_{i}" for i in range(28)]
     common = dict(
         coordinates=names,
@@ -69,10 +74,13 @@ def tracking_bundles(source, *, sonic_target=None):
     )
     sonic = bundle(
         source,
+        physics=floating_joint_physics(reversed(names)),
         target=sonic_target or [0.05] * 28,
+        action=sonic_action,
         metadata_updates=common
         | dict(
             task="sonic_transfer",
+            action_clip=20.0,
             kp=[4.0] * 28,
             kd=[0.2] * 28,
             observation_size=7300,
@@ -109,9 +117,12 @@ def tracking_bundles(source, *, sonic_target=None):
     [
         "outage",
         "stale",
+        "brief_outage",
+        "brief_stale",
         "invalid",
         "console",
         "return",
+        "clipped_action",
         "settle_timeout",
         "abort_return",
     ],
@@ -124,7 +135,9 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
 ):
     _, _, source = rust_policy
     names, standing, sonic = tracking_bundles(
-        source, sonic_target=[0.5] * 28 if failure == "settle_timeout" else None
+        source,
+        sonic_target=[0.5] * 28 if failure == "settle_timeout" else None,
+        sonic_action=[25.0, -25.0] * 14 if failure == "clipped_action" else None,
     )
     fake = TrackingHardware(hardware_proto, names, [0.0] * 28)
     fake.reference_failure = "outage"
@@ -156,7 +169,6 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
             neutral_settle_timeout_seconds=0.4,
             standing_transition_seconds=0.06,
             max_tilt_error_radians=0.5,
-            max_raw_action_abs=5.0,
         ),
     )
     address = operator_endpoint()
@@ -195,7 +207,15 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
             operator.wait(
                 lambda s: s.mode == operator_pb.MODE_TRACKING and s.phase == "motion"
             )
-            if failure == "console":
+            if failure in ("brief_outage", "brief_stale"):
+                fake.reference_failure = failure.removeprefix("brief_")
+                time.sleep(0.06)
+                fake.reference_failure = None
+                time.sleep(0.3)
+                assert operator.status.mode == operator_pb.MODE_TRACKING
+                assert operator.status.phase == "motion"
+                operator.press(1.1, a=True)
+            elif failure == "console":
                 operator.paused.set()
                 time.sleep(0.5)
                 operator.close()
@@ -204,7 +224,8 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
                 )
                 operator.wait(lambda s: s.neutral_required)
                 operator.buttons = {}
-            elif failure == "return":
+            elif failure in ("return", "clipped_action"):
+                operator.press()
                 operator.press(1.1, a=True)
             elif failure in ("settle_timeout", "abort_return"):
                 fake.reference_failure = "outage"
@@ -227,7 +248,35 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
                 )
                 return
             operator.wait(lambda s: s.mode == operator_pb.MODE_STAND)
-            samples = [json.loads(line) for line in policy_log.read_text().splitlines()]
+            # Inspect the large observation log after control stops. Parsing it
+            # here can starve the synthetic Python gRPC server of the GIL.
+            first_return_log_end = policy_log.stat().st_size
+            operator.paused.clear()
+            operator.wait(lambda s: not s.neutral_required)
+            fake.reference_failure = None
+            operator.wait(lambda s: s.sonic_ready)
+            operator.press()
+            operator.press(1.1, a=True)
+            operator.wait(
+                lambda s: s.mode == operator_pb.MODE_TRACKING and s.phase == "motion"
+            )
+            # Confirmation must be released after entering the new phase.
+            operator.press()
+            operator.press(1.1, a=True)
+            operator.wait(lambda s: s.mode == operator_pb.MODE_STAND)
+            # Reentry needs a released sample after the mode transition.
+            operator.press()
+            operator.press(1.1, a=True)
+            operator.wait(lambda s: s.mode == operator_pb.MODE_TRACKING)
+            operator.press(1.1, l1=True, r1=True)
+            operator.wait(
+                lambda s: s.mode == operator_pb.MODE_FAULT and s.can_clear_fault
+            )
+            assert fake.state == hardware_proto.GROUP_STATE_DAMPED
+            assert "disable" not in fake.calls
+            with policy_log.open("rb") as recorded:
+                completed = recorded.read(first_return_log_end).rsplit(b"\n", 1)[0]
+            samples = [json.loads(line) for line in completed.splitlines()]
             neutral = [
                 s
                 for s in samples
@@ -238,10 +287,36 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
                 for s in samples
                 if s.get("motion", {}).get("phase") == "transition_to_standing"
             ]
+            if failure == "clipped_action":
+                for sample in neutral:
+                    policy = sample["motion"]["policy"]
+                    np.testing.assert_array_equal(
+                        policy["raw_action"], [25.0, -25.0] * 14
+                    )
+                    np.testing.assert_array_equal(policy["action"], [20.0, -20.0] * 14)
+                    np.testing.assert_array_equal(
+                        policy["observation"][-28:], [20.0, -20.0] * 14
+                    )
             assert len(neutral) >= 10
             assert 2 <= len(handover) <= 4
             assert neutral[-1]["elapsed_seconds"] < handover[0]["elapsed_seconds"]
             first = samples.index(neutral[0])
+            live_frame = np.asarray(
+                samples[first - 1]["motion"]["policy"]["observation"][-730:]
+            )
+            commands = live_frame[:640].reshape(10, 64)[:, :58].reshape(-1)
+            # The physics model stores joints in reverse policy order. Verify
+            # the actual live service/runner path uses the checkpoint layout.
+            np.testing.assert_allclose(
+                commands[:290].reshape(10, 29),
+                np.tile([*reversed(fake.reference_positions), 0.0], (10, 1)),
+                atol=1e-6,
+            )
+            np.testing.assert_allclose(
+                commands[290:].reshape(10, 29),
+                np.tile([*reversed(fake.reference_velocities), 0.0], (10, 1)),
+                atol=1e-6,
+            )
             np.testing.assert_array_equal(
                 neutral[0]["motion"]["policy"]["observation"][:-730],
                 samples[first - 1]["motion"]["policy"]["observation"][730:],
@@ -267,25 +342,7 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
                 np.testing.assert_allclose(motion["motor_gains"], [[4.0, 0.2]] * 28)
                 assert len(motion["policy"]["observation"]) == 7300
             assert "stop" not in fake.calls and "disable" not in fake.calls
-            assert not operator.status.fault
-            operator.paused.clear()
-            operator.wait(lambda s: not s.neutral_required)
-            fake.reference_failure = None
-            operator.wait(lambda s: s.sonic_ready)
-            operator.press(1.1, a=True)
-            operator.wait(
-                lambda s: s.mode == operator_pb.MODE_TRACKING and s.phase == "motion"
-            )
-            operator.press(1.1, a=True)
-            operator.wait(lambda s: s.mode == operator_pb.MODE_STAND)
-            operator.press(1.1, a=True)
-            operator.wait(lambda s: s.mode == operator_pb.MODE_TRACKING)
-            operator.press(1.1, l1=True, r1=True)
-            operator.wait(
-                lambda s: s.mode == operator_pb.MODE_FAULT and s.can_clear_fault
-            )
-            assert fake.state == hardware_proto.GROUP_STATE_DAMPED
-            assert "disable" not in fake.calls
+            assert not any(s.get("event") == "control_fault" for s in samples)
         except Exception:
             log.flush()
             log.seek(0)

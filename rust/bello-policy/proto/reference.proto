@@ -29,4 +29,9 @@ message FullBodyReference {
   repeated double position = 2;
   repeated double velocity = 3;
   repeated double root_orientation_wxyz = 4;
+  // Diagnostic root state from the same retargeted sample. Translation and
+  // linear velocity use world Z-up; angular velocity uses the root local frame.
+  repeated double root_position_world = 5; // Metres, xyz.
+  repeated double root_linear_velocity_world = 6; // Metres/second, xyz.
+  repeated double root_angular_velocity_local = 7; // Radians/second, xyz.
 }

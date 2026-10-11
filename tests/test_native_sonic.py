@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from native_runtime import floating_joint_physics
 
 from bello_mujoco.deployment import sonic_actor_onnx, sonic_deployment_bundle
 from bello_mujoco.motion.clip import MotionClip, save_motion_clip
@@ -29,9 +30,12 @@ from bello_mujoco.sonic.reference import ReferenceBank
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.parametrize("fps,frames", [(50.0, 20), (25.0, 20), (50.0, 2048)])
+@pytest.mark.parametrize(
+    "fps,frames,action_clip",
+    [(50.0, 20, 100.0), (25.0, 20, 100.0), (50.0, 2048, 100.0), (50.0, 20, 0.001)],
+)
 def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
-    rust_policy, tmp_path, fps, frames
+    rust_policy, tmp_path, fps, frames, action_clip
 ) -> None:
     run, _, source = rust_policy
     source_names = tuple(name for name in G1_JOINT_NAMES if name != "waist_pitch_joint")
@@ -84,7 +88,7 @@ def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
     qpos[:, 6] = np.sin(root_yaw / 2.0)
     qpos[:, 7:] = default + np.arange(frames)[:, None] * 0.001
     qvel = np.zeros((frames, 6 + len(joint_names)), dtype=np.float32)
-    qvel[:, 6:] = np.arange(frames)[:, None] * 0.002
+    qvel[:, 6:] = np.arange(frames)[:, None] * 0.002 + default
     body_quat = np.zeros((frames, 14, 4), dtype=np.float32)
     body_quat[..., 0] = 1.0
     clip = MotionClip(
@@ -110,7 +114,7 @@ def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
         mj_model=SimpleNamespace(actuator_ctrlrange=limits),
     )
     env = SimpleNamespace(
-        action_clip=100.0,
+        action_clip=action_clip,
         actuator_config=SimpleNamespace(by_name={name: joint for name in joint_names}),
     )
     commit = subprocess.check_output(
@@ -146,7 +150,7 @@ def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
         "motor_from_joint": np.eye(len(joint_names)).tolist(),
         "motor_limits": limits.tolist(),
         "environment": {},
-        "action_clip": 100.0,
+        "action_clip": action_clip,
         "hardware_imu_frame": "imu",
         "root_from_hardware_imu_xyzw": [0.0, 0.0, 0.0, 1.0],
         "reference_clips": ["walk"],
@@ -162,7 +166,9 @@ def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
     graph = sonic_actor_onnx(policy, model=model, env=env, metadata=metadata)
     bundle = sonic_deployment_bundle(
         graph.SerializeToString(),
-        physics=b"<mujoco/>",
+        # Deliberately differs from policy order: the checkpoint still consumes
+        # raw MuJoCo reference coordinates, while feedback uses named joints.
+        physics=floating_joint_physics(reversed(joint_names)),
         clips=(("walk", clip_path),),
     )
     samples = [
@@ -224,9 +230,12 @@ def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
         else:
             history = np.concatenate((history[len(frame) :], frame))
         expected_action = np.asarray(policy.actor(jnp.asarray(history)))
-        expected_applied = np.clip(expected_action, -100.0, 100.0)
+        expected_applied = np.clip(expected_action, -action_clip, action_clip)
         expected_motor = np.clip(default + 0.5 * expected_applied, -2.0, 2.0)
         np.testing.assert_allclose(output["observation"], history, atol=2.0e-6)
         np.testing.assert_allclose(output["raw_action"], expected_action, atol=2.0e-5)
         np.testing.assert_allclose(output["motor_target"], expected_motor, atol=2.0e-5)
+        np.testing.assert_allclose(output["action"], expected_applied, atol=2.0e-5)
+        if action_clip == 0.001:
+            assert np.any(np.abs(expected_action) > action_clip)
         previous_action = expected_applied

@@ -87,8 +87,8 @@ def test_unavailability_is_distinct_from_malformed_or_failed_producer(failure):
 
 def test_full_body_and_held_joints_come_from_the_same_frame():
     frame = RobotReferenceFrame(
-        np.array([0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.4]),
-        np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.6]),
+        np.array([0.1, -0.2, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.4]),
+        np.array([0.01, -0.02, 0.03, -0.04, 0.05, -0.06, 0.5, 0.6]),
         19,
         0,
         time.monotonic(),
@@ -111,6 +111,10 @@ def test_full_body_and_held_joints_come_from_the_same_frame():
     assert list(result.full_body.position) == [0.3, 0.4]
     assert list(result.full_body.velocity) == [0.5, 0.6]
     assert list(result.full_body.root_orientation_wxyz) == [1.0, 0.0, 0.0, 0.0]
+    decoded = pb.GetReferenceResponse.FromString(result.SerializeToString())
+    assert list(decoded.full_body.root_position_world) == [0.1, -0.2, 1.0]
+    assert list(decoded.full_body.root_linear_velocity_world) == [0.01, -0.02, 0.03]
+    assert list(decoded.full_body.root_angular_velocity_local) == [-0.04, 0.05, -0.06]
     frame.qpos[3:7] = 0
     with pytest.raises(ValueError, match="invalid root orientation"):
         service.get(pb.GetReferenceRequest(robot="test"), Context())

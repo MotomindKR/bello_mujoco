@@ -27,10 +27,9 @@ pub struct Config {
     pub neutral_settle_timeout_seconds: f64,
     pub standing_transition_seconds: f64,
     pub max_tilt_error_radians: f64,
-    pub max_raw_action_abs: f32,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize)]
 pub struct Status {
     pub ready: bool,
     pub age_ms: f64,
@@ -48,6 +47,7 @@ pub struct Buffer {
     frames: VecDeque<TimedFrame>,
     names: Vec<String>,
     last_sequence: Option<u64>,
+    input_issue: Option<String>,
     gap: Duration,
     delay: Duration,
     max_age_ms: f64,
@@ -86,6 +86,7 @@ impl Buffer {
             frames: VecDeque::new(),
             names,
             last_sequence: None,
+            input_issue: None,
             gap: Duration::from_secs_f64(config.max_sample_gap_seconds),
             delay: Duration::from_secs_f64(config.delay_seconds),
             max_age_ms: config.max_reference_age_ms,
@@ -101,6 +102,7 @@ impl Buffer {
     fn unavailable(&mut self, message: impl Into<String>) {
         self.frames.clear();
         self.last_sequence = None;
+        self.input_issue = None;
         self.status.ready = false;
         self.status.buffered_ms = 0.;
         self.status.message = message.into();
@@ -108,7 +110,7 @@ impl Buffer {
 
     fn ingest(&mut self, sample: Option<Sample>, now: Instant) -> Result<()> {
         let Some(sample) = sample else {
-            self.unavailable("Reference disconnected");
+            self.input_issue = Some("Reference disconnected".into());
             return Ok(());
         };
         let message = sample.message;
@@ -121,10 +123,18 @@ impl Buffer {
                 .saturating_duration_since(sample.requested)
                 .as_secs_f64()
                 * 1000.;
-        if !message.available || self.status.age_ms > self.max_age_ms {
-            self.unavailable("Reference stale");
+        if !message.available {
+            self.input_issue = Some("Reference unavailable from producer".into());
             return Ok(());
         }
+        if self.status.age_ms > self.max_age_ms {
+            self.input_issue = Some(format!(
+                "Reference stale: {:.1} ms (source {:.1} ms, limit {:.1} ms)",
+                self.status.age_ms, message.source_age_ms, self.max_age_ms
+            ));
+            return Ok(());
+        }
+        self.input_issue = None;
         if self.last_sequence == Some(message.sequence) {
             return Ok(());
         }
@@ -170,10 +180,17 @@ impl Buffer {
             .requested
             .checked_sub(Duration::from_secs_f64(message.source_age_ms / 1000.))
             .ok_or_else(|| anyhow::anyhow!("invalid tracking timestamp"))?;
-        if let Some(previous) = self.frames.back()
-            && (at <= previous.at || at.duration_since(previous.at) > self.gap)
-        {
-            self.unavailable("Refilling reference buffer");
+        if let Some(previous) = self.frames.back() {
+            if at <= previous.at {
+                // Source age is measured during the RPC. Timing jitter can put
+                // a newer sequence slightly behind the last accepted sample.
+                // Discard that sample without destroying valid buffered history.
+                self.last_sequence = Some(message.sequence);
+                return Ok(());
+            }
+            if at.duration_since(previous.at) > self.gap {
+                self.unavailable("Refilling reference buffer");
+            }
         }
         self.last_sequence = Some(message.sequence);
         self.frames.push_back(TimedFrame { at, frame });
@@ -231,6 +248,8 @@ impl Buffer {
         self.status.ready = window.is_some();
         if self.status.ready {
             self.status.message = "Ready".into();
+        } else if let Some(issue) = &self.input_issue {
+            self.status.message.clone_from(issue);
         } else if !self.frames.is_empty() {
             self.status.message = "Buffering reference".into();
         }
@@ -512,7 +531,6 @@ mod tests {
             neutral_settle_timeout_seconds: 2.,
             standing_transition_seconds: 0.2,
             max_tilt_error_radians: 0.5,
-            max_raw_action_abs: 20.,
         }
     }
     fn sample(at: Instant, sequence: u64, value: f64) -> Sample {
@@ -527,6 +545,7 @@ mod tests {
                     position: vec![-value, value],
                     velocity: vec![-2., 2.],
                     root_orientation_wxyz: vec![1., 0., 0., 0.],
+                    ..Default::default()
                 }),
                 ..Default::default()
             },
@@ -559,10 +578,10 @@ mod tests {
         assert!(!buffer.status.ready);
     }
     #[test]
-    fn loss_staleness_restart_and_gaps_require_a_new_window() {
+    fn sustained_loss_staleness_restart_and_gaps_require_a_new_window() {
         for failure in ["loss", "stale", "restart", "gap"] {
             let (mut buffer, now) = filled();
-            let later = now + Duration::from_millis(120);
+            let later = now + Duration::from_millis(160);
             let mut next = sample(later, 61, 1.32);
             match failure {
                 "stale" => next.message.source_age_ms = 101.,
@@ -576,6 +595,33 @@ mod tests {
         }
     }
     #[test]
+    fn brief_input_loss_uses_only_the_already_validated_window() {
+        for failure in ["loss", "stale", "unavailable"] {
+            let (mut buffer, now) = filled();
+            let count = buffer.frames.len();
+            for ms in [20, 40, 60] {
+                let later = now + Duration::from_millis(ms);
+                let mut next = sample(later, 61, 99.);
+                next.message.source_age_ms = if failure == "stale" { 101. } else { 0. };
+                next.message.available = failure != "unavailable";
+                buffer
+                    .ingest((failure != "loss").then_some(next), later)
+                    .unwrap();
+                assert_eq!(buffer.frames.len(), count);
+                assert_eq!(buffer.frames.back().unwrap().frame.position[0], 1.2);
+                assert!(buffer.window(later, 0.02).is_some(), "{failure}");
+            }
+            let later = now + Duration::from_millis(80);
+            buffer.ingest(Some(sample(later, 62, 1.28)), later).unwrap();
+            assert!(buffer.window(later, 0.02).is_some());
+            assert!(
+                buffer
+                    .window(later + Duration::from_millis(140), 0.02)
+                    .is_none()
+            );
+        }
+    }
+    #[test]
     fn duplicate_samples_do_not_extend_the_window() {
         let (mut buffer, now) = filled();
         let count = buffer.frames.len();
@@ -584,6 +630,35 @@ mod tests {
             .unwrap();
         assert_eq!(buffer.frames.len(), count);
         assert_eq!(buffer.frames.back().unwrap().frame.position[0], 1.2);
+    }
+    #[test]
+    fn age_jitter_discards_out_of_order_samples_without_resetting_history() {
+        for age_ms in [20., 25.] {
+            let (mut buffer, now) = filled();
+            let count = buffer.frames.len();
+            let later = now + Duration::from_millis(20);
+            let mut jittered = sample(later, 61, 99.);
+            jittered.message.source_age_ms = age_ms;
+            buffer.ingest(Some(jittered), later).unwrap();
+            assert_eq!(buffer.frames.len(), count);
+            assert_eq!(buffer.frames.back().unwrap().frame.position[0], 1.2);
+            assert!(buffer.window(later, 0.02).is_some());
+
+            // Re-reading the rejected sequence must not append it at a new time.
+            let later = now + Duration::from_millis(40);
+            buffer.ingest(Some(sample(later, 61, 99.)), later).unwrap();
+            assert_eq!(buffer.frames.len(), count);
+            buffer.ingest(Some(sample(later, 62, 1.24)), later).unwrap();
+            assert!(buffer.window(later, 0.02).is_some());
+            assert_eq!(buffer.frames.back().unwrap().frame.position[0], 1.24);
+
+            // History cannot provide future frames indefinitely when input stops.
+            assert!(
+                buffer
+                    .window(later + Duration::from_secs(1), 0.02)
+                    .is_none()
+            );
+        }
     }
     #[test]
     fn malformed_layout_and_short_delay_are_rejected() {

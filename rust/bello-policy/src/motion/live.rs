@@ -27,7 +27,7 @@ pub struct Config {
     pub start_time_seconds: f64,
     pub transition_seconds: f64,
     pub max_tilt_error_radians: f64,
-    pub max_raw_action_abs: f32,
+    pub max_raw_action_abs: Option<f32>,
 }
 
 /// A first interrupt requests a blended return without cancelling an in-flight ACK.
@@ -88,6 +88,10 @@ pub struct Live {
 
 impl Live {
     pub async fn connect(motion: Motion, standing: &Locomotion, config: Config) -> Result<Self> {
+        ensure!(
+            config.max_raw_action_abs.is_some(),
+            "named motion requires max_raw_action_abs"
+        );
         Self::connect_backend(Backend::Mimic(Box::new(motion)), standing, config).await
     }
 
@@ -113,7 +117,7 @@ impl Live {
                 start_time_seconds: 0.,
                 transition_seconds: config.transition_seconds,
                 max_tilt_error_radians: config.max_tilt_error_radians,
-                max_raw_action_abs: config.max_raw_action_abs,
+                max_raw_action_abs: None,
             },
         )
         .await
@@ -146,10 +150,9 @@ impl Live {
                 && config.start_time_seconds < motion.duration(),
             "invalid motion start time"
         );
-        for value in [
-            config.transition_seconds,
-            f64::from(config.max_raw_action_abs),
-        ] {
+        for value in std::iter::once(config.transition_seconds)
+            .chain(config.max_raw_action_abs.map(f64::from))
+        {
             ensure!(
                 value.is_finite() && value > 0. && value < 86400.,
                 "invalid motion control limit/timing"
@@ -526,12 +529,14 @@ impl Live {
                 };
             sample.initialize = matches!(&self.phase, Phase::ToMotion(t) if t.step == 0);
             let result = self.motion.step(&sample, feedback).and_then(|step| {
-                ensure!(
-                    step.raw_action
-                        .iter()
-                        .all(|a| a.is_finite() && a.abs() <= self.config.max_raw_action_abs),
-                    anyhow::anyhow!("implausible motion action").context(PolicyFailure)
-                );
+                // SONIC clips actions inside its exported graph, matching evaluation.
+                // The additional raw-action guard belongs to named BeyondMimic motions.
+                if let Some(limit) = self.config.max_raw_action_abs {
+                    ensure!(
+                        step.raw_action.iter().all(|a| a.abs() <= limit),
+                        anyhow::anyhow!("implausible motion action").context(PolicyFailure)
+                    );
+                }
                 Ok(step)
             });
             match result {

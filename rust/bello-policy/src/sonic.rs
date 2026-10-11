@@ -1,7 +1,8 @@
-//! SONIC reference/proprioception assembly from bundled prerecorded clips.
+//! SONIC reference/proprioception assembly for prerecorded and live references.
 
 use anyhow::{Context, Result, ensure};
 use glam::{DQuat, DVec3, EulerRot};
+use mujoco_rs::prelude::{MjModel, MjtJoint, MjtObj};
 use serde::{Deserialize, Serialize};
 
 use crate::Policy;
@@ -43,9 +44,81 @@ pub struct Step {
 
 #[derive(Clone, Debug)]
 pub struct ReferenceFrame {
+    /// Logical joints in `Sonic::joint_names()` order, for both live and clip input.
     pub position: Vec<f64>,
     pub velocity: Vec<f64>,
     pub orientation: DQuat,
+}
+
+struct ReferenceLayout {
+    qpos_indices: Vec<usize>,
+    qvel_indices: Vec<usize>,
+    training_order: Vec<usize>,
+}
+
+impl ReferenceLayout {
+    fn load(physics: &[u8], joint_names: &[String]) -> Result<Self> {
+        ensure!(
+            unsafe { mujoco_rs::mujoco_c::mj_version() }
+                == mujoco_rs::mujoco_c::mjVERSION_HEADER as i32,
+            "loaded MuJoCo must match the pinned bindings"
+        );
+        let model = MjModel::from_xml_string(std::str::from_utf8(physics)?)?;
+        let n = joint_names.len();
+        ensure!(
+            model.nq() as usize == n + 7
+                && model.nv() as usize == n + 6
+                && model.jnt_type()[0] == MjtJoint::mjJNT_FREE,
+            "SONIC model must have one floating base and scalar joints"
+        );
+        let mut qpos_indices = Vec::with_capacity(n);
+        let mut qvel_indices = Vec::with_capacity(n);
+        let mut training_order = vec![usize::MAX; n];
+        for (named_index, name) in joint_names.iter().enumerate() {
+            let id = model
+                .name_to_id(MjtObj::mjOBJ_JOINT, name)
+                .with_context(|| format!("missing SONIC joint {name}"))?;
+            ensure!(
+                matches!(
+                    model.jnt_type()[id],
+                    MjtJoint::mjJNT_HINGE | MjtJoint::mjJNT_SLIDE
+                ),
+                "SONIC joint must be scalar: {name}"
+            );
+            let qpos = model.jnt_qposadr()[id] as usize;
+            let qvel = model.jnt_dofadr()[id] as usize;
+            ensure!(
+                qpos >= 7 && qvel >= 6 && qpos - 7 == qvel - 6,
+                "invalid SONIC reference coordinates for {name}"
+            );
+            let slot = &mut training_order[qpos - 7];
+            ensure!(*slot == usize::MAX, "duplicate SONIC joint {name}");
+            *slot = named_index;
+            qpos_indices.push(qpos);
+            qvel_indices.push(qvel);
+        }
+        Ok(Self {
+            qpos_indices,
+            qvel_indices,
+            training_order,
+        })
+    }
+
+    fn encode_joints(&self, settings: &Settings, frame: &ReferenceFrame) -> (Vec<f64>, Vec<f64>) {
+        let mut position = settings.source_neutral.clone();
+        let mut velocity = vec![0.; position.len()];
+        // Existing checkpoints applied the embodiment codec to raw MuJoCo
+        // qpos[7..]/qvel[6..], not named policy order. Preserve that learned
+        // encoding for references only; feedback and actions stay named.
+        for (target, &named) in self.training_order.iter().enumerate() {
+            let source = settings.source_joint_indices[target];
+            let sign = settings.source_signs[target];
+            position[source] = settings.source_neutral[source]
+                + (frame.position[named] - settings.default_joint_position[target]) * sign;
+            velocity[source] = frame.velocity[named] * sign;
+        }
+        (position, velocity)
+    }
 }
 
 pub struct Sonic {
@@ -56,6 +129,7 @@ pub struct Sonic {
     history: Vec<f32>,
     last_action: Vec<f32>,
     root_from_hardware_imu: DQuat,
+    reference_layout: ReferenceLayout,
 }
 
 impl Sonic {
@@ -138,6 +212,7 @@ impl Sonic {
             !settings.hardware_imu_frame.is_empty(),
             "missing SONIC hardware IMU frame"
         );
+        let reference_layout = ReferenceLayout::load(&policy.physics_xml, &settings.joint_names)?;
         let root_from_hardware_imu =
             checked_quaternion(DQuat::from_array(settings.root_from_hardware_imu_xyzw))?;
         let layout = [
@@ -165,6 +240,7 @@ impl Sonic {
             history: Vec::new(),
             last_action: vec![0.; n],
             root_from_hardware_imu,
+            reference_layout,
         })
     }
 
@@ -226,8 +302,18 @@ impl Sonic {
                 let offset = (i as f32 * self.settings.future_dt as f32 * fps).round_ties_even();
                 let sample = clip.sample_frame(f64::from(frame + offset));
                 ReferenceFrame {
-                    position: sample.qpos[7..].to_vec(),
-                    velocity: sample.qvel[6..].to_vec(),
+                    position: self
+                        .reference_layout
+                        .qpos_indices
+                        .iter()
+                        .map(|&i| sample.qpos[i])
+                        .collect(),
+                    velocity: self
+                        .reference_layout
+                        .qvel_indices
+                        .iter()
+                        .map(|&i| sample.qvel[i])
+                        .collect(),
                     orientation: from_wxyz(sample.qpos[3..7].try_into().unwrap()),
                 }
             })
@@ -299,16 +385,8 @@ impl Sonic {
                 "invalid SONIC reference joints"
             );
             let reference_orientation = checked_quaternion(sample.orientation)?;
-            let mut source_position = self.settings.source_neutral.clone();
-            let mut source_velocity = vec![0.; source_position.len()];
-            for target in 0..n {
-                let source = self.settings.source_joint_indices[target];
-                let sign = self.settings.source_signs[target];
-                source_position[source] = self.settings.source_neutral[source]
-                    + (sample.position[target] - self.settings.default_joint_position[target])
-                        * sign;
-                source_velocity[source] = sample.velocity[target] * sign;
-            }
+            let (source_position, source_velocity) =
+                self.reference_layout.encode_joints(&self.settings, sample);
             source_positions.extend(source_position);
             source_velocities.extend(source_velocity);
             root_orientations.push(rotation_6d(
@@ -395,6 +473,66 @@ fn rotation_6d(value: DQuat) -> [f64; 6] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PHYSICS: &[u8] = br#"<mujoco><worldbody><body><freejoint/>
+        <geom type="sphere" size=".1" mass="1"/>
+        <body><joint name="a"/><geom type="sphere" size=".1" mass="1"/></body>
+        <body><joint name="b"/><geom type="sphere" size=".1" mass="1"/></body>
+        <body><joint name="c"/><geom type="sphere" size=".1" mass="1"/></body>
+        </body></worldbody></mujoco>"#;
+
+    #[test]
+    fn named_live_reference_preserves_training_coordinate_order() {
+        let names = ["c", "a", "b"].map(String::from);
+        let layout = ReferenceLayout::load(PHYSICS, &names).unwrap();
+        assert_eq!(layout.qpos_indices, [9, 7, 8]);
+        assert_eq!(layout.qvel_indices, [8, 6, 7]);
+        let settings = Settings {
+            hardware_imu_frame: "imu".into(),
+            joint_names: names.to_vec(),
+            joint_from_motor: vec![],
+            default_joint_position: vec![0.1, 0.2, 0.3],
+            action_clip: 20.,
+            reference_clips: vec![],
+            future_frames: 10,
+            future_dt: 0.1,
+            source_joint_indices: vec![2, 0, 3],
+            source_neutral: vec![10., 20., 30., 40.],
+            source_signs: vec![-1., 1., -1.],
+            root_from_hardware_imu_xyzw: [0., 0., 0., 1.],
+        };
+        let live = ReferenceFrame {
+            position: vec![3., 1., 2.],
+            velocity: vec![30., 10., 20.],
+            orientation: DQuat::IDENTITY,
+        };
+        let (position, velocity) = layout.encode_joints(&settings, &live);
+        assert_eq!(position, [11.8, 20., 29.1, 37.3]);
+        assert_eq!(velocity, [20., 0., -10., -30.]);
+        // Both callers expose named joints, even though the clip is stored in
+        // generalized coordinates and the source codec preserves training order.
+        let qpos = [0., 0., 1., 1., 0., 0., 0., 1., 2., 3.];
+        let qvel = [0., 0., 0., 0., 0., 0., 10., 20., 30.];
+        let clip = ReferenceFrame {
+            position: layout.qpos_indices.iter().map(|&i| qpos[i]).collect(),
+            velocity: layout.qvel_indices.iter().map(|&i| qvel[i]).collect(),
+            orientation: DQuat::IDENTITY,
+        };
+        assert_eq!(layout.encode_joints(&settings, &clip), (position, velocity));
+        assert_eq!(live.position, [3., 1., 2.]);
+    }
+
+    #[test]
+    fn reference_layout_rejects_missing_duplicate_and_nonfloating_models() {
+        for names in [["a", "b", "missing"], ["a", "b", "a"], ["a", "b", "c"]] {
+            let physics = if names == ["a", "b", "c"] {
+                b"<mujoco/>".as_slice()
+            } else {
+                PHYSICS
+            };
+            assert!(ReferenceLayout::load(physics, &names.map(String::from)).is_err());
+        }
+    }
 
     #[test]
     fn rotation_6d_is_row_major_first_two_columns() {
