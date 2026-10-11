@@ -1,9 +1,24 @@
 import * as THREE from "three";
 
 const axes = [
-  { label: "X", direction: new THREE.Vector3(1, 0, 0), color: "#ee4b55" },
-  { label: "Y", direction: new THREE.Vector3(0, 1, 0), color: "#42b960" },
-  { label: "Z", direction: new THREE.Vector3(0, 0, 1), color: "#498bfa" },
+  {
+    label: "X",
+    direction: new THREE.Vector3(1, 0, 0),
+    color: "#ee4b55",
+    labelOffset: [8, 4],
+  },
+  {
+    label: "Y",
+    direction: new THREE.Vector3(0, 1, 0),
+    color: "#42b960",
+    labelOffset: [0, -8],
+  },
+  {
+    label: "Z",
+    direction: new THREE.Vector3(0, 0, 1),
+    color: "#498bfa",
+    labelOffset: [-8, 4],
+  },
 ];
 
 export function drawAxisIndicator(canvas, camera) {
@@ -35,8 +50,8 @@ export function drawAxisIndicator(canvas, camera) {
     context.fillStyle = axis.color;
     context.fillText(
       axis.label,
-      x + (axis.direction.x >= 0 ? 7 : -7),
-      y + (axis.direction.y >= 0 ? -7 : 7),
+      x + axis.labelOffset[0],
+      y + axis.labelOffset[1],
     );
   }
 }
