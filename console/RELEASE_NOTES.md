@@ -1,4 +1,4 @@
-## Bello Mini Console 0.3.0 (unreleased)
+## Bello Mini Console 0.3.0
 
 - Stream movement intent continuously while mapping gamepad buttons to semantic operator actions in the console. The runner still validates transitions, neutral input, hold timing, movement bounds, and the 250 ms watchdog.
 - Make the on-screen abort and Hold to idle buttons stream a held abort action, timed by the runner. Keep Clear fault as a separate neutral-input request and report rejected recovery immediately.
