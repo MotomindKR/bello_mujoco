@@ -1,3 +1,7 @@
+## Bello Mini Console 0.3.4
+
+- Fix the macOS Settings smoke test so the Linux Switch Pro trigger fix can be published. The console behavior is unchanged from the tagged 0.3.3 build; that build was not published after its macOS test failed.
+
 ## Bello Mini Console 0.3.3
 
 - Fix Nintendo Switch Pro controller ZL/ZR input on Linux. SDL now uses the kernel event device, which reports reliable press and release events instead of invalid trigger axis values. This restores held abort and fault recovery without changing the runner protocol.

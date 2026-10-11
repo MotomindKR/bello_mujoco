@@ -1157,7 +1157,10 @@ async function serve(service, implementation) {
       await page
         .getByRole("button", { name: "Settings", exact: true })
         .dispatchEvent("click");
-      await page.getByRole("radio", { name: label, exact: true }).check();
+      await page
+        .getByRole("radio", { name: label, exact: true })
+        .locator("..")
+        .click();
       await page
         .getByRole("button", { name: "Save", exact: true })
         .dispatchEvent("click");
@@ -1541,7 +1544,10 @@ async function serve(service, implementation) {
       ["Switch", "switch", "ZL"],
     ]) {
       await page.getByRole("button", { name: "Settings", exact: true }).click();
-      await page.getByRole("radio", { name: label, exact: true }).check();
+      await page
+        .getByRole("radio", { name: label, exact: true })
+        .locator("..")
+        .click();
       assert.equal(
         await page
           .locator("dialog .gamepad-button img")
@@ -1591,7 +1597,10 @@ async function serve(service, implementation) {
         .isChecked(),
       true,
     );
-    await page.getByRole("radio", { name: "Xbox", exact: true }).check();
+    await page
+      .getByRole("radio", { name: "Xbox", exact: true })
+      .locator("..")
+      .click();
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
     assert.equal(
       JSON.parse(fs.readFileSync(configPath)).controllerStyle,
