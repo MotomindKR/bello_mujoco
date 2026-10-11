@@ -1,15 +1,15 @@
-## Bello Mini Console 0.2.6
+## Bello Mini Console 0.2.7
 
 ### Changes
 
-- Show **Startup blocked** when the runner is waiting for safe, fresh feedback instead of offering the Hold chord.
-- Keep the operator service online and Disarmed while IMU samples are missing, telemetry is stale, or startup feedback violates joint or tilt limits. Retry readiness checks without exhausting systemd restart attempts.
-- Require released controller inputs and a fresh Back+Start hold after startup readiness recovers. No motor lease or commands are issued while startup is blocked; joint limits remain enforced.
-- Allow the supported torso to tilt during assisted Sit lowering. Upright checks still apply before returning to Stand; hardware faults and explicit aborts retain their damping response.
+- Release the left or right controller bumper to switch console tabs. Pressing both remains the one-second abort or recovery chord and does not switch tabs.
+- Show Stand as the active intermediate state without offering it as a selectable mode. Mark the active mode and selected next mode separately.
+- Keep named motions visible in a horizontal list. D-pad up/down or a click selects a motion; a single fresh one-second A hold starts it.
+- After fault cleanup is ready, release inputs and hold A for one second to clear the fault. The on-screen Clear fault button remains available.
 
 ### Runner update
 
-Update the runner alongside the console to get startup recovery. Select **Back-down** for a supported lying start, or **Crane** for an upright suspended start. The shared bent pose remains hip pitch -0.8 rad / knee 1.2 rad. Policy bundles and hardware calibration are unchanged.
+Update the policy runner alongside the console. This release changes the operator protocol and mode selection behavior. The runner still owns control transitions, hardware recovery and the 250 ms operator-stream lease.
 
 ### Installers
 

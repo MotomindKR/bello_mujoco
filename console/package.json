@@ -1,7 +1,7 @@
 {
   "name": "bello-mini-console",
   "desktopName": "bello-mini-console.desktop",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "private": true,
   "description": "Read-only hardware and pose display with a runner-owned gamepad session",
   "main": "main.cjs",
