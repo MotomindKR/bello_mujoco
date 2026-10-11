@@ -1,7 +1,7 @@
 [Unit]
 Description=Jetson CAN pinmux and canonical Bello CAN setup
-After=systemd-modules-load.service sys-subsystem-net-devices-can0.device sys-subsystem-net-devices-can1.device
-Requires=sys-subsystem-net-devices-can0.device sys-subsystem-net-devices-can1.device
+After=systemd-modules-load.service bello-mcp2518fd.service sys-subsystem-net-devices-can0.device sys-subsystem-net-devices-can1.device sys-subsystem-net-devices-can2.device sys-subsystem-net-devices-can3.device sys-subsystem-net-devices-can4.device
+Requires=bello-mcp2518fd.service sys-subsystem-net-devices-can0.device sys-subsystem-net-devices-can1.device sys-subsystem-net-devices-can2.device sys-subsystem-net-devices-can3.device sys-subsystem-net-devices-can4.device
 RequiresMountsFor={checkout}
 Before=network-pre.target
 Wants=network-pre.target

@@ -65,6 +65,8 @@ def test_lima_template_is_isolated_and_provisions_vcan() -> None:
     assert '"$emulator_setup" start' in provision
     assert "vcan0" in template["probes"][0]["script"]
     assert "vcan1" in template["probes"][0]["script"]
+    assert "vcan2" in template["probes"][0]["script"]
+    assert "vcan3" in template["probes"][0]["script"]
 
 
 def test_lima_helper_is_valid_bash_and_documents_all_actions() -> None:

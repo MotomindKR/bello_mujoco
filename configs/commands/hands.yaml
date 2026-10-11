@@ -1,5 +1,6 @@
 protocol: linker_o6
-can_interface: can1
+left_can_interface: can2
+right_can_interface: can3
 left_hand_enabled: true
 right_hand_enabled: true
 can_probe_timeout_seconds: 0.5

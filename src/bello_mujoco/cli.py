@@ -96,7 +96,8 @@ class VastTrainCommandConfig:
 @dataclass(frozen=True)
 class HandsCommandConfig:
     protocol: Literal["linker_o6", "linker_l6"]
-    can_interface: str
+    left_can_interface: str
+    right_can_interface: str
     left_hand_enabled: bool
     right_hand_enabled: bool
     can_probe_timeout_seconds: float
@@ -513,7 +514,8 @@ def _hands_hydra(config: DictConfig) -> None:
     )
 
     can_config = LinkerHandsCanConfig(
-        interface=command.can_interface,
+        left_interface=command.left_can_interface,
+        right_interface=command.right_can_interface,
         model="O6" if command.protocol == "linker_o6" else "L6",
         left_enabled=command.left_hand_enabled,
         right_enabled=command.right_hand_enabled,

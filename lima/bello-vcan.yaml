@@ -110,6 +110,8 @@ probes:
       test -e /workspace/bello_mujoco/.git
       ip -details -json link show dev vcan0 | grep -q '"info_kind":"vcan"'
       ip -details -json link show dev vcan1 | grep -q '"info_kind":"vcan"'
+      ip -details -json link show dev vcan2 | grep -q '"info_kind":"vcan"'
+      ip -details -json link show dev vcan3 | grep -q '"info_kind":"vcan"'
       test -L /dev/ttyIMU
       test -L /dev/ttyIMU-mujoco
     hint: |

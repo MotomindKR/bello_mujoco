@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly queue_length=65536
-readonly interfaces=(vcan0 vcan1)
+readonly interfaces=(vcan0 vcan1 vcan2 vcan3)
 readonly action=${1:-start}
 
 if (( $# > 1 )) || [[ $action != start && $action != stop && $action != status ]]; then

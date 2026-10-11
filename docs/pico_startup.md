@@ -85,14 +85,14 @@ The default `arm=false` opens no CAN device and exits when an acceptable hand
 frame arrives. It fails if no acceptable frame arrives within ten seconds.
 
 For hand motion, confirm the actual Linker model, an already configured classic
-CAN interface, and both hands' calibrated open/closed endpoints in
+CAN interfaces, and both hands' calibrated open/closed endpoints in
 [hands.yaml](../configs/commands/hands.yaml). Pass local overrides on the CLI.
-For a confirmed O6 setup on `can1`, the command is:
+For the confirmed O6 setup with left on `can2` and right on `can3`, the command is:
 
 ```bash
 uv run bello-run-hands \
   xrobot.endpoint=127.0.0.1:50052 \
-  protocol=linker_o6 can_interface=can1 \
+  protocol=linker_o6 left_can_interface=can2 right_can_interface=can3 \
   arm=true calibration_confirmed=true
 ```
 

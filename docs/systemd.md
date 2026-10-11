@@ -59,7 +59,7 @@ before starting; user services never reconfigure buses or require root.
 | --- | --- |
 | Tracking host `:63901` | XRoboToolkit PC Service |
 | Tracking host `0.0.0.0:50052` | Typed native body and hand bridge |
-| Jetson `:50051` | Hardwared |
+| Jetson `:50051` | Hardwared (external TCP clients) |
 | Jetson `:50053` | State estimator |
 | Jetson `127.0.0.1:50056` | GMR joint references (`bello-reference`) |
 | Jetson `:50055` | Runner operator stream |
@@ -199,8 +199,8 @@ Jetson CAN integration from `deploy/systemd/`. Run it as the operator account;
 it uses `sudo` for system files and the system manager:
 
 - `bello-can-modules.conf`: loads `can`, `can_raw`, and `mttcan` at boot.
-- `onboard-can.service.in`: renders `onboard-can.service`, which waits for both
-  devices, verifies onboard controller identity, restores the existing AGX
+- `onboard-can.service.in`: renders `onboard-can.service`, which waits for all five CAN
+  devices and the `bello-mcp2518fd.service` SPI driver setup, verifies onboard controller identity, restores the existing AGX
   Orin pinmux, then runs bello-stack's
   canonical setup script. CAN bitrate/recovery/queue settings belong to that
   script, not a second local implementation.
@@ -215,7 +215,7 @@ The installer writes `/etc/modules-load.d/bello-can.conf`,
 `/etc/systemd/system/user@<operator-uid>.service.d/50-bello-can.conf`. The CAN
 service uses the selected `--checkout` for its mount dependency and setup
 script. These deployment-owned system files are replaced on subsequent robot
-installations. The script configures only `can0` and `can1`, at 1 Mbps classic
+installations. The script configures `can0` through `can4`, at 1 Mbps classic
 CAN, with 100 ms bus-off recovery and a 64-frame transmit queue.
 
 The previous `/usr/local/sbin/setup-onboard-can` implementation is no longer
@@ -224,8 +224,8 @@ The pinned bello-stack script remains the CAN configuration source.
 
 Installing/reloading units does not change current CAN settings. They take
 effect on the next safe boot. **Never restart `onboard-can` or run the setup
-script without `--check` while policy or hands are active**: it takes both buses
-down. The Jetson pinmux unit is hardware-specific, not for the tracking PC or
+script without `--check` while policy or hands are active**: it takes all five buses
+down. All five adapters must be present for setup and the read-only check to pass. The Jetson pinmux unit is hardware-specific, not for the tracking PC or
 arbitrary CAN adapters. Read-only inspection is safe:
 
 ```bash
@@ -310,7 +310,10 @@ sudo loginctl enable-linger "$USER"
 
 Set height to the operator's actual height. The calibration flag asserts that
 O6 endpoints in `configs/commands/hands.yaml` were physically checked; this
-deployment uses O6 on `can1`. Do not reuse it blindly for another hand model.
+deployment uses O6 with the left hand on `can2` and the right hand on `can3`,
+confirmed by read-only position queries on each bus. The hand config exposes
+`left_can_interface` and `right_can_interface`; set both to the same bus for
+shared-bus wiring. Do not reuse it blindly for another hand model.
 Supply the actual deployed bundle, its matching clean source checkout, and the
 reviewed runner YAML; all three policy options are required. `--checkout` is the
 current runtime checkout and can differ from the older `--policy-source`.
@@ -336,3 +339,18 @@ the checkout/dependencies, rebuild, rerun the installer, and deliberately start
 the target. `systemctl --user cat UNIT` shows its effective command. Never update
 running Python sources or overwrite running native binaries. Restart tracking
 only with the robot safe, since references may be lost and recovered.
+
+### Hardwared local IPC
+
+The Bello Mini hardware profile serves the same gRPC API over TCP `:50051`
+and `/run/user/1000/bello-hardwared.sock` simultaneously. The Unix socket is
+owned by the operator account with mode `0600`; its runtime directory must
+exist. Local policy and estimator clients use
+`unix:///run/user/1000/bello-hardwared.sock`. TCP remains available to external
+clients. Both transports share telemetry and exclusive motor-group leases.
+`grpc.listen` is a list of endpoints, including for single-listener profiles.
+
+The Bello Mini hardware profile transmits the latest accepted motor target at
+300 Hz while the policy runs at its trained 50 Hz timestep. Periodic motor
+reporting is disabled during Running and restored for idle/damping/fault
+monitoring. Retransmission never renews a target's original expiry or its lease.

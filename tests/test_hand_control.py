@@ -73,13 +73,19 @@ def make_transport(config: LinkerHandsCanConfig, clock: FakeClock):
     return transport, endpoints
 
 
-def test_transport_probes_both_hands_before_exposing_positions() -> None:
+@pytest.mark.parametrize("interfaces", (("can2", "can3"), ("can1", "can1")))
+def test_transport_probes_both_hands_before_exposing_positions(interfaces) -> None:
     clock = FakeClock()
-    transport, endpoints = make_transport(LinkerHandsCanConfig(), clock)
+    config = LinkerHandsCanConfig(
+        left_interface=interfaces[0], right_interface=interfaces[1]
+    )
+    transport, endpoints = make_transport(config, clock)
 
     with transport:
         assert set(endpoints) == {"left", "right"}
         assert all(endpoint.probes == 1 for endpoint in endpoints.values())
+        assert endpoints["left"].interface == interfaces[0]
+        assert endpoints["right"].interface == interfaces[1]
         assert transport.initial_positions["left"] == (250, 200, 240, 230, 220, 210)
 
     assert all(endpoint.closed for endpoint in endpoints.values())
@@ -179,7 +185,8 @@ def test_transport_refresh_returns_new_physical_position() -> None:
 @pytest.mark.parametrize(
     "changes",
     (
-        {"interface": ""},
+        {"left_interface": ""},
+        {"right_interface": "can3\0"},
         {"left_enabled": False, "right_enabled": False},
         {"probe_timeout_seconds": 0.0},
         {

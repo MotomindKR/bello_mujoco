@@ -20,9 +20,10 @@ HandSide = Literal["left", "right"]
 
 @dataclass(frozen=True, slots=True)
 class LinkerHandsCanConfig:
-    """Shared-bus settings for two Linker O6/L6-compatible hands."""
+    """Per-hand bus settings for two Linker O6/L6-compatible hands."""
 
-    interface: str = "can1"
+    left_interface: str = "can2"
+    right_interface: str = "can3"
     model: Literal["O6", "L6"] = "O6"
     left_enabled: bool = True
     right_enabled: bool = True
@@ -32,8 +33,10 @@ class LinkerHandsCanConfig:
     tx_spacing_seconds: float = 0.003
 
     def __post_init__(self) -> None:
-        if not self.interface or "\0" in self.interface:
-            raise ValueError("hand SocketCAN interface must be nonempty")
+        for name in ("left_interface", "right_interface"):
+            interface = getattr(self, name)
+            if not interface or "\0" in interface:
+                raise ValueError(f"{name} must be a nonempty SocketCAN interface")
         if self.model not in {"O6", "L6"}:
             raise ValueError("hand model must be O6 or L6")
         if not self.left_enabled and not self.right_enabled:
@@ -97,7 +100,7 @@ class LinkerHandsCanTransport:
         try:
             for side in self._configured_sides():
                 endpoint = self._endpoint_factory(
-                    self.config.interface,
+                    getattr(self.config, f"{side}_interface"),
                     LinkerHandAddress(self.config.model, side),
                 )
                 self._endpoints[side] = endpoint

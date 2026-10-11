@@ -203,7 +203,8 @@ def test_hands_command_wires_xrobot_mapping_and_l6_transport(
     can = captured["can"]
     assert isinstance(can, hand_control.LinkerHandsCanConfig)
     assert can.model == "L6"
-    assert can.interface == "can1"
+    assert can.left_interface == "can2"
+    assert can.right_interface == "can3"
     assert can.left_enabled and not can.right_enabled
     runtime = captured["xrobot"]
     assert isinstance(runtime, xrobot_hands.XRobotHandsConfig)

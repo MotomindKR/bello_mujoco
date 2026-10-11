@@ -182,7 +182,7 @@ def test_robot_installs_can_before_enabling_user_target(
     escaped_script = script.replace("%", "%%").replace("$", "$$")
     assert f'ExecStart=/usr/bin/bash "{escaped_script}"\n' in unit
     assert (
-        "Requires=sys-subsystem-net-devices-can0.device sys-subsystem-net-devices-can1.device\n"
+        "Requires=bello-mcp2518fd.service sys-subsystem-net-devices-can0.device sys-subsystem-net-devices-can1.device sys-subsystem-net-devices-can2.device sys-subsystem-net-devices-can3.device sys-subsystem-net-devices-can4.device\n"
         in unit
     )
     ordering = installed["/etc/systemd/system/user@1234.service.d/50-bello-can.conf"]
@@ -224,6 +224,9 @@ def test_policy_unit_uses_explicit_bundle_and_orders_cleanup(
     units = tmp_path / ".config/systemd/user"
     target = (units / "bello-robot.target").read_text()
     policy = (units / "bello-policy.service").read_text()
+    hands = (units / "bello-hands.service").read_text()
+    assert '"left_can_interface=can2"' in hands
+    assert '"right_can_interface=can3"' in hands
     assert "bello-policy.service" in target
     assert "PartOf=bello-robot.target\n" in policy
     for prefix in ("After=", "Wants="):

@@ -19,7 +19,7 @@ usage() {
 Usage: ./scripts/lima_vcan.sh <command> [arguments]
 
 Commands:
-  start       Create or start the Lima VM and prepare vcan0/vcan1 and IMU PTYs.
+  start       Create or start the Lima VM and prepare vcan0 through vcan3 and IMU PTYs.
   bootstrap   Build the Linux Nix shell and synchronize its isolated uv environment.
   shell       Open an interactive Linux Nix development shell.
   run CMD...  Run CMD inside the Linux Nix shell (TTY is preserved).

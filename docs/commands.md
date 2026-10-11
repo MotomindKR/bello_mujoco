@@ -95,6 +95,11 @@ command is required for a fixed-arm locomotion policy. See
 [live references and hands](hardware.md#live-references-and-hands) for the pose
 contract, validity rules, and freshness settings.
 
+The hand command selects its buses with `left_can_interface` (default `can2`)
+and `right_can_interface` (default `can3`). Set both to the same interface for
+shared-bus wiring. These fields replace the single `can_interface` setting;
+the transport probes both enabled hands before accepting position writes.
+
 ## Remote jobs
 
 See [Vast.ai](vast_ai.md). Remote completion/failure and the host deadline own
