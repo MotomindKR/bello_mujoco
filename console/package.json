@@ -1,9 +1,9 @@
 {
   "name": "bello-mini-console",
   "desktopName": "bello-mini-console.desktop",
-  "version": "0.2.9",
+  "version": "0.3.0",
   "private": true,
-  "description": "Read-only hardware and pose display with a runner-owned gamepad session",
+  "description": "Bello Mini console with semantic operator actions and runner-owned control",
   "main": "main.cjs",
   "scripts": {
     "build:ui": "vite build",

@@ -233,7 +233,7 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
                 fake.reference_failure = failure
             if failure == "abort_return":
                 operator.wait(lambda s: s.phase == "returning to neutral")
-                operator.press(1.1, l1=True, r1=True)
+                operator.press(1.1, l2=True, r2=True)
                 operator.wait(
                     lambda s: s.mode == operator_pb.MODE_FAULT and s.can_clear_fault
                 )
@@ -268,7 +268,7 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
             operator.press()
             operator.press(1.1, a=True)
             operator.wait(lambda s: s.mode == operator_pb.MODE_TRACKING)
-            operator.press(1.1, l1=True, r1=True)
+            operator.press(1.1, l2=True, r2=True)
             operator.wait(
                 lambda s: s.mode == operator_pb.MODE_FAULT and s.can_clear_fault
             )

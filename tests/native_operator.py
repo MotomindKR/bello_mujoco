@@ -1,4 +1,4 @@
-"""Controller client for loopback runner integration tests."""
+"""Operator client for loopback runner integration tests."""
 
 import socket
 import threading
@@ -24,11 +24,12 @@ class OperatorClient:
         self.error = None
         self.closed = threading.Event()
         self.paused = threading.Event()
+        self.previous = {}
         self.channel = grpc.insecure_channel(endpoint)
         grpc.channel_ready_future(self.channel).result(timeout=8)
         method = self.channel.stream_stream(
             "/bello.operator.v1.OperatorService/Exchange",
-            request_serializer=pb.ControllerSample.SerializeToString,
+            request_serializer=pb.OperatorInput.SerializeToString,
             response_deserializer=pb.OperatorStatus.FromString,
         )
         self.call = method(self.samples())
@@ -45,14 +46,111 @@ class OperatorClient:
                 continue
             sequence += 1
             fields = dict(self.buttons)
-            if self.fake and self.fake.abort:
-                fields.update(l1=True, r1=True)
-            yield pb.ControllerSample(
+            forward = fields.pop("forward", 0.0)
+            lateral = fields.pop("lateral", 0.0)
+            yaw = fields.pop("yaw", 0.0)
+            selection = fields.pop("selection", None)
+            buttons = {
+                name: bool(fields.pop(name, False))
+                for name in (
+                    "back",
+                    "start",
+                    "a",
+                    "y",
+                    "l1",
+                    "r1",
+                    "l2",
+                    "r2",
+                    "dpad_up",
+                    "dpad_down",
+                    "dpad_left",
+                    "dpad_right",
+                )
+            }
+            if fields:
+                raise ValueError(f"unknown controller controls: {sorted(fields)}")
+            if not self.connected:
+                forward = lateral = yaw = 0.0
+                buttons = dict.fromkeys(buttons, False)
+            neutral_axes = all(abs(value) <= 0.05 for value in (forward, lateral, yaw))
+            other_controls = any(
+                value for name, value in buttons.items() if name not in ("l2", "r2")
+            )
+            abort = bool(self.fake and self.fake.abort) or (
+                buttons["l2"] and buttons["r2"]
+            )
+            confirm = (
+                buttons["a"]
+                and not abort
+                and not any(
+                    value
+                    for name, value in buttons.items()
+                    if name
+                    not in ("a", "dpad_up", "dpad_down", "dpad_left", "dpad_right")
+                )
+            )
+            mode = self.status.mode if self.status else pb.MODE_DISARMED
+            selected = self.status.selected if self.status else ""
+            mode_step = int(
+                buttons["dpad_right"]
+                and not buttons["dpad_left"]
+                and not self.previous.get("dpad_right")
+            ) - int(
+                buttons["dpad_left"]
+                and not buttons["dpad_right"]
+                and not self.previous.get("dpad_left")
+            )
+            motion_step = int(
+                buttons["dpad_down"]
+                and not buttons["dpad_up"]
+                and not self.previous.get("dpad_down")
+            ) - int(
+                buttons["dpad_up"]
+                and not buttons["dpad_down"]
+                and not self.previous.get("dpad_up")
+            )
+            toggle_tracking = buttons["y"] and not self.previous.get("y")
+            self.previous = buttons
+            yield pb.OperatorInput(
                 sequence=sequence,
                 sample_monotonic_ns=time.monotonic_ns(),
                 connected=self.connected,
                 name="synthetic controller",
-                **fields,
+                forward=forward,
+                lateral=lateral,
+                yaw=yaw,
+                controls_neutral=neutral_axes and not any(buttons.values()),
+                abort_other_controls_neutral=neutral_axes and not other_controls,
+                request_hold=buttons["back"]
+                and buttons["start"]
+                and not abort
+                and not any(
+                    value
+                    for name, value in buttons.items()
+                    if name not in ("back", "start")
+                ),
+                confirm_startup=confirm and mode == pb.MODE_HOLD,
+                confirm_sit=confirm and mode == pb.MODE_SIT,
+                confirm_fault_recovery=confirm and mode == pb.MODE_FAULT,
+                request_mode=(
+                    selected
+                    if mode == pb.MODE_STAND
+                    else "Stand"
+                    if mode in (pb.MODE_LOCOMOTION, pb.MODE_TRACKING)
+                    else ""
+                )
+                if confirm
+                else "",
+                abort=abort,
+                selection=selection,
+                mode_step=mode_step,
+                motion_step=motion_step,
+                navigating=any(
+                    buttons[name]
+                    for name in ("dpad_up", "dpad_down", "dpad_left", "dpad_right")
+                ),
+                toggle_tracking=toggle_tracking,
+                input_protocol_version=3,
             )
             self.closed.wait(0.02)
 

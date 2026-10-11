@@ -2,44 +2,44 @@ syntax = "proto3";
 package bello.operator.v1;
 
 service OperatorService {
-  rpc Exchange(stream ControllerSample) returns (stream OperatorStatus);
+  rpc Exchange(stream OperatorInput) returns (stream OperatorStatus);
 }
 
-message ControllerSample {
-  // Strictly increasing within one operator session.
+message OperatorInput {
+  // Strictly increasing within one operator session. Samples arrive every 20 ms.
   uint64 sequence = 1;
   uint64 sample_monotonic_ns = 2;
   bool connected = 3;
   string name = 4;
-  // Normalized semantic intent in [-1, 1]: forward, right, counterclockwise yaw.
-  // The runner projects this intent into the bundle command frame.
+  // Normalized movement intent in [-1, 1]: forward, right, counterclockwise yaw.
+  // The runner projects this into the bundle command frame and enforces limits.
   double forward = 5;
   double lateral = 6;
   double yaw = 7;
-  bool back = 8;
-  bool start = 9;
-  bool a = 10;
-  bool r1 = 11;
-  bool dpad_up = 12;
-  bool dpad_down = 13;
-  // Explicit console request. Only accepted after fault cleanup, with neutral inputs.
+  // The console reports physical input neutrality; the runner also checks axes
+  // and actions. This prevents a held unmapped control from arming on reconnect.
+  bool controls_neutral = 8;
+  // Continuously asserted while held. The runner owns hold timing and transitions.
+  bool request_hold = 9;
+  bool confirm_startup = 10;
+  // Target mode, or Stand to exit Locomotion/Tracking. Must match the selected
+  // choice where selection applies. The runner requires a fresh one-second hold.
+  string request_mode = 11;
+  bool confirm_sit = 12;
+  bool abort = 13;
+  // One-shot console request after fault cleanup; accepted only at neutral input.
   bool clear_fault = 14;
-  // Bumpers are reserved for console tab navigation.
-  bool l1 = 15;
-  // Horizontal mode selection; up/down select within the Motion mode.
-  bool dpad_left = 16;
-  bool dpad_right = 17;
-  // Console hold-to-abort request, independent of gamepad connection.
-  bool abort = 18;
-  // Console selection only; never starts control. Accepted in Stand; startup choice only in Disarmed.
-  Selection selection = 19;
-  // Rising edge toggles upper-body tracking in Locomotion when configured.
-  bool y = 20;
-  // Abort requires both triggers continuously for one second.
-  bool l2 = 21;
-  bool r2 = 22;
-  // Required by the runner before accepting any operator input.
-  uint32 input_protocol_version = 23;
+  // One-shot semantic selection and navigation actions.
+  Selection selection = 15;
+  sint32 mode_step = 16;
+  sint32 motion_step = 17;
+  bool toggle_tracking = 18;
+  uint32 input_protocol_version = 19;
+  // Neutrality excluding the abort control itself, for Fault-to-Idle recovery.
+  bool abort_other_controls_neutral = 20;
+  bool confirm_fault_recovery = 21;
+  // True while a mode or motion selection control is held.
+  bool navigating = 22;
 }
 
 message Selection {
@@ -96,7 +96,7 @@ message OperatorStatus {
   string sonic_status = 27;
   repeated string startups = 28;
   string selected_startup = 29;
-  // Assisted startup/Sit phase can accept a fresh one-second A confirmation.
+  // Assisted startup/Sit phase can accept a fresh confirmation.
   bool startup_ready = 30;
   // Console must check this before sending operator input.
   uint32 input_protocol_version = 31;

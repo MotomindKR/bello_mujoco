@@ -412,7 +412,7 @@ def test_failed_motion_blends_to_stand_without_releasing_control(
         np.testing.assert_allclose(fake.targets[-1], [0.2, -0.3, 0.4], atol=1e-6)
         assert np.max(np.abs(np.diff(np.asarray(fake.targets), axis=0))) <= 0.020001
         # Recovery retains control, so a subsequent abort must still damp.
-        operator.press(1.1, l1=True, r1=True)
+        operator.press(1.1, l2=True, r2=True)
         operator.wait(lambda status: status.mode == operator_pb.MODE_FAULT)
         deadline = time.monotonic() + 3
         while fake.state != hardware_proto.GROUP_STATE_DAMPED:
@@ -936,7 +936,7 @@ def test_two_named_motions_and_operator_loss(
             operator = OperatorClient(address, fake)
             operator.wait(lambda status: status.mode == operator_pb.MODE_STAND)
             assert_control_retained()
-        operator.press(1.1, l1=True, r1=True)
+        operator.press(1.1, l2=True, r2=True)
         operator.wait(lambda status: status.mode == operator_pb.MODE_FAULT)
         deadline = time.monotonic() + 3
         while "release" not in fake.calls and time.monotonic() < deadline:

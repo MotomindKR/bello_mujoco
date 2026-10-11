@@ -17,7 +17,11 @@ const { pathToFileURL } = require("node:url");
 const grpc = require("@grpc/grpc-js");
 const loader = require("@grpc/proto-loader");
 const { validateConnections, validateSettings } = require("./settings.cjs");
-const { sampleController, createTabNavigator } = require("./controller.cjs");
+const {
+  sampleController,
+  createTabNavigator,
+  createOperatorMapper,
+} = require("./controller.cjs");
 const { trackingFrame } = require("./tracking.cjs");
 const { emptyTelemetry, displaySnapshot } = require("./snapshot.cjs");
 const {
@@ -107,10 +111,10 @@ let controller = null;
 let sdl;
 let sequence = 0n;
 const tabNavigation = createTabNavigator();
+const mapOperatorInput = createOperatorMapper();
 let operatorCall;
 let pendingClear;
-let abortHoldTimer;
-let pendingStop = null;
+let onScreenAbort = null;
 let pendingSelection;
 let checkedUpdate = null;
 let installingUpdate = false;
@@ -195,8 +199,7 @@ async function installLinuxPackage(candidate, filename) {
   });
 }
 function cancelAbortHold() {
-  clearTimeout(abortHoldTimer);
-  abortHoldTimer = null;
+  onScreenAbort = null;
 }
 
 function finishClear(error) {
@@ -292,7 +295,6 @@ function controllerSample() {
     sequence: sequence.toString(),
     sampleMonotonicNs: process.hrtime.bigint().toString(),
     ...sample,
-    inputProtocolVersion: 2,
   };
 }
 function reconnectingStream(service, create) {
@@ -442,9 +444,9 @@ function startOperator() {
       snapshot.operator = status;
       mark(
         "runner",
-        status.inputProtocolVersion === 2
+        status.inputProtocolVersion === 3
           ? ""
-          : "Runner update required for trigger abort controls.",
+          : "Runner update required for semantic operator actions.",
       );
       if (
         pendingClear?.sequence &&
@@ -458,7 +460,6 @@ function startOperator() {
       if (operatorCall === call) {
         operatorCall = null;
         cancelAbortHold();
-        pendingStop = null;
         pendingSelection = null;
         finishClear(
           "Runner disconnected while clearing fault. Check its status before retrying.",
@@ -500,7 +501,6 @@ function startTracking() {
 
 function stopConnections() {
   cancelAbortHold();
-  pendingStop = null;
   pendingSelection = null;
   finishClear(
     "Connections changed while clearing fault. Check runner status before retrying.",
@@ -605,7 +605,6 @@ app.whenReady().then(() => {
       cancelAbortHold();
       return {};
     }
-    if (abortHoldTimer) return {};
     const call = operatorCall;
     if (!runnerReady(call)) return { error: "Runner unavailable." };
     const matchesAction = () =>
@@ -615,10 +614,7 @@ app.whenReady().then(() => {
         : snapshot.operator?.mode !== "MODE_FAULT";
     if (!matchesAction())
       return { error: "Wait for the runner to finish stopping." };
-    abortHoldTimer = setTimeout(() => {
-      // Keep the timer set until release so key repeats cannot retrigger it.
-      if (runnerReady(call) && matchesAction()) pendingStop = action;
-    }, 1000);
+    onScreenAbort = { call, action };
     return {};
   });
   ipcMain.handle("clear-fault", (event) => {
@@ -742,7 +738,6 @@ app.whenReady().then(() => {
     installingUpdate = true;
     cancelAbortHold();
     pendingSelection = null;
-    pendingStop = null;
     const progress = (phase, bytes, total) => {
       if (!event.sender.isDestroyed())
         event.sender.send("console-update-progress", { phase, bytes, total });
@@ -825,21 +820,21 @@ app.whenReady().then(() => {
     const tabDirection = tabNavigation(sample);
     if (tabDirection && window && !window.isDestroyed())
       window.webContents.send("tab-cycle", tabDirection);
+    const heldAbort =
+      onScreenAbort?.call === operatorCall &&
+      (onScreenAbort.action === "idle"
+        ? snapshot.operator?.mode === "MODE_FAULT" &&
+          snapshot.operator.canClearFault
+        : snapshot.operator?.mode !== "MODE_FAULT");
+    const input = {
+      sequence: sample.sequence,
+      sampleMonotonicNs: sample.sampleMonotonicNs,
+      ...mapOperatorInput(sample, snapshot.operator, Boolean(heldAbort)),
+      inputProtocolVersion: 3,
+    };
     if (pendingClear && !pendingClear.sequence) {
-      sample.clearFault = true;
-      pendingClear.sequence = sample.sequence;
-    }
-    if (pendingStop) {
-      if (runnerReady()) {
-        if (pendingStop === "idle" && snapshot.operator?.canClearFault)
-          sample.clearFault = true;
-        else if (
-          pendingStop === "abort" &&
-          snapshot.operator?.mode !== "MODE_FAULT"
-        )
-          sample.abort = true;
-      }
-      pendingStop = null;
+      input.clearFault = true;
+      pendingClear.sequence = input.sequence;
     }
     if (pendingSelection) {
       if (
@@ -850,22 +845,24 @@ app.whenReady().then(() => {
             : "startup" in pendingSelection
               ? "MODE_DISARMED"
               : "MODE_STAND") &&
-        !sample.abort
+        !input.abort
       )
-        sample.selection = pendingSelection;
+        input.selection = pendingSelection;
       pendingSelection = null;
     }
     snapshot.controllerSample = sample;
     if (operatorCall && !operatorCall.destroyed) {
-      snapshot.lastSentSequence = sample.sequence;
+      snapshot.lastSentSequence = input.sequence;
       const outgoing =
-        snapshot.operator?.inputProtocolVersion === 2
-          ? sample
+        snapshot.operator?.inputProtocolVersion === 3
+          ? input
           : {
-              sequence: sample.sequence,
-              sampleMonotonicNs: sample.sampleMonotonicNs,
+              sequence: input.sequence,
+              sampleMonotonicNs: input.sampleMonotonicNs,
               connected: false,
-              inputProtocolVersion: 2,
+              controlsNeutral: true,
+              abortOtherControlsNeutral: true,
+              inputProtocolVersion: 3,
             };
       if (!operatorCall.write(outgoing)) operatorCall.cancel();
     }

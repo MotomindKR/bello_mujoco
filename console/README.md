@@ -1,6 +1,6 @@
 # Bello Mini console
 
-Electron desktop console with runner-owned gamepad control and direct read-only
+Electron desktop console with console-owned gamepad bindings, runner-owned control, and direct read-only
 hardwared, estimator, and XRoboToolkit tracking streams. Uses bundled Pretendard and Mini GLBs, English
 labels, and Light/Dark/System appearance settings (System by default).
 
@@ -16,6 +16,7 @@ npm test
 ## Code organization
 
 - `main.cjs` owns service connections, controller polling, and the validated IPC boundary.
+- `controller.cjs` maps local gamepad bindings into semantic operator actions.
 - `snapshot.cjs` derives display freshness from immutable copies of received packets.
   Display streams do not gate robot control.
 - `src/main.jsx` composes tabs and shared state. `Header`, `Settings`, `RobotView`,
@@ -56,8 +57,8 @@ in `package.json` and `package-lock.json`, update `RELEASE_NOTES.md`, commit the
 release, then tag it:
 
 ```bash
-git tag console-v0.2.9
-git push origin console-v0.2.9
+git tag console-v0.3.0
+git push origin console-v0.3.0
 ```
 
 The tag must exactly match `console-v` plus the package version. After all three

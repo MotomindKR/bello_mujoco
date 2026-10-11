@@ -58,7 +58,7 @@ Command-policy event history and counters reset when connection settings change.
 | --- | --- | --- |
 | hardwared | `10.42.0.1:50051` | `ListHardware`, `WatchTelemetry`; read-only |
 | State estimator | `10.42.0.1:50053` | `WatchPose`; display only |
-| Policy runner | `10.42.0.1:50055` | `OperatorService/Exchange`; controller samples and status |
+| Policy runner | `10.42.0.1:50055` | `OperatorService/Exchange`; movement intent, semantic actions, and status |
 | XRoboToolkit tracking | `10.42.0.1:50052` | `PoseStream/StreamPoses`; native body and hand display only |
 
 Each connection has its own receipt/freshness indicator. Stale motor values are
@@ -168,10 +168,20 @@ when no gamepad is connected. Closing the stream releases the lease; 250 ms
 without samples expires it. A rejected console cannot change the current
 owner's commands or neutral gate. The console retries once per second and a
 new owner must release all controls before operating.
-This console requires runner input protocol version 2. Until the runner reports
+This console requires runner input protocol version 3. Until the runner reports
 that version, the console sends neutral samples and marks Runner unavailable;
 install the matching runner before using controller input.
 The updated runner rejects older console samples before accepting control.
+
+The console converts its gamepad bindings into `OperatorInput` before writing
+the stream. Every 20 ms it sends forward/right/yaw movement intent, connection
+and neutral state, and held semantic requests such as `request_hold`,
+`confirm_startup`, `request_mode`, and `abort`. Selection and tracking changes
+are semantic one-shot actions. The runner does not receive button names. It
+validates transitions and choices, measures the two-second Hold and one-second
+confirmation/abort durations, bounds movement, and expires the stream after
+250 ms. A binding change only changes console mapping; protocol version 3
+requires a matching runner and console installation.
 
 ## Controller sequence
 
@@ -395,7 +405,8 @@ Stand; healthy named motions finish and return to Stand. Hardware leases stay
 with the runner. A previously confirmed explicit abort remains latched.
 
 Hold the Overview **Hold to abort** button for one second, or hold **L2 + R2**
-together for one second on the controller. The console button works without a gamepad. Releasing
+together for one second on the controller. Both send the same held `abort`
+action for the runner to time. The console button works without a gamepad. Releasing
 early, losing focus, or losing the runner connection cancels the button hold.
 Both paths request a runner abort and release hardware leases with damping,
 without disabling the motors. The runner keeps a latched Fault for explicit
@@ -495,7 +506,7 @@ D-pad navigation cancels confirmation; release confirm before starting again.
 Small arrow hints light up with their corresponding D-pad presses. Entry,
 confirm, and trigger-abort prompts fill using runner-reported hold progress.
 Releasing either trigger or losing samples resets an unfinished abort timer.
-The on-screen abort button keeps its separate one-second pointer/keyboard hold.
+The on-screen abort button sends the same held action; the runner decides when it completes.
 
 ## Assisted back-down startup
 

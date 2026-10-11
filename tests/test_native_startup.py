@@ -140,11 +140,11 @@ def test_back_down_startup(rust_policy, hardware_proto, tmp_path, scenario):
             operator.press(2.1, back=True, start=True)
             operator.wait(lambda s: s.phase == "awaiting lift", timeout=25)
             if scenario == "abort_lift":
-                operator.press(1.1, l1=True, r1=True)
+                operator.press(1.1, l2=True, r2=True)
                 operator.wait(lambda s: s.mode == pb.MODE_FAULT and s.can_clear_fault)
                 assert fake.state == hardware_proto.GROUP_STATE_DAMPED
                 assert "disable" not in fake.calls
-                operator.press(1.1, l1=True, r1=True)
+                operator.press(1.1, l2=True, r2=True)
                 operator.wait(lambda s: s.mode == pb.MODE_DISARMED)
                 assert fake.state == hardware_proto.GROUP_STATE_IDLE
                 fake.orientation = hardware_proto.Quaternion(w=1)
@@ -224,7 +224,7 @@ def test_back_down_startup(rust_policy, hardware_proto, tmp_path, scenario):
             first_engaged = next(frame for frame in frames if frame[2].kp > 0)
             assert abs(first_engaged[2].position - 0.1) < 0.01
             assert frames[-1][2].kp == 2
-            operator.press(1.1, l1=True, r1=True)
+            operator.press(1.1, l2=True, r2=True)
             operator.wait(lambda s: s.mode == pb.MODE_FAULT and s.can_clear_fault)
             assert fake.state == hardware_proto.GROUP_STATE_DAMPED
             assert "disable" not in fake.calls

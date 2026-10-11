@@ -14,7 +14,7 @@ async function closeApp(app) {
   const timer = setTimeout(() => {
     timedOut = true;
     app.process().kill("SIGKILL");
-  }, 10000);
+  }, 30000);
   try {
     await app.close();
     assert(!timedOut, "Electron did not exit within 10 seconds");
@@ -55,7 +55,7 @@ let recoveryFails = false;
 let runnerBusy = true;
 let operatorSessions = 0;
 const runnerStatus = {
-  inputProtocolVersion: 2,
+  inputProtocolVersion: 3,
   mode: "MODE_STAND",
   selected: "Motion",
   selectedMotion: "Wave",
@@ -221,6 +221,35 @@ async function serve(service, implementation) {
   });
   const runnerEndpoint = await serve(operator, {
     Exchange(call) {
+      let abortSince = null;
+      let abortConsumed = false;
+      const recover = (sequence) => {
+        Object.assign(runnerStatus, {
+          clearFaultSequence: sequence,
+          canClearFault: false,
+          phase: "clearing fault",
+          recoveryError: "",
+        });
+        setTimeout(
+          () =>
+            Object.assign(
+              runnerStatus,
+              recoveryFails
+                ? {
+                    canClearFault: true,
+                    phase: "fault",
+                    recoveryError: "Feedback still stale.",
+                  }
+                : {
+                    mode: "MODE_DISARMED",
+                    phase: "disarmed",
+                    fault: "",
+                    neutralRequired: true,
+                  },
+            ),
+          150,
+        );
+      };
       operatorSessions += 1;
       if (runnerBusy) {
         call.emit("error", {
@@ -250,31 +279,29 @@ async function serve(service, implementation) {
           }
         }
         if (sample.clearFault && runnerStatus.canClearFault) {
-          Object.assign(runnerStatus, {
-            clearFaultSequence: sample.sequence,
-            canClearFault: false,
-            phase: "clearing fault",
-            recoveryError: "",
-          });
-          setTimeout(
-            () =>
-              Object.assign(
-                runnerStatus,
-                recoveryFails
-                  ? {
-                      canClearFault: true,
-                      phase: "fault",
-                      recoveryError: "Feedback still stale.",
-                    }
-                  : {
-                      mode: "MODE_DISARMED",
-                      phase: "disarmed",
-                      fault: "",
-                      neutralRequired: true,
-                    },
-              ),
-            150,
-          );
+          if (sample.controlsNeutral) recover(sample.sequence);
+          else
+            Object.assign(runnerStatus, {
+              clearFaultSequence: sample.sequence,
+              recoveryError:
+                "Release all controller inputs before clearing fault.",
+            });
+        }
+        if (sample.abort) {
+          const now = BigInt(sample.sampleMonotonicNs);
+          abortSince ??= now;
+          if (!abortConsumed && now - abortSince >= 1000000000n) {
+            abortConsumed = true;
+            if (
+              runnerStatus.mode === "MODE_FAULT" &&
+              runnerStatus.canClearFault &&
+              sample.abortOtherControlsNeutral
+            )
+              recover(sample.sequence);
+          }
+        } else {
+          abortSince = null;
+          abortConsumed = false;
         }
       });
       repeating(call, () => runnerStatus);
@@ -284,7 +311,7 @@ async function serve(service, implementation) {
     Exchange(call) {
       call.on("data", (sample) => replacementSamples.push(sample));
       repeating(call, () => ({
-        inputProtocolVersion: 2,
+        inputProtocolVersion: 3,
         mode: "MODE_DISARMED",
         phase: "new robot",
         neutralRequired: true,
@@ -324,6 +351,7 @@ async function serve(service, implementation) {
       estimator: estimatorEndpoint,
       runner: runnerEndpoint,
       tracking: trackingEndpoint,
+      controllerIndex: 999,
     }),
   );
   let app;
@@ -388,7 +416,7 @@ async function serve(service, implementation) {
       samples.slice(incompatibleSamples).every((sample) => !sample.connected),
       "An older runner must receive only neutral controller samples",
     );
-    runnerStatus.inputProtocolVersion = 2;
+    runnerStatus.inputProtocolVersion = 3;
     await page.waitForFunction(
       () => document.querySelectorAll(".topbar .service.online").length === 4,
     );
@@ -978,14 +1006,16 @@ async function serve(service, implementation) {
       exact: true,
     });
     await abortButton.hover();
+    const beforeShortAbort = samples.filter((sample) => sample.abort).length;
     await page.mouse.down();
     await page.waitForTimeout(300);
     await page.mouse.up();
     await page.waitForTimeout(800);
-    assert.equal(
-      samples.filter((sample) => sample.abort).length,
-      0,
-      "Short press must not abort",
+    const afterShortAbort = samples.filter((sample) => sample.abort).length;
+    assert.ok(
+      afterShortAbort > beforeShortAbort &&
+        afterShortAbort < beforeShortAbort + 50,
+      "Short press streams an unfinished abort hold",
     );
     await abortButton.hover();
     await page.mouse.down();
@@ -1003,20 +1033,21 @@ async function serve(service, implementation) {
       });
     }
     await page.mouse.up();
-    assert.equal(
-      samples.filter((sample) => sample.abort).length,
-      1,
-      "Full hold sends exactly one abort",
+    const afterFullAbort = samples.filter((sample) => sample.abort).length;
+    assert.ok(
+      afterFullAbort >= afterShortAbort + 50,
+      "Full hold streams abort continuously for runner timing",
     );
     await abortButton.focus();
     await page.keyboard.down("Space");
     await page.waitForTimeout(300);
     await page.keyboard.up("Space");
     await page.waitForTimeout(800);
-    assert.equal(
-      samples.filter((sample) => sample.abort).length,
-      1,
-      "Short keyboard hold must cancel",
+    const afterKeyboardAbort = samples.filter((sample) => sample.abort).length;
+    assert.ok(
+      afterKeyboardAbort > afterFullAbort &&
+        afterKeyboardAbort < afterFullAbort + 50,
+      "Short keyboard hold must cancel before one second",
     );
     await abortButton.hover();
     await page.mouse.down();
@@ -1042,7 +1073,10 @@ async function serve(service, implementation) {
       0,
       "Holding across a fault transition must not request Idle",
     );
-    assert.equal(samples.filter((sample) => sample.abort).length, 1);
+    assert.ok(
+      samples.filter((sample) => sample.abort).length <= afterKeyboardAbort + 2,
+      "Holding across a fault transition must not start an Idle hold",
+    );
     Object.assign(runnerStatus, {
       mode: "MODE_STAND",
       phase: "standing",
@@ -1316,7 +1350,7 @@ async function serve(service, implementation) {
     assert.equal(
       samples.filter((sample) => sample.clearFault).length,
       1,
-      "Short Idle hold must cancel",
+      "Short Idle hold does not use the Clear fault button request",
     );
     await idleButton.focus();
     await page.keyboard.down("Space");
@@ -1327,10 +1361,16 @@ async function serve(service, implementation) {
     );
     await page.waitForTimeout(1200);
     await page.keyboard.up("Space");
-    assert.equal(samples.filter((sample) => sample.clearFault).length, 2);
+    assert.equal(samples.filter((sample) => sample.clearFault).length, 1);
+    const afterIdleHold = samples.filter((sample) => sample.abort).length;
+    assert.ok(
+      afterIdleHold >= afterKeyboardAbort + 50,
+      "Hold to idle streams abort for one second",
+    );
+    await page.waitForTimeout(100);
     assert.equal(
       samples.filter((sample) => sample.abort).length,
-      1,
+      afterIdleHold,
       "Holding across recovery must not abort again",
     );
     assert.equal(await abortButton.isEnabled(), true);

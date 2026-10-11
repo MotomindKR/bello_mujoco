@@ -297,7 +297,7 @@ def test_sit_abort_damps_without_disabling(sit_runner, hardware_proto, phase):
         if phase == "unloading":
             client.press(1.1, a=True)
             client.wait(lambda s: s.phase == "unloading")
-    client.press(1.1, l1=True, r1=True)
+    client.press(1.1, l2=True, r2=True)
     client.wait(lambda s: s.mode == pb.MODE_FAULT and s.can_clear_fault)
     assert fake.state == hardware_proto.GROUP_STATE_DAMPED
     assert "disable" not in fake.calls
