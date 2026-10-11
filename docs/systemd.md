@@ -362,6 +362,10 @@ clients. Both transports share telemetry and exclusive motor-group leases.
 `grpc.listen` is a list of endpoints, including for single-listener profiles.
 
 The Bello Mini hardware profile transmits the latest accepted motor target at
-300 Hz while the policy runs at its trained 50 Hz timestep. Periodic motor
-reporting is disabled during Running and restored for idle/damping/fault
-monitoring. Retransmission never renews a target's original expiry or its lease.
+300 Hz while the policy runs at its trained 50 Hz timestep. Each CAN TX worker
+owns the repeat clock and reads the latest validated target set; repeats retain
+the original target validity and lease generation. Four refresh periods without
+completed socket writes latch a transmission fault (13.33 ms at 300 Hz).
+Periodic motor reporting is disabled during Running and restored for
+idle/damping/fault monitoring. Retransmission never renews a target's original
+expiry or its lease.

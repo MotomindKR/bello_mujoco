@@ -561,7 +561,7 @@ def main() -> None:
     )
     if system_files:
         print(
-            "Installed and boot-enabled onboard-can.service for can0/can1 initialization."
+            "Installed and boot-enabled onboard-can.service for can0-can4 initialization."
         )
     print("User lingering must be enabled to start at boot without a login.")
     print(
