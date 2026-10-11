@@ -49,4 +49,23 @@ function sampleController(device, deadzone) {
   };
 }
 
-module.exports = { sampleController };
+function createTabNavigator() {
+  let pressed = null;
+  let chord = false;
+  return (sample) => {
+    const left = sample.connected && sample.l1;
+    const right = sample.connected && sample.r1;
+    if (left && right) chord = true;
+    if (left || right) {
+      pressed ||= left ? "left" : "right";
+      return 0;
+    }
+    const direction =
+      !chord && sample.connected && pressed ? (pressed === "left" ? -1 : 1) : 0;
+    pressed = null;
+    chord = false;
+    return direction;
+  };
+}
+
+module.exports = { sampleController, createTabNavigator };

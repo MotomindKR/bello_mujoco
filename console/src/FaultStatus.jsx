@@ -59,7 +59,7 @@ export function FaultStatus({ state, fault }) {
                 : "Clear fault"}
             </button>
             <span id="fault-clear-hint" className="diagnostic-note">
-              Release inputs to clear.
+              Release inputs, then hold A for 1 s or click Clear fault.
             </span>
           </div>
         </>

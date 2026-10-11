@@ -30,6 +30,13 @@ export function OperatorCard({ state, children }) {
       (operator.mode === "MODE_DISARMED" && operator.phase === "disarmed"));
   const choices = startup ? operator.startups || [] : operator.modes || [];
   const selected = startup ? operator.selectedStartup : operator.selected;
+  const activeMode = {
+    MODE_STAND: "Stand",
+    MODE_LOCOMOTION: "Locomotion",
+    MODE_MOTION: "Motion",
+    MODE_TRACKING: "Tracking",
+    MODE_SIT: "Sit",
+  }[operator.mode];
   const progressing =
     operator.mode === "MODE_MOTION" ||
     (operator.mode === "MODE_SIT" &&
@@ -118,15 +125,29 @@ export function OperatorCard({ state, children }) {
         <div className="mode-row">
           <DirectionHint direction="Left" sample={sample} />
           <div className={"mode-list" + (choosing ? "" : " unavailable")}>
+            {!startup && (
+              <span
+                className={
+                  "mode-option mode-indicator" +
+                  (activeMode === "Stand" ? " active" : "")
+                }
+                aria-current={activeMode === "Stand" ? "true" : undefined}
+              >
+                Stand
+              </span>
+            )}
             {choices.map((name) => (
               <button
                 type="button"
                 disabled={!choosing}
                 aria-pressed={selected === name}
+                aria-current={activeMode === name ? "true" : undefined}
                 title={name}
                 onClick={() => selectChoice(startup ? "startup" : "mode", name)}
                 className={
-                  "mode-option" + (selected === name ? " selected" : "")
+                  "mode-option" +
+                  (selected === name ? " selected" : "") +
+                  (activeMode === name ? " active" : "")
                 }
                 key={name}
               >
@@ -174,7 +195,6 @@ export function OperatorCard({ state, children }) {
               sample={sample}
               choosing={choosing}
               onSelect={(name) => selectChoice("motion", name)}
-              onToggle={(open) => selectChoice("motionMenuOpen", open)}
             />
           )}
           {!startup && operator.selected === "Locomotion" && (

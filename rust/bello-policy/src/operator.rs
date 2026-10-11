@@ -81,14 +81,14 @@ impl State {
                     == motions.len(),
             "motion names must be unique and must not be reserved modes"
         );
-        let mut modes = vec!["Stand".to_owned(), "Locomotion".to_owned()];
+        let mut modes = vec!["Locomotion".to_owned()];
         if !motions.is_empty() {
             modes.push("Motion".into());
         }
         Ok(Self {
             status: OperatorStatus {
                 mode: Mode::Disarmed as i32,
-                selected: "Stand".into(),
+                selected: "Locomotion".into(),
                 startups: vec!["Crane".into()],
                 selected_startup: "Crane".into(),
                 active_motion: String::new(),
@@ -107,7 +107,6 @@ impl State {
                 hold_progress: 0.,
                 confirm_progress: 0.,
                 abort_progress: 0.,
-                motion_menu_open: false,
                 tracking_available: false,
                 tracking_enabled: false,
                 tracking_live: false,
@@ -242,7 +241,7 @@ impl State {
         self.stop_consumed = false;
         self.status.abort_progress = 0.;
         if let Some(selection) = &sample.selection {
-            // Mode/menu choices work without a gamepad. Tracking is handled
+            // Mode and motion choices work without a gamepad. Tracking is handled
             // after the connected-controller and reconnect-neutral checks.
             self.confirm_since = None;
             self.status.confirm_progress = 0.;
@@ -265,19 +264,12 @@ impl State {
                         if self.status.modes.contains(name) =>
                     {
                         self.status.selected = name.clone();
-                        self.status.motion_menu_open = name == "Motion";
                     }
                     Some(proto::selection::Choice::Motion(name))
                         if self.status.selected == "Motion"
                             && self.status.motions.contains(name) =>
                     {
                         self.status.selected_motion = name.clone();
-                        self.status.motion_menu_open = false;
-                    }
-                    Some(proto::selection::Choice::MotionMenuOpen(open))
-                        if self.status.selected == "Motion" =>
-                    {
-                        self.status.motion_menu_open = *open;
                     }
                     _ => {}
                 }
@@ -297,6 +289,33 @@ impl State {
             }
         }
         self.axes = axes.map(|v| if v.abs() <= NEUTRAL { 0. } else { v as f32 });
+        if self.status.mode == Mode::Fault as i32 {
+            if !sample.a {
+                self.confirm_consumed = false;
+            }
+            let ready = self.status.can_clear_fault
+                && sample.a
+                && !self.confirm_consumed
+                && sample.selection.is_none()
+                && neutral_except_a(&sample);
+            if sample.a && !ready {
+                self.confirm_consumed = true;
+            }
+            self.confirm_since = ready.then(|| self.confirm_since.unwrap_or(now));
+            self.status.confirm_progress = self
+                .confirm_since
+                .map_or(0., |start| now.duration_since(start).as_secs_f64().min(1.));
+            if self
+                .confirm_since
+                .is_some_and(|start| now.duration_since(start) >= Duration::from_secs(1))
+            {
+                self.request_clear(sample.sequence);
+                self.confirm_since = None;
+                self.confirm_consumed = true;
+                self.status.confirm_progress = 0.;
+            }
+            return Ok(());
+        }
         if self.aborted {
             return Ok(());
         }
@@ -395,9 +414,7 @@ impl State {
         if self.status.mode == Mode::Stand as i32 {
             if horizontal != 0 {
                 cycle_selection(&self.status.modes, &mut self.status.selected, horizontal);
-                self.status.motion_menu_open = self.status.selected == "Motion";
             } else if self.status.selected == "Motion" && vertical != 0 {
-                self.status.motion_menu_open = true;
                 cycle_selection(
                     &self.status.motions,
                     &mut self.status.selected_motion,
@@ -426,18 +443,6 @@ impl State {
             || (self.status.mode == Mode::Sit as i32 && self.status.startup_ready);
         if !sample.a {
             self.confirm_consumed = false;
-        }
-        if self.status.mode == Mode::Stand as i32
-            && self.status.selected == "Motion"
-            && self.status.motion_menu_open
-            && sample.a
-            && !self.confirm_consumed
-        {
-            self.status.motion_menu_open = false;
-            self.confirm_since = None;
-            self.status.confirm_progress = 0.;
-            self.confirm_consumed = true;
-            return Ok(());
         }
         let ready = self.status.mode != Mode::Stand as i32
             || self.status.selected != "Tracking"
@@ -468,7 +473,6 @@ impl State {
                 Ok(Mode::Hold | Mode::Locomotion | Mode::Tracking) => RequestMode::Stand,
                 Ok(Mode::Sit) => RequestMode::ConfirmSit,
                 Ok(Mode::Stand) => match self.status.selected.as_str() {
-                    "Stand" => RequestMode::Stand,
                     "Locomotion" => RequestMode::Locomotion,
                     "Motion" => RequestMode::Motion(self.status.selected_motion.clone()),
                     "Tracking" => RequestMode::Tracking,
@@ -497,6 +501,21 @@ fn neutral_except_shoulders(sample: &ControllerSample) -> bool {
             || sample.start
             || sample.a
             || sample.y
+            || sample.dpad_up
+            || sample.dpad_down
+            || sample.dpad_left
+            || sample.dpad_right)
+}
+
+fn neutral_except_a(sample: &ControllerSample) -> bool {
+    [sample.forward, sample.lateral, sample.yaw]
+        .iter()
+        .all(|v| v.abs() <= NEUTRAL)
+        && !(sample.back
+            || sample.start
+            || sample.y
+            || sample.l1
+            || sample.r1
             || sample.dpad_up
             || sample.dpad_down
             || sample.dpad_left
@@ -589,9 +608,6 @@ impl Source {
         }
         if mode != Mode::Locomotion {
             state.status.velocity_command = None;
-        }
-        if mode != Mode::Stand {
-            state.status.motion_menu_open = false;
         }
         state.status.mode = mode as i32;
         state.status.phase = phase.into();
@@ -703,7 +719,7 @@ impl Source {
         state.status.startup_ready = false;
         state.status.mode = Mode::Disarmed as i32;
         state.status.phase = "disarmed".into();
-        state.status.selected = "Stand".into();
+        state.status.selected = "Locomotion".into();
         state.status.active_motion.clear();
         state.status.progress = 0.;
         state.status.fault.clear();
@@ -1134,6 +1150,43 @@ mod tests {
     }
 
     #[test]
+    fn fault_a_hold_requires_cleanup_release_and_neutral_input() {
+        let (mut state, mut controller) = fixture();
+        state.status.mode = Mode::Fault as i32;
+        state.aborted = true;
+        let a = ControllerSample {
+            a: true,
+            ..Default::default()
+        };
+        controller.send(&mut state, a.clone(), 1200);
+        assert!(!state.clear_requested);
+        state.status.can_clear_fault = true;
+        controller.send(&mut state, a.clone(), 1200);
+        assert!(!state.clear_requested);
+        controller.send(&mut state, ControllerSample::default(), 20);
+        controller.send(
+            &mut state,
+            ControllerSample {
+                forward: 0.5,
+                ..a.clone()
+            },
+            1200,
+        );
+        assert!(!state.clear_requested);
+        controller.send(&mut state, a.clone(), 1200);
+        assert!(!state.clear_requested);
+        controller.send(&mut state, ControllerSample::default(), 20);
+        controller.send(&mut state, a.clone(), 1040);
+        assert!(state.clear_requested);
+        assert!(!state.aborted);
+        assert!(!state.status.can_clear_fault);
+        state.clear_requested = false;
+        state.status.can_clear_fault = true;
+        controller.send(&mut state, a, 1200);
+        assert!(!state.clear_requested);
+    }
+
+    #[test]
     fn chord_is_continuous_and_fires_once_until_release() {
         let (mut state, mut controller) = fixture();
         let chord = ControllerSample {
@@ -1169,7 +1222,7 @@ mod tests {
         ] {
             state.status.mode = mode as i32;
             controller.send(&mut state, select.clone(), 20);
-            assert_eq!(state.status.selected, "Stand");
+            assert_eq!(state.status.selected, "Locomotion");
             assert!(state.pending.is_none());
         }
         state.status.mode = Mode::Stand as i32;
@@ -1189,17 +1242,19 @@ mod tests {
             assert_eq!(state.status.selected_motion, "Bow");
             assert!(state.pending.is_none());
         }
-        controller.send(
-            &mut state,
-            ControllerSample {
-                selection: Some(proto::Selection {
-                    choice: Some(proto::selection::Choice::Mode("Unknown".into())),
-                }),
-                ..Default::default()
-            },
-            20,
-        );
-        assert_eq!(state.status.selected, "Motion");
+        for name in ["Stand", "Unknown"] {
+            controller.send(
+                &mut state,
+                ControllerSample {
+                    selection: Some(proto::Selection {
+                        choice: Some(proto::selection::Choice::Mode(name.into())),
+                    }),
+                    ..Default::default()
+                },
+                20,
+            );
+            assert_eq!(state.status.selected, "Motion");
+        }
     }
     #[test]
     fn console_selection_cancels_confirmation_until_release_and_full_hold() {
@@ -1287,7 +1342,7 @@ mod tests {
                 1040,
             );
             assert!(state.aborted);
-            assert_eq!(state.status.selected, "Stand");
+            assert_eq!(state.status.selected, "Locomotion");
         }
     }
     #[test]
@@ -1298,11 +1353,9 @@ mod tests {
             dpad_right: true,
             ..Default::default()
         };
-        for expected in ["Locomotion", "Motion"] {
-            controller.send(&mut state, right.clone(), 40);
-            assert_eq!(state.status.selected, expected);
-            controller.send(&mut state, ControllerSample::default(), 20);
-        }
+        controller.send(&mut state, right, 40);
+        assert_eq!(state.status.selected, "Motion");
+        controller.send(&mut state, ControllerSample::default(), 20);
         assert_eq!(state.status.selected_motion, "Wave");
         controller.send(
             &mut state,
@@ -1318,14 +1371,7 @@ mod tests {
             a: true,
             ..Default::default()
         };
-        assert!(state.status.motion_menu_open);
         controller.send(&mut state, a.clone(), 1400);
-        assert!(!state.status.motion_menu_open);
-        assert!(state.pending.is_none());
-        controller.send(&mut state, ControllerSample::default(), 20);
-        controller.send(&mut state, a.clone(), 1000);
-        assert!(state.pending.is_none());
-        controller.send(&mut state, a.clone(), 40);
         assert_eq!(
             state.pending.take(),
             Some(RequestMode::Motion("Bow".into()))
@@ -1335,7 +1381,7 @@ mod tests {
         assert!(state.pending.is_none());
     }
     #[test]
-    fn motion_dropdown_wraps_and_navigation_requires_fresh_confirmation() {
+    fn motion_list_wraps_and_navigation_requires_fresh_confirmation() {
         let (mut state, mut controller) = fixture();
         state.status.mode = Mode::Stand as i32;
         state.status.selected = "Motion".into();
@@ -1383,16 +1429,6 @@ mod tests {
                 a: true,
                 ..Default::default()
             },
-            40,
-        );
-        assert!(!state.status.motion_menu_open);
-        controller.send(&mut state, ControllerSample::default(), 20);
-        controller.send(
-            &mut state,
-            ControllerSample {
-                a: true,
-                ..Default::default()
-            },
             1040,
         );
         assert_eq!(
@@ -1403,10 +1439,7 @@ mod tests {
 
     #[test]
     fn motion_mode_requires_bundles_and_its_name_is_reserved() {
-        assert_eq!(
-            State::new(vec![]).unwrap().status.modes,
-            ["Stand", "Locomotion"]
-        );
+        assert_eq!(State::new(vec![]).unwrap().status.modes, ["Locomotion"]);
         assert!(State::new(vec!["Motion".into()]).is_err());
     }
 
@@ -1485,7 +1518,7 @@ mod tests {
                 },
                 2100,
             );
-            assert_eq!(state.status.selected, "Stand");
+            assert_eq!(state.status.selected, "Locomotion");
             assert!(state.pending.is_none());
         }
     }
@@ -1528,9 +1561,9 @@ mod tests {
         assert_eq!(state.status.selected, "Motion");
         controller.send(&mut state, ControllerSample::default(), 20);
         controller.send(&mut state, right.clone(), 40);
-        assert_eq!(state.status.selected, "Stand");
+        assert_eq!(state.status.selected, "Locomotion");
         controller.send(&mut state, right, 200);
-        assert_eq!(state.status.selected, "Stand");
+        assert_eq!(state.status.selected, "Locomotion");
         for sample in [
             ControllerSample {
                 dpad_up: true,
@@ -1548,7 +1581,7 @@ mod tests {
         ] {
             controller.send(&mut state, ControllerSample::default(), 20);
             controller.send(&mut state, sample, 40);
-            assert_eq!(state.status.selected, "Stand");
+            assert_eq!(state.status.selected, "Locomotion");
         }
     }
 

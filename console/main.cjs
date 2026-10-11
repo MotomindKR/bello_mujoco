@@ -5,7 +5,7 @@ const { pathToFileURL } = require("node:url");
 const grpc = require("@grpc/grpc-js");
 const loader = require("@grpc/proto-loader");
 const { validateConnections, validateSettings } = require("./settings.cjs");
-const { sampleController } = require("./controller.cjs");
+const { sampleController, createTabNavigator } = require("./controller.cjs");
 const { trackingFrame } = require("./tracking.cjs");
 const { emptyTelemetry, displaySnapshot } = require("./snapshot.cjs");
 
@@ -87,6 +87,7 @@ let window;
 let controller = null;
 let sdl;
 let sequence = 0n;
+const tabNavigation = createTabNavigator();
 let operatorCall;
 let pendingClear;
 let abortHoldTimer;
@@ -436,17 +437,8 @@ app.whenReady().then(() => {
   ipcMain.handle("select-choice", (event, kind, name) => {
     if (
       !isConsoleSender(event) ||
-      ![
-        "mode",
-        "motion",
-        "motionMenuOpen",
-        "trackingEnabled",
-        "startup",
-      ].includes(kind) ||
-      typeof name !==
-        (["motionMenuOpen", "trackingEnabled"].includes(kind)
-          ? "boolean"
-          : "string")
+      !["mode", "motion", "trackingEnabled", "startup"].includes(kind) ||
+      typeof name !== (kind === "trackingEnabled" ? "boolean" : "string")
     )
       return { error: "Invalid selection." };
     if (!runnerReady()) return { error: "Runner unavailable." };
@@ -482,12 +474,7 @@ app.whenReady().then(() => {
         : status.selected === "Motion"
           ? status.motions
           : [];
-    if (
-      kind === "motionMenuOpen"
-        ? status.selected !== "Motion"
-        : !choices?.includes(name)
-    )
-      return { error: "Choice unavailable." };
+    if (!choices?.includes(name)) return { error: "Choice unavailable." };
     pendingSelection = { [kind]: name };
     return {};
   });
@@ -621,6 +608,9 @@ app.whenReady().then(() => {
   window.on("blur", cancelAbortHold);
   every(() => {
     const sample = controllerSample();
+    const tabDirection = tabNavigation(sample);
+    if (tabDirection && window && !window.isDestroyed())
+      window.webContents.send("tab-cycle", tabDirection);
     if (pendingClear && !pendingClear.sequence) {
       sample.clearFault = true;
       pendingClear.sequence = sample.sequence;

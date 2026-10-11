@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { EventEmitter } = require("node:events");
-const { sampleController } = require("../controller.cjs");
+const { sampleController, createTabNavigator } = require("../controller.cjs");
 
 function device() {
   return Object.assign(new EventEmitter(), {
@@ -96,4 +96,18 @@ test("Y is sampled for the runner tracking toggle", () => {
   controller.buttons.y = true;
   assert.equal(sampleController(controller, 0.12).y, true);
   assert.equal(sampleController(null, 0.12).y, false);
+});
+test("bumper releases cycle tabs without treating the abort chord as navigation", () => {
+  const navigate = createTabNavigator();
+  const sample = (l1, r1, connected = true) => ({ l1, r1, connected });
+  assert.equal(navigate(sample(true, false)), 0);
+  assert.equal(navigate(sample(false, false)), -1);
+  assert.equal(navigate(sample(false, true)), 0);
+  assert.equal(navigate(sample(false, false)), 1);
+  assert.equal(navigate(sample(true, false)), 0);
+  assert.equal(navigate(sample(true, true)), 0);
+  assert.equal(navigate(sample(false, true)), 0);
+  assert.equal(navigate(sample(false, false)), 0);
+  assert.equal(navigate(sample(true, false)), 0);
+  assert.equal(navigate(sample(false, false, false)), 0);
 });

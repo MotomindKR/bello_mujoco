@@ -93,8 +93,11 @@ nominal Hold; a one-second A press enters Stand. Optional `control.lying_start`
 adds Back-down startup, with free ankles, balance confirmation and left-stick
 straightening. See [assisted startup](../../docs/policy_console.md#assisted-back-down-startup)
 for configuration and controller phases.
-From Stand, D-pad left/right selects Stand, Locomotion, or Motion. Within Motion,
-D-pad up/down selects a preloaded named motion; holding A for one second confirms.
+From Stand, D-pad left/right selects Locomotion, Motion, or configured
+Tracking/Sit. Stand is an intermediate state, not a selectable mode. Within
+Motion, D-pad up/down selects a preloaded named motion from the visible list;
+holding A for one second starts it. Once fault cleanup is ready, a fresh
+one-second A hold can clear the fault with neutral inputs.
 See the [console guide](../../docs/policy_console.md) for transitions, connection
 loss, packaging and direct service ownership. Stop cleanup automatically damps and
 releases leases. No terminal confirmation is required.
@@ -172,8 +175,8 @@ it is rigidly fixed to and coincident with the floating base, including rotation
 Offset, rotated, or articulated frames are rejected rather than reinterpreted.
 
 Crane Hold ramps to the standing bundle's nominal pose. Confirm Stand, select a named
-motion, press A to accept and close its menu, then release and hold A for one
-second to blend into it. Completion or the first
+motion from the visible list, then hold A for one second to blend into it.
+Completion or the first
 Ctrl-C blends back to Stand; another Ctrl-C, SIGTERM or holding L1 + R1 for one second stops control.
 Malformed/stale feedback and rejected commands stop control. Standing and motion
 retain their own gains, periods and histories. Targets and KP/KD blend over

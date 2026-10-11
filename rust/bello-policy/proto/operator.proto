@@ -38,10 +38,10 @@ message ControllerSample {
 }
 
 message Selection {
+  reserved 3;
   oneof choice {
     string mode = 1;
     string motion = 2;
-    bool motion_menu_open = 3;
     bool tracking_enabled = 4;
     string startup = 5;
   }
@@ -79,8 +79,7 @@ message OperatorStatus {
   double hold_progress = 16;
   double confirm_progress = 17;
   double abort_progress = 18;
-  // A press closes this menu; a separate released-then-held A starts the motion.
-  bool motion_menu_open = 19;
+  reserved 19;
   bool tracking_available = 20;
   bool tracking_enabled = 21;
   bool tracking_live = 22;

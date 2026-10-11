@@ -6,12 +6,17 @@ export function operatorGuide(state) {
       title: runner.busy ? "Console in use" : "Runner offline",
     };
   if (operator.mode === "MODE_FAULT")
-    return {
-      title:
-        operator.phase === "clearing fault"
-          ? "Clearing fault"
-          : "Control stopped",
-    };
+    return operator.canClearFault &&
+      state.controller.connected &&
+      operator.controllerConnected &&
+      !operator.neutralRequired
+      ? { title: "Clear fault", keys: ["A"], duration: "1 s · Disarmed" }
+      : {
+          title:
+            operator.phase === "clearing fault"
+              ? "Clearing fault"
+              : "Control stopped",
+        };
   if (operator.mode === "MODE_DISARMED" && operator.fault)
     return { title: "Startup blocked" };
   if (!state.controller.connected) return { title: "Connect a controller" };
@@ -45,13 +50,11 @@ export function operatorGuide(state) {
     case "MODE_STAND":
       if (operator.selected === "Tracking" && !operator.sonicReady)
         return { title: operator.sonicStatus || "Waiting for reference" };
-      return operator.selected === "Motion" && operator.motionMenuOpen
-        ? { title: "Choose motion" }
-        : {
-            title: "Standing",
-            keys: ["A"],
-            duration: `1 s · ${operator.selected === "Motion" ? operator.selectedMotion || "Motion" : operator.selected || "Stand"}`,
-          };
+      return {
+        title: "Standing",
+        keys: ["A"],
+        duration: `1 s · ${operator.selected === "Motion" ? operator.selectedMotion || "Motion" : operator.selected || "Locomotion"}`,
+      };
     case "MODE_LOCOMOTION":
       return {
         title: "Walking",

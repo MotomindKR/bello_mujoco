@@ -42,7 +42,9 @@ The status tabs provide detailed read-only views:
 Search matches field names and values. Status views always update live. Each tab
 opens directly onto its search field and data, without a repeated page heading or
 endpoint subtitle. Switching tabs resets the search. Arrow keys, Home and End
-navigate the tabs.
+navigate the tabs. Release the left or right controller bumper to move one tab;
+pressing both bumpers together remains the abort/recovery chord and does not
+change tabs.
 Detailed tables scroll independently on smaller screens. Floating-point readings
 show at most three decimal places, with trailing zeros removed; hover over a
 detailed table value for the original precision. Integer counters and timestamps
@@ -172,9 +174,9 @@ new owner must release all controls before operating.
 | --- | --- | --- |
 | Disarmed | Release all sticks/buttons, then Back + Start for 2 seconds | Acquire control and ramp to Hold |
 | Crane Hold, ramp complete | A for 1 second | Stand |
-| Stand | D-pad left/right | Select Stand, Locomotion, Motion, or configured Tracking/Sit |
-| Stand, Motion selected | D-pad up/down | Select a named motion in the dropdown |
-| Motion dropdown open | Press A | Accept the highlighted motion and close the menu |
+| Any view | Release left/right bumper separately | Previous/next console tab |
+| Stand | D-pad left/right | Select Locomotion, Motion, or configured Tracking/Sit |
+| Stand, Motion selected | D-pad up/down | Select a named motion in the visible list |
 | Stand | A for 1 second with neutral sticks | Enter the selected mode or motion |
 | Sit | Separate A holds and left stick up/down | Operator-assisted lowering; see the Sit sequence below |
 | Locomotion | Left stick and right horizontal stick | Forward/lateral velocity and yaw command |
@@ -186,6 +188,7 @@ new owner must release all controls before operating.
 | Outside Fault | L1 + R1 for 1 second | Latched abort, damping and Fault |
 | Fault, after cleanup and releasing inputs | L1 + R1 for 1 second or console **Hold to idle** | Disable damped groups, recover faults and verify Idle; return to Disarmed |
 | Fault, after cleanup | Console **Clear fault**, with neutral inputs | Recover hardware groups and return to Disarmed |
+| Fault, after cleanup | Release inputs, then hold A for 1 second | Recover hardware groups and return to Disarmed |
 
 Presses must be continuous and released before repeating. Named motions cannot
 start from Hold, Locomotion or another motion. Status includes the selection,
@@ -403,10 +406,10 @@ effect. Explicit hardware disable and daemon shutdown still disable motors.
 
 ### Motion selection and upper-body tracking
 
-The highlighted dropdown row shows the controller's A/Cross prompt. A press
-accepts that motion and closes the menu; release it, then hold again for one
-second to start. Clicking a motion also selects and closes. D-pad up/down opens
-the list again. Menu state and confirmation consumption belong to the runner.
+The horizontal motion list stays visible while Motion is selected and scrolls to
+the selected item. D-pad up/down or a click selects a named motion. Release A
+after navigation, then hold it for one second
+to start the selected motion. The runner owns selection and confirmation timing.
 
 With `control.following.enabled: true`, Y (Triangle on PlayStation) toggles
 upper-body tracking during Locomotion. It starts Off on each entry; leaving
@@ -428,9 +431,10 @@ Body and hands have independent ages and validity. Set the service address in
 Settings under XRoboToolkit; no XRoboToolkit service is supplied by the HIL
 emulator (its port 50052 hosts the emulator API).
 
-The motion dropdown appears only when Motion is selected. Locomotion shows the
+The motion list appears only when Motion is selected. Locomotion shows the
 Upper-body teleop switch in the same slot, operable by click or Y after entering
-Locomotion with a ready controller. Stand leaves that slot empty. Reference
+Locomotion with a ready controller. When Locomotion is selected in Stand, the
+switch remains disabled until Locomotion starts. Reference
 transport failures, including HTTP/2 errors, return upper-body targets smoothly
 to nominal while the reference client retries; they do not damp the robot.
 Malformed reference payloads and producer application errors remain faults.
@@ -445,7 +449,10 @@ Long fault details scroll within their panel.
 
 Named bundles appear inside one Motion mode. Horizontal and vertical selection
 wrap once per press. Navigation cancels an in-progress A hold; release A before
-confirming the new selection. The dropdown retains its selection across modes.
+confirming the new selection. The motion list retains its selection across modes.
+Stand appears as the active intermediate state, never as a selectable choice.
+The mode row marks the active mode in green and the selected next mode with a
+blue inset border; both marks appear when the active and selected modes differ.
 The top bar shows the hottest fresh motor reading and its name above 60 C.
 Otherwise it shows green Temp OK only when all motor telemetry is fresh and
 available; missing or stale readings show Temp --. Hot readings are red. The indicator has
@@ -464,7 +471,7 @@ charging, and a question mark means the charging status is unavailable. Hover
 for the status label. This uses the power board's fresh `BATTERY_CHARGING` info
 flag; battery percentage and charging flags have independent freshness.
 
-Mode buttons and motion dropdown items also accept clicks in Stand. Clicks only
+Mode buttons and motion list items also accept clicks in Stand. Clicks only
 select; the runner echoes the accepted selection and still requires a fresh
 one-second confirm hold to enter it. Selection works without a gamepad, but it
 never bypasses the controller connection or reconnect-neutrality gates for

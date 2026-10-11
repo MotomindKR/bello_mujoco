@@ -40,6 +40,19 @@ function App() {
     document.documentElement.classList.toggle("dark", dark);
   }, [dark]);
   useEffect(() => window.bello.subscribe(setState), []);
+  useEffect(
+    () =>
+      window.bello.subscribeTabCycle((direction) => {
+        if (settingsOpen) return;
+        setTab((current) => {
+          const index = statusTabs.indexOf(current);
+          return statusTabs[
+            (index + direction + statusTabs.length) % statusTabs.length
+          ];
+        });
+      }),
+    [settingsOpen],
+  );
   const operator = state.operator || {};
   const fault =
     operator.fault ||

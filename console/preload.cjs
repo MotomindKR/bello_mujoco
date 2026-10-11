@@ -22,6 +22,11 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.on("snapshot", handler);
       return () => ipcRenderer.removeListener("snapshot", handler);
     },
+    subscribeTabCycle(callback) {
+      const handler = (_event, direction) => callback(direction);
+      ipcRenderer.on("tab-cycle", handler);
+      return () => ipcRenderer.removeListener("tab-cycle", handler);
+    },
     modelUrl: "bello://assets/urdf/bello_mini.urdf",
   }),
 );

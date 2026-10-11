@@ -53,10 +53,8 @@ test("instructions follow runner phases and transition restrictions", () => {
     /Lunge/,
   );
   assert.equal(
-    operatorGuide(
-      state({ mode: "MODE_STAND", selected: "Motion", motionMenuOpen: true }),
-    ).title,
-    "Choose motion",
+    operatorGuide(state({ mode: "MODE_STAND", selected: "Motion" })).title,
+    "Standing",
   );
   assert.match(
     operatorGuide(state({ mode: "MODE_LOCOMOTION" })).duration,
@@ -64,6 +62,16 @@ test("instructions follow runner phases and transition restrictions", () => {
   );
   assert.equal(
     operatorGuide(state({ mode: "MODE_MOTION", activeMotion: "Lunge" })).keys,
+    undefined,
+  );
+});
+test("fault recovery offers a one-second A hold only after cleanup", () => {
+  assert.deepEqual(
+    operatorGuide(state({ mode: "MODE_FAULT", canClearFault: true })).keys,
+    ["A"],
+  );
+  assert.equal(
+    operatorGuide(state({ mode: "MODE_FAULT", canClearFault: false })).keys,
     undefined,
   );
 });

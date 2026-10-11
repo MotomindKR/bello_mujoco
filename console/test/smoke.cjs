@@ -58,7 +58,7 @@ const runnerStatus = {
   selected: "Motion",
   selectedMotion: "Wave",
   phase: "standing",
-  modes: ["Stand", "Locomotion", "Motion", "Tracking"],
+  modes: ["Locomotion", "Motion", "Tracking"],
   startups: ["Crane", "Back-down"],
   selectedStartup: "Crane",
   sonicReady: true,
@@ -239,20 +239,13 @@ async function serve(service, implementation) {
         if (sample.selection && runnerStatus.mode === "MODE_STAND") {
           if (runnerStatus.modes.includes(sample.selection.mode)) {
             runnerStatus.selected = sample.selection.mode;
-            runnerStatus.motionMenuOpen = sample.selection.mode === "Motion";
           }
           if (
             runnerStatus.selected === "Motion" &&
             runnerStatus.motions.includes(sample.selection.motion)
           ) {
             runnerStatus.selectedMotion = sample.selection.motion;
-            runnerStatus.motionMenuOpen = false;
           }
-          if (
-            runnerStatus.selected === "Motion" &&
-            sample.selection.motionMenuOpen != null
-          )
-            runnerStatus.motionMenuOpen = sample.selection.motionMenuOpen;
         }
         if (sample.clearFault && runnerStatus.canClearFault) {
           Object.assign(runnerStatus, {
@@ -479,7 +472,7 @@ async function serve(service, implementation) {
             phase,
             progress: 0.5,
             startupReady: true,
-            modes: ["Stand", "Locomotion", "Motion", "Tracking", "Sit"],
+            modes: ["Locomotion", "Motion", "Tracking", "Sit"],
           })),
           {
             mode: "MODE_TRACKING",
@@ -722,9 +715,23 @@ async function serve(service, implementation) {
     assert.deepEqual(await temperature.boundingBox(), tempBounds);
     motorTemperature = 31;
     motorAge = 0;
-    assert.deepEqual(
-      await page.locator(".mode-option > span").allTextContents(),
-      ["Stand", "Locomotion", "Motion", "Tracking"],
+    assert.deepEqual(await page.locator(".mode-option").allTextContents(), [
+      "Stand",
+      "Locomotion",
+      "Motion",
+      "Tracking",
+    ]);
+    assert.equal(
+      await page.getByRole("button", { name: "Stand", exact: true }).count(),
+      0,
+    );
+    assert.equal(
+      await page.locator('.mode-indicator[aria-current="true"]').textContent(),
+      "Stand",
+    );
+    assert.equal(
+      await page.locator(".mode-option.selected").textContent(),
+      "Motion",
     );
     assert.equal(await page.locator(".mode-option em").count(), 0);
     const modeWidths = await page
@@ -764,20 +771,16 @@ async function serve(service, implementation) {
         .textContent(),
       "Wave",
     );
-    assert.equal(
-      await page.locator(".motion-select-hint .gamepad-button").count(),
-      1,
-    );
     await page
       .locator(".motion-choices")
       .getByRole("button", { name: "Bow", exact: true })
       .click();
-    await page.waitForFunction(() =>
-      document
-        .querySelector(".motion-picker-trigger")
-        .textContent.includes("Bow"),
+    await page.waitForFunction(
+      () =>
+        document.querySelector('.motion-choices li[aria-current="true"]')
+          ?.textContent === "Bow",
     );
-    await page.locator(".motion-choices").waitFor({ state: "detached" });
+    await page.locator(".motion-choices").waitFor();
 
     assert.deepEqual(
       samples
@@ -796,24 +799,18 @@ async function serve(service, implementation) {
         { motion: "Bow" },
       ],
     );
-    await page.locator(".motion-picker-trigger").click();
-    await page.locator(".motion-choices").waitFor();
-    await page.locator(".motion-picker-trigger").click();
-    await page.locator(".motion-choices").waitFor({ state: "detached" });
-    assert.equal(
-      samples.filter((sample) => sample.selection?.motionMenuOpen === true)
-        .length,
-      1,
-    );
-    await page.getByRole("button", { name: "Stand", exact: true }).click();
+    await page.getByRole("button", { name: "Locomotion", exact: true }).click();
     await page.waitForFunction(
       () =>
         document.querySelector('.mode-option[aria-pressed="true"]')
-          ?.textContent === "Stand",
+          ?.textContent === "Locomotion",
     );
-    assert.equal(
-      await page.locator(".motion-picker, .tracking-toggle").count(),
-      0,
+    assert.equal(await page.locator(".motion-picker").count(), 0);
+    await page.getByRole("switch", { name: "Upper-body teleop" }).waitFor();
+    assert.match(
+      (await page.evaluate(() => window.bello.selectChoice("mode", "Stand")))
+        .error,
+      /unavailable/,
     );
     assert.match(
       (await page.evaluate(() => window.bello.selectChoice("mode", "Unknown")))
@@ -827,7 +824,13 @@ async function serve(service, implementation) {
     );
     runnerStatus.mode = "MODE_LOCOMOTION";
     await page.waitForFunction(
-      () => document.querySelector(".mode-option")?.disabled,
+      () => document.querySelector(".mode-list button.mode-option")?.disabled,
+    );
+    assert.equal(
+      await page
+        .locator('.mode-option.active[aria-current="true"]')
+        .textContent(),
+      "Locomotion",
     );
     assert.match(
       (await page.evaluate(() => window.bello.selectChoice("mode", "Motion")))
@@ -836,7 +839,7 @@ async function serve(service, implementation) {
     );
     runnerStatus.mode = "MODE_STAND";
     await page.waitForFunction(
-      () => !document.querySelector(".mode-option")?.disabled,
+      () => !document.querySelector(".mode-list button.mode-option")?.disabled,
     );
 
     await app.evaluate(({ BrowserWindow }) =>
