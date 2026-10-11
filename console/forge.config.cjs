@@ -49,13 +49,38 @@ module.exports = {
     { name: "@electron-forge/maker-dmg", platforms: ["darwin"] },
     { name: "@electron-forge/maker-zip", platforms: ["darwin"] },
     {
-      name: "@reforged/maker-appimage",
+      name: "@electron-forge/maker-deb",
       platforms: ["linux"],
       config: {
         options: {
+          name: "bello-mini-console",
+          description: "Bello Mini robot operator console",
+          maintainer: "Motomind",
+          homepage: "https://github.com/MotomindKR/bello_mujoco",
           bin: "bello-mini-console",
           icon: path.join(__dirname, "assets/bello-face.png"),
-          categories: ["Science", "Engineering"],
+          desktopTemplate: path.join(
+            __dirname,
+            "assets/bello-mini-console.desktop",
+          ),
+        },
+      },
+    },
+    {
+      name: "@electron-forge/maker-rpm",
+      platforms: ["linux"],
+      config: {
+        options: {
+          name: "bello-mini-console",
+          description: "Bello Mini robot operator console",
+          homepage: "https://github.com/MotomindKR/bello_mujoco",
+          license: "Proprietary",
+          bin: "bello-mini-console",
+          icon: path.join(__dirname, "assets/bello-face.png"),
+          desktopTemplate: path.join(
+            __dirname,
+            "assets/bello-mini-console.desktop",
+          ),
         },
       },
     },

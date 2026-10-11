@@ -62,7 +62,7 @@ test("closed controllers are never polled", () => {
   );
 });
 
-test("shoulder buttons are reported independently for the runner abort chord", () => {
+test("shoulder buttons are reported independently for tab navigation", () => {
   const controller = device();
   for (const [leftShoulder, rightShoulder] of [
     [true, false],
@@ -74,6 +74,23 @@ test("shoulder buttons are reported independently for the runner abort chord", (
     assert.equal(sample.l1, leftShoulder);
     assert.equal(sample.r1, rightShoulder);
   }
+});
+
+test("trigger axes are reported independently above half travel", () => {
+  const controller = device();
+  for (const [leftTrigger, rightTrigger, l2, r2] of [
+    [0, 0, false, false],
+    [0.5, 0.51, false, true],
+    [0.75, 0.25, true, false],
+    [1, 1, true, true],
+  ]) {
+    controller.axes = { leftTrigger, rightTrigger };
+    const sample = sampleController(controller, 0.12);
+    assert.equal(sample.l2, l2);
+    assert.equal(sample.r2, r2);
+  }
+  assert.equal(sampleController(null, 0.12).l2, false);
+  assert.equal(sampleController(null, 0.12).r2, false);
 });
 
 test("horizontal D-pad buttons are sampled independently", () => {
@@ -97,17 +114,22 @@ test("Y is sampled for the runner tracking toggle", () => {
   assert.equal(sampleController(controller, 0.12).y, true);
   assert.equal(sampleController(null, 0.12).y, false);
 });
-test("bumper releases cycle tabs without treating the abort chord as navigation", () => {
+test("bumper presses cycle tabs once per click", () => {
   const navigate = createTabNavigator();
   const sample = (l1, r1, connected = true) => ({ l1, r1, connected });
+  assert.equal(navigate(sample(true, false)), -1);
   assert.equal(navigate(sample(true, false)), 0);
-  assert.equal(navigate(sample(false, false)), -1);
-  assert.equal(navigate(sample(false, true)), 0);
-  assert.equal(navigate(sample(false, false)), 1);
-  assert.equal(navigate(sample(true, false)), 0);
+  assert.equal(navigate(sample(false, false)), 0);
+  assert.equal(navigate(sample(false, true)), 1);
+  assert.equal(navigate(sample(false, false)), 0);
   assert.equal(navigate(sample(true, true)), 0);
   assert.equal(navigate(sample(false, true)), 0);
   assert.equal(navigate(sample(false, false)), 0);
+  assert.equal(navigate(sample(true, false)), -1);
+  assert.equal(navigate(sample(true, true)), 1);
   assert.equal(navigate(sample(true, false)), 0);
+  assert.equal(navigate(sample(false, false)), 0);
+  assert.equal(navigate(sample(true, false)), -1);
   assert.equal(navigate(sample(false, false, false)), 0);
+  assert.equal(navigate(sample(true, false)), -1);
 });

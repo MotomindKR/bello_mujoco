@@ -89,7 +89,7 @@ paths in its `motions` and `tracking` entries.
 
 Support the robot before entering Hold. Use Back+Start for two seconds to enter
 Hold, then A for one second to enter Stand. Select modes with D-pad left/right
-and confirm with A. Hold L1 + R1 for one second to abort and damp. Reconnection
+and confirm with A. Hold L2 + R2 for one second to abort and damp. Reconnection
 requires neutral controller input. See [console controls](policy_console.md).
 
 The service starts after the four supporting daemons and stops before them.

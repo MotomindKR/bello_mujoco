@@ -1,23 +1,29 @@
-## Bello Mini Console 0.2.7
+## Bello Mini Console 0.2.8
 
 ### Changes
 
-- Release the left or right controller bumper to switch console tabs. Pressing both remains the one-second abort or recovery chord and does not switch tabs.
-- Show Stand as the active intermediate state without offering it as a selectable mode. Mark the active mode and selected next mode separately.
-- Keep named motions visible in a horizontal list. D-pad up/down or a click selects a motion; a single fresh one-second A hold starts it.
-- After fault cleanup is ready, release inputs and hold A for one second to clear the fault. The on-screen Clear fault button remains available.
+- Show named motions as a vertical scrolling list that fills the available space above the abort control.
+- Keep joystick dials and values fully visible in Sit and assisted standing layouts.
+- Show camera-aligned red X, green Y, and blue Z axes in both 3D views.
+- Keep Settings actions visible while scrolling connection and update options.
+- Install the Linux launcher and icon with DEB and RPM packages.
+- Check for console updates in Settings; installed Linux packages can verify and install newer public releases after disarming the robot and granting system authorization.
+- Show Stand as the active intermediate state outside the selectable mode row, even when an older runner advertises Stand. Reject clicks that attempt to select Stand.
+- Center the tab choices with left and right controller bumper hints immediately beside them.
+- Press a bumper to change tabs once; hold both triggers for one second to abort or recover from Fault.
+- Require input protocol version 2 in both the console and runner, so mixed versions cannot use the old bumper abort mapping.
 
 ### Runner update
 
-Update the policy runner alongside the console. This release changes the operator protocol and mode selection behavior. The runner still owns control transitions, hardware recovery and the 250 ms operator-stream lease.
+Update the runner with this release before operating the console. The runner uses L2 + R2 for abort and excludes Stand from gamepad selection. An older runner appears unavailable and receives only neutral samples.
 
 ### Installers
 
 | Platform | Asset suffix |
 | --- | --- |
 | macOS Apple silicon | `darwin-arm64.dmg` |
-| Linux amd64 | `linux-x64.AppImage` |
-| Linux arm64 | `linux-arm64.AppImage` |
+| Linux amd64 | `linux-x64.deb`, `linux-x64.rpm` |
+| Linux arm64 | `linux-arm64.deb`, `linux-arm64.rpm` |
 
 `SHA256SUMS` contains each installer's checksum. macOS builds are ad hoc signed, not Developer ID signed or notarized. Allow Local Network access when prompted.
 

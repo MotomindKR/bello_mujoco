@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Bello Mini Console
+Comment=Bello Mini robot operator console
+Exec=bello-mini-console %U
+Icon=bello-mini-console
+StartupNotify=true
+StartupWMClass=bello-mini-console
+Categories=Science;

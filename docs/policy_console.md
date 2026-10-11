@@ -12,7 +12,9 @@ The compact **Overview** keeps the robot, controller guidance, motion
 progress and feedback together. The 3D view fills its card; mode and runner status
 appear in the top bar. Header fields reserve fixed widths so digits and status
 changes do not shift adjacent components. IMU and pose ages, position coordinates and an
-expandable motor readout sit at the bottom-right of the 3D view.
+expandable motor readout sit at the bottom-right of the 3D view. A camera-aligned
+X/Y/Z marker in the lower-left shows the red, green, and blue world axes; the
+Tracking 3D view uses the same marker.
 The top bar keeps only the runner mode on the left, with power, temperature,
 services, and settings grouped at the right. The mode appears as one large word; its tooltip carries phase
 and fault details. Service indicators report freshness, including XRoboToolkit
@@ -42,9 +44,8 @@ The status tabs provide detailed read-only views:
 Search matches field names and values. Status views always update live. Each tab
 opens directly onto its search field and data, without a repeated page heading or
 endpoint subtitle. Switching tabs resets the search. Arrow keys, Home and End
-navigate the tabs. Release the left or right controller bumper to move one tab;
-pressing both bumpers together remains the abort/recovery chord and does not
-change tabs.
+navigate the tabs. Bumper hints flank the tab bar; press the left or right
+controller bumper to move one tab. A held bumper does not repeat navigation.
 Detailed tables scroll independently on smaller screens. Floating-point readings
 show at most three decimal places, with trailing zeros removed; hover over a
 detailed table value for the original precision. Integer counters and timestamps
@@ -149,7 +150,7 @@ Saving only this preference keeps all service streams and the operator lease
 open. The style changes button artwork and labels, using JulioCacko's
 [Free Input Prompts Pack 1.4](https://juliocacko.itch.io/free-input-prompts), bundled
 locally under CC0. It does not remap SDL input: confirm is Cross on PlayStation
-and A on Xbox/Switch; abort is L1 + R1, LB + RB, or L + R respectively.
+and A on Xbox/Switch; abort is L2 + R2, LT + RT, or ZL + ZR respectively.
 `controllerStyle` accepts `playstation`, `xbox`, or `switch`; the shipped default
 is `xbox`. Prompt variants and both 3D views follow the selected appearance.
 The Settings appearance selector saves `theme: light | dark | system` without
@@ -167,6 +168,10 @@ when no gamepad is connected. Closing the stream releases the lease; 250 ms
 without samples expires it. A rejected console cannot change the current
 owner's commands or neutral gate. The console retries once per second and a
 new owner must release all controls before operating.
+This console requires runner input protocol version 2. Until the runner reports
+that version, the console sends neutral samples and marks Runner unavailable;
+install the matching runner before using controller input.
+The updated runner rejects older console samples before accepting control.
 
 ## Controller sequence
 
@@ -174,7 +179,7 @@ new owner must release all controls before operating.
 | --- | --- | --- |
 | Disarmed | Release all sticks/buttons, then Back + Start for 2 seconds | Acquire control and ramp to Hold |
 | Crane Hold, ramp complete | A for 1 second | Stand |
-| Any view | Release left/right bumper separately | Previous/next console tab |
+| Any view | Press left/right bumper | Previous/next console tab |
 | Stand | D-pad left/right | Select Locomotion, Motion, or configured Tracking/Sit |
 | Stand, Motion selected | D-pad up/down | Select a named motion in the visible list |
 | Stand | A for 1 second with neutral sticks | Enter the selected mode or motion |
@@ -185,8 +190,8 @@ new owner must release all controls before operating.
 | Tracking, reference buffer ready | A for 1 second with neutral sticks | Blend back to Stand |
 | Named motion | Completion | Blend back to Stand |
 | Named motion | Policy inference/action, tilt deviation, or tracking termination failure | Blend back to Stand; retain control |
-| Outside Fault | L1 + R1 for 1 second | Latched abort, damping and Fault |
-| Fault, after cleanup and releasing inputs | L1 + R1 for 1 second or console **Hold to idle** | Disable damped groups, recover faults and verify Idle; return to Disarmed |
+| Outside Fault | L2 + R2 for 1 second | Latched abort, damping and Fault |
+| Fault, after cleanup and releasing inputs | L2 + R2 for 1 second or console **Hold to idle** | Disable damped groups, recover faults and verify Idle; return to Disarmed |
 | Fault, after cleanup | Console **Clear fault**, with neutral inputs | Recover hardware groups and return to Disarmed |
 | Fault, after cleanup | Release inputs, then hold A for 1 second | Recover hardware groups and return to Disarmed |
 
@@ -316,7 +321,7 @@ damps immediately. Reference interpolation is not a guarantee of physical tracki
 These changes require HIL and supported-robot commissioning before physical use.
 
 Returns keep control leases. Reconnection cannot automatically
-reenter Tracking. L1+R1 held for one second still damps the robot and latches Fault;
+reenter Tracking. L2+R2 held for one second still damps the robot and latches Fault;
 hardware feedback and lease faults retain that priority. Physical deployment and
 live headset quality require separate commissioning; synthetic lifecycle and
 prerecorded checkpoint parity do not establish either.
@@ -330,8 +335,16 @@ cd console
 npm ci
 npm test
 npm run make:mac       # macOS host: DMG and ZIP
-npm run make:linux     # Linux host: AppImage (requires squashfs-tools)
+npm run make:linux     # Linux host: DEB and RPM (requires dpkg-deb, fakeroot, rpmbuild)
 ```
+
+Install the DEB or RPM through the system package manager to add the Linux
+application launcher and icon. In **Settings > Console updates**, check the
+latest public GitHub release. On an installed Linux console, a newer matching
+package can be downloaded, checked against `SHA256SUMS`, installed after a
+system authorization prompt, and restarted. The robot must be Disarmed first.
+Unpacked builds and macOS can open the release page from Settings for manual
+installation.
 
 Forge rebuilds the native module and keeps SDL's native library outside ASAR.
 Artifacts go to ignored `console/out/make`. macOS packages are unsigned local
@@ -381,14 +394,14 @@ pauses its ramp); Stand continues; Locomotion zeros its command and returns to
 Stand; healthy named motions finish and return to Stand. Hardware leases stay
 with the runner. A previously confirmed explicit abort remains latched.
 
-Hold the Overview **Hold to abort** button for one second, or hold **L1 + R1**
+Hold the Overview **Hold to abort** button for one second, or hold **L2 + R2**
 together for one second on the controller. The console button works without a gamepad. Releasing
 early, losing focus, or losing the runner connection cancels the button hold.
 Both paths request a runner abort and release hardware leases with damping,
 without disabling the motors. The runner keeps a latched Fault for explicit
 recovery. The button changes to **Hold to idle** after aborting, and becomes
 available once damping cleanup finishes. Release the first hold, then hold the
-button or **L1 + R1** again for one second with neutral sticks. This disables
+button or **L2 + R2** again for one second with neutral sticks. This disables
 damped groups, recovers hardware faults and verifies fresh Idle feedback before
 returning to Disarmed. A continuous press cannot trigger both actions.
 **Clear fault** uses the same recovery path. If recovery fails, the error remains
@@ -406,8 +419,9 @@ effect. Explicit hardware disable and daemon shutdown still disable motors.
 
 ### Motion selection and upper-body tracking
 
-The horizontal motion list stays visible while Motion is selected and scrolls to
-the selected item. D-pad up/down or a click selects a named motion. Release A
+The vertical motion list fills the space above the abort control while Motion
+is selected and scrolls to the selected item. D-pad up/down or a click selects
+a named motion. Release A
 after navigation, then hold it for one second
 to start the selected motion. The runner owns selection and confirmation timing.
 
@@ -450,9 +464,10 @@ Long fault details scroll within their panel.
 Named bundles appear inside one Motion mode. Horizontal and vertical selection
 wrap once per press. Navigation cancels an in-progress A hold; release A before
 confirming the new selection. The motion list retains its selection across modes.
-Stand appears as the active intermediate state, never as a selectable choice.
-The mode row marks the active mode in green and the selected next mode with a
-blue inset border; both marks appear when the active and selected modes differ.
+Stand appears as the active intermediate state beside the Mode heading, never
+in the selectable mode row. The mode row marks an active selectable mode in
+green and the selected next mode with a blue inset border; both marks appear
+when the active and selected modes differ.
 The top bar shows the hottest fresh motor reading and its name above 60 C.
 Otherwise it shows green Temp OK only when all motor telemetry is fresh and
 available; missing or stale readings show Temp --. Hot readings are red. The indicator has
@@ -478,8 +493,8 @@ never bypasses the controller connection or reconnect-neutrality gates for
 control. Unknown choices and selections outside Stand are rejected. Clicking or
 D-pad navigation cancels confirmation; release confirm before starting again.
 Small arrow hints light up with their corresponding D-pad presses. Entry,
-confirm, and shoulder-abort prompts fill using runner-reported hold progress.
-Releasing either shoulder or losing samples resets an unfinished abort timer.
+confirm, and trigger-abort prompts fill using runner-reported hold progress.
+Releasing either trigger or losing samples resets an unfinished abort timer.
 The on-screen abort button keeps its separate one-second pointer/keyboard hold.
 
 ## Assisted back-down startup
@@ -532,7 +547,7 @@ bent Hold. A held A cannot skip from balance confirmation into Stand.
 Console/network loss or a disconnected gamepad freezes startup progress and
 retains the current target/gains. It does not stop, disable or release the motor
 groups. Reconnect requires neutral input. No display connection drives this sequence.
-L1+R1 for one second, or the console's hold-to-abort button, damps the robot in
+L2+R2 for one second, or the console's hold-to-abort button, damps the robot in
 any startup phase. These are assisted setup positions; the runner does not
 perform an autonomous get-up from the floor.
 
@@ -566,7 +581,7 @@ engagement; the normal upright tilt limit resumes during ankle engagement.
 While awaiting the initial support confirmation, the standing policy retains its
 normal tilt limit. All other hardware feedback, command and lease checks remain
 active throughout; faults or a
-one-second L1+R1/console abort damp the robot.
+one-second L2+R2/console abort damp the robot.
 
 Console/network loss or a disconnected gamepad freezes the current assisted
 target, gains and phase, including ankle release and motor unloading. It does

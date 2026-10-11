@@ -6,6 +6,7 @@ import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment
 import URDFLoader from "urdf-loader";
 import { jointPositions, parseTransmissions } from "./transmission.mjs";
 import { number } from "./format.mjs";
+import { drawAxisIndicator } from "./axis-indicator.mjs";
 
 function disposeObject(root) {
   const resources = new Set();
@@ -99,6 +100,7 @@ export function RobotView({ state, dark, visible }) {
   const active = useRef(visible);
   active.current = visible;
   const mount = useRef(null);
+  const axis = useRef(null);
   const model = useRef(null);
   const redraw = useRef(true);
   const transmissions = useRef([]);
@@ -243,6 +245,7 @@ export function RobotView({ state, dark, visible }) {
         if (redraw.current) {
           redraw.current = false;
           renderer.render(scene, camera);
+          drawAxisIndicator(axis.current, camera);
         }
       }
     };
@@ -314,6 +317,14 @@ export function RobotView({ state, dark, visible }) {
             : "BELLO MINI · Waiting for feedback")}
       </span>
       <FeedbackOverlay state={state} />
+      <canvas
+        ref={axis}
+        className="axis-indicator"
+        width="144"
+        height="144"
+        role="img"
+        aria-label="View axes: X red, Y green, Z blue"
+      />
     </div>
   );
 }

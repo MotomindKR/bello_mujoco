@@ -4,6 +4,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Focus } from "lucide-react";
 import { number } from "./format.mjs";
 import { trackingStatus } from "./tracking-status.mjs";
+import { drawAxisIndicator } from "./axis-indicator.mjs";
 
 const parts = [
   ["body", "Body"],
@@ -13,6 +14,7 @@ const parts = [
 
 export function TrackingView({ state, dark }) {
   const host = useRef(null);
+  const axis = useRef(null);
   const view = useRef(null);
   const latest = useRef(state.tracking);
   latest.current = state.tracking;
@@ -131,6 +133,7 @@ export function TrackingView({ state, dark }) {
       }
       controls.update();
       renderer.render(scene, camera);
+      drawAxisIndicator(axis.current, camera);
     });
     return () => {
       view.current = null;
@@ -158,6 +161,14 @@ export function TrackingView({ state, dark }) {
         className="tracking-canvas"
         ref={host}
         aria-label="Native Y-up body and hand skeleton"
+      />
+      <canvas
+        ref={axis}
+        className="axis-indicator"
+        width="144"
+        height="144"
+        role="img"
+        aria-label="View axes: X red, Y green, Z blue"
       />
       <div className="tracking-toolbar">
         <div

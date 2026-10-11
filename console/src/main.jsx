@@ -4,7 +4,7 @@ import "pretendard/dist/web/variable/pretendardvariable.css";
 import "./style.css";
 import { Diagnostics, statusTabs } from "./Diagnostics.jsx";
 import { powerAlerts } from "./PowerStatus.jsx";
-import { GamepadStyle, GamepadTheme } from "./GamepadButton.jsx";
+import { GamepadButton, GamepadStyle, GamepadTheme } from "./GamepadButton.jsx";
 import { OperatorCard } from "./OperatorCard.jsx";
 import { TrackingView } from "./TrackingView.jsx";
 import { RobotView } from "./RobotView.jsx";
@@ -88,52 +88,68 @@ function App() {
                 onClose={() => setSettingsOpen(false)}
               />
             )}
-            <nav
-              className="status-tabs"
-              role="tablist"
-              aria-label="Console views"
-            >
-              {statusTabs.map((name, index) => (
-                <button
-                  key={name}
-                  type="button"
-                  role="tab"
-                  id={`tab-${name}`}
-                  aria-controls={`panel-${name}`}
-                  aria-selected={tab === name}
-                  tabIndex={tab === name ? 0 : -1}
-                  onClick={() => setTab(name)}
-                  onKeyDown={(event) => {
-                    const direction =
-                      event.key === "ArrowRight"
-                        ? 1
-                        : event.key === "ArrowLeft"
-                          ? -1
-                          : 0;
-                    if (
-                      !direction &&
-                      event.key !== "Home" &&
-                      event.key !== "End"
-                    )
-                      return;
-                    event.preventDefault();
-                    const next =
-                      event.key === "Home"
-                        ? statusTabs[0]
-                        : event.key === "End"
-                          ? statusTabs.at(-1)
-                          : statusTabs[
-                              (index + direction + statusTabs.length) %
-                                statusTabs.length
-                            ];
-                    setTab(next);
-                    document.getElementById(`tab-${next}`).focus();
-                  }}
-                >
-                  {name}
-                </button>
-              ))}
-            </nav>
+            <div className="status-tabs">
+              <span
+                className="tab-bumper-hint"
+                title="Previous tab"
+                aria-hidden="true"
+              >
+                <GamepadButton name="L1" sample={state.controllerSample} />
+              </span>
+              <nav
+                className="status-tab-list"
+                role="tablist"
+                aria-label="Console views"
+              >
+                {statusTabs.map((name, index) => (
+                  <button
+                    key={name}
+                    type="button"
+                    role="tab"
+                    id={`tab-${name}`}
+                    aria-controls={`panel-${name}`}
+                    aria-selected={tab === name}
+                    tabIndex={tab === name ? 0 : -1}
+                    onClick={() => setTab(name)}
+                    onKeyDown={(event) => {
+                      const direction =
+                        event.key === "ArrowRight"
+                          ? 1
+                          : event.key === "ArrowLeft"
+                            ? -1
+                            : 0;
+                      if (
+                        !direction &&
+                        event.key !== "Home" &&
+                        event.key !== "End"
+                      )
+                        return;
+                      event.preventDefault();
+                      const next =
+                        event.key === "Home"
+                          ? statusTabs[0]
+                          : event.key === "End"
+                            ? statusTabs.at(-1)
+                            : statusTabs[
+                                (index + direction + statusTabs.length) %
+                                  statusTabs.length
+                              ];
+                      setTab(next);
+                      document.getElementById(`tab-${next}`).focus();
+                    }}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </nav>
+              <span
+                className="tab-bumper-hint"
+                title="Next tab"
+                aria-hidden="true"
+              >
+                <GamepadButton name="R1" sample={state.controllerSample} />
+              </span>
+            </div>
           </div>
           {statusTabs.slice(1).map((name) => (
             <section

@@ -34,9 +34,20 @@ samples are missing or stale, and green when fresh body or hand samples arrive.
 Before the first headset packet, the server's empty stream is shown as Waiting.
 
 Build on the target architecture with `npm run make:mac` (DMG) or
-`npm run make:linux` (AppImage). Linux packaging requires `squashfs-tools`.
+`npm run make:linux` (DEB and RPM). Linux packaging requires `dpkg-deb`,
+`fakeroot`, and `rpmbuild`.
 Forge rebuilds the SDL controller module for Electron on each native runner.
 The Bello face icon source is in [assets](assets/README.md).
+Install the DEB or RPM through the distribution package manager to add the
+desktop launcher and icon.
+
+In **Settings > Console updates**, check the latest public GitHub release. An
+installed Linux DEB or RPM can download its matching newer package, verify it
+against the release `SHA256SUMS`, request system authorization through `pkexec`,
+install it with `dpkg` or `rpm`, and restart. Disarm the robot before installing.
+Updates from an unpacked build, unsupported Linux distributions, and macOS
+remain manual through **Open releases**. The repository must be public for
+in-app release checks to work.
 
 CI builds macOS for Apple silicon (arm64) and Linux for x64 (amd64) and arm64.
 Intel Macs are not supported. It runs for matching
@@ -45,12 +56,12 @@ in `package.json` and `package-lock.json`, update `RELEASE_NOTES.md`, commit the
 release, then tag it:
 
 ```bash
-git tag console-v0.2.7
-git push origin console-v0.2.7
+git tag console-v0.2.8
+git push origin console-v0.2.8
 ```
 
 The tag must exactly match `console-v` plus the package version. After all three
-packaged smoke tests pass, CI publishes the DMGs, AppImages and `SHA256SUMS` to a
+packaged smoke tests pass, CI publishes the DMG, DEBs, RPMs and `SHA256SUMS` to a
 GitHub Release. The `console-darwin-arm64` / `console-linux-{x64,arm64}`
 Actions artifacts remain available as well. macOS bundles use an ad-hoc signature
 to bind their bundle identity and privacy description. They are not Developer ID
@@ -69,7 +80,8 @@ localhost smoke test does not verify macOS LAN permission: launch from Finder
 and verify live hardware telemetry after accepting the Local Network prompt.
 Private asset checkouts require `BELLO_STACK_DEPLOY_KEY` and
 `PICO_SMPLX_DEPLOY_KEY`. CI tests the packaged Mac app and the contents extracted
-from each AppImage, including loading the native SDL module.
+from each DEB, including loading the native SDL module, and compares the RPM
+launcher and icon with their source files.
 
 Set `BELLO_CONSOLE_CONFIG` to an absolute JSON configuration path to override
 `config.json`. The console never acquires a hardware lease or writes motor targets.

@@ -242,6 +242,18 @@ main {
 .model canvas {
   display: block;
 }
+.axis-indicator {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 1;
+  width: 72px;
+  height: 72px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--model-background) 88%, transparent);
+  pointer-events: none;
+}
 .model-tag {
   position: absolute;
   right: 20px;
@@ -317,11 +329,6 @@ main {
 }
 .mode-option.active:disabled {
   opacity: 1;
-}
-.mode-indicator {
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 kbd {
   font:
@@ -538,13 +545,30 @@ input:focus-visible,
   flex-shrink: 0;
 }
 .settings-dialog {
-  width: min(480px, calc(100% - 24px));
-  max-height: calc(100% - 40px);
-  padding: 24px;
+  width: min(520px, calc(100% - 24px));
+  height: min(720px, calc(100dvh - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface);
   color: var(--foreground);
+}
+.settings-dialog form {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100%;
+}
+.settings-content {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px 24px;
+  scrollbar-color: var(--border) transparent;
+  scrollbar-width: thin;
+}
+html:has(.settings-dialog[open]) {
+  overflow: hidden;
 }
 .settings-dialog::backdrop {
   background: var(--overlay);
@@ -554,6 +578,8 @@ input:focus-visible,
   justify-content: space-between;
   align-items: center;
   gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
 }
 .dialog-heading h2 {
   margin: 0;
@@ -566,7 +592,7 @@ input:focus-visible,
 .settings-dialog label {
   display: block;
   font-weight: 600;
-  margin: 16px 0 8px;
+  margin: 12px 0 6px;
 }
 .settings-dialog input {
   width: 100%;
@@ -584,7 +610,7 @@ input:focus-visible,
   margin-top: 8px;
 }
 .service-addresses {
-  margin-top: 20px;
+  margin-top: 14px;
 }
 .service-addresses summary {
   cursor: pointer;
@@ -595,7 +621,7 @@ input:focus-visible,
 }
 .connection-note {
   font-size: 13px;
-  margin-top: 24px;
+  margin: 12px 0 0;
 }
 .settings-dialog .field-error {
   color: var(--error);
@@ -607,9 +633,34 @@ input:focus-visible,
 .dialog-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.settings-update-actions {
+  display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 24px;
+  margin-top: 12px;
+}
+.settings-version {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.settings-update-help {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+@media (max-width: 480px) {
+  .dialog-heading,
+  .dialog-actions {
+    padding-inline: 16px;
+  }
+  .settings-content {
+    padding-inline: 16px;
+  }
 }
 
 [hidden] {
@@ -617,10 +668,27 @@ input:focus-visible,
 }
 .status-tabs {
   display: flex;
+  align-items: center;
+  justify-content: center;
   gap: 4px;
   padding: 6px 12px;
-  overflow-x: auto;
   border-bottom: 1px solid var(--border);
+}
+.status-tab-list {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.status-tab-list::-webkit-scrollbar {
+  display: none;
+}
+.tab-bumper-hint {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 .status-tabs button {
   flex-shrink: 0;
@@ -1038,6 +1106,10 @@ kbd.pressed {
   font-size: 13px;
   margin-bottom: 10px;
 }
+.active-stand {
+  color: var(--success);
+  font-weight: 600;
+}
 .mode-list.unavailable {
   color: var(--body);
 }
@@ -1154,12 +1226,20 @@ kbd.pressed {
   height: 680px;
   flex: 0 0 auto;
   display: grid;
-  grid-template-rows: 96px 28px 84px 220px 44px minmax(0, 1fr);
+  grid-template-rows: 96px 28px 190px 160px 44px minmax(0, 1fr);
   gap: 8px;
 }
 .operator-card > * {
   min-width: 0;
   min-height: 0;
+}
+.operator-card:has(.motion-picker):has(.stick-slot:empty) .mode-picker {
+  grid-row: 3 / span 2;
+  grid-column: 1;
+}
+.operator-card:has(.motion-picker):has(.stick-slot:empty) .stick-slot {
+  grid-row: 4;
+  grid-column: 1;
 }
 .operator-card .counter {
   flex-shrink: 0;
@@ -1233,9 +1313,6 @@ kbd.pressed {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.operator-card .mode-indicator {
-  flex: 1 1 0;
-}
 .operator-card .sticks {
   height: 100%;
   margin: 0;
@@ -1265,18 +1342,28 @@ kbd.pressed {
   height: 20px;
 }
 .operator-card .stick-indicator {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  grid-template-rows: 20px minmax(0, 1fr);
+  gap: 0 12px;
   padding: 8px 12px;
   overflow: hidden;
+}
+.operator-card .stick-label {
+  grid-column: 2;
+  grid-row: 1;
 }
 .operator-card .stick-dial {
   width: 88px;
   height: 88px;
-  flex-shrink: 0;
-  margin: 8px 0;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  margin: 0;
 }
 .operator-card .stick-velocity {
-  flex: 1;
-  overflow: auto;
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
 }
 .operator-card .fault {
   display: flex;
@@ -1321,24 +1408,53 @@ kbd.pressed {
   .overview .operator-card {
     padding: 12px;
     gap: 6px;
-    grid-template-rows: 76px 22px 84px 112px 44px minmax(100px, 1fr);
+    grid-template-rows: 76px 22px 156px 80px 44px minmax(100px, 1fr);
   }
   .overview .stick-indicator {
-    display: grid;
-    grid-template-columns: 56px minmax(0, 1fr);
-    grid-template-rows: 20px minmax(0, 1fr);
-    gap: 0 12px;
+    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-rows: 14px minmax(0, 1fr);
+    gap: 0 8px;
+    padding: 4px 8px;
   }
   .overview .stick-label {
-    grid-column: 1 / -1;
+    font-size: 11px;
+    line-height: 14px;
   }
   .overview .stick-dial {
-    width: 48px;
-    height: 48px;
-    margin: 0;
+    width: 40px;
+    height: 40px;
   }
   .overview .stick-velocity > div {
     flex-wrap: nowrap;
+    font-size: 11px;
+    line-height: 14px;
+    padding: 0;
+  }
+  .overview .stick-velocity dd span {
+    font-size: 10px;
+  }
+}
+@media (max-width: 700px) {
+  .operator-card .stick-indicator {
+    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-rows: 14px minmax(0, 1fr);
+    gap: 0 6px;
+    padding: 6px;
+  }
+  .operator-card .stick-label {
+    font-size: 11px;
+    line-height: 14px;
+  }
+  .operator-card .stick-dial {
+    width: 40px;
+    height: 40px;
+  }
+  .operator-card .stick-velocity > div {
+    flex-wrap: nowrap;
+    font-size: 11px;
+  }
+  .operator-card .stick-velocity dd span {
+    font-size: 10px;
   }
 }
 
@@ -1441,10 +1557,11 @@ kbd.pressed {
 }
 .motion-picker {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: 22px minmax(0, 1fr);
   gap: 4px;
   height: 100%;
   min-width: 0;
+  min-height: 0;
 }
 .motion-list-heading {
   display: flex;
@@ -1464,9 +1581,11 @@ kbd.pressed {
 .motion-choices {
   position: relative;
   display: flex;
+  flex-direction: column;
   gap: 4px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
   margin: 0;
   padding: 4px;
   list-style: none;
@@ -1476,6 +1595,7 @@ kbd.pressed {
 }
 .motion-choices li {
   flex: 0 0 auto;
+  width: 100%;
   border-radius: 4px;
   overflow: hidden;
 }
@@ -1684,7 +1804,7 @@ kbd.pressed {
 .controller-style-picker {
   border: 0;
   padding: 0;
-  margin: 24px 0;
+  margin: 0 0 20px;
   min-width: 0;
 }
 .controller-style-picker legend {
@@ -1730,7 +1850,9 @@ kbd.pressed {
   margin-top: 8px;
 }
 .settings-section-title {
-  margin: 20px 0 8px;
+  margin: 0 0 12px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
   font-size: 14px;
   font-weight: 600;
 }

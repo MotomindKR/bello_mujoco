@@ -110,6 +110,7 @@ impl State {
                 tracking_available: false,
                 tracking_enabled: false,
                 tracking_live: false,
+                input_protocol_version: 2,
                 ..OperatorStatus::default()
             },
             last_sequence: None,
@@ -165,6 +166,10 @@ impl State {
     }
 
     fn receive(&mut self, sample: ControllerSample, now: Instant) -> Result<()> {
+        ensure!(
+            sample.input_protocol_version == 2,
+            "console input protocol version 2 required"
+        );
         let axes = [sample.forward, sample.lateral, sample.yaw];
         ensure!(
             axes.iter()
@@ -202,7 +207,7 @@ impl State {
             self.axes = [0.; 3];
             return Ok(());
         }
-        if sample.connected && sample.l1 && sample.r1 {
+        if sample.connected && sample.l2 && sample.r2 {
             let idle = self.status.mode == Mode::Fault as i32;
             if self.stop_consumed {
                 self.axes = [0.; 3];
@@ -211,7 +216,7 @@ impl State {
             if idle
                 && (!self.status.can_clear_fault
                     || self.neutral_required
-                    || !neutral_except_shoulders(&sample))
+                    || !neutral_except_triggers(&sample))
             {
                 self.abort_since = None;
                 self.status.abort_progress = 0.;
@@ -490,10 +495,10 @@ impl State {
 }
 
 fn neutral_input(sample: &ControllerSample) -> bool {
-    !sample.l1 && !sample.r1 && neutral_except_shoulders(sample)
+    !sample.l2 && !sample.r2 && neutral_except_triggers(sample)
 }
 
-fn neutral_except_shoulders(sample: &ControllerSample) -> bool {
+fn neutral_except_triggers(sample: &ControllerSample) -> bool {
     [sample.forward, sample.lateral, sample.yaw]
         .iter()
         .all(|v| v.abs() <= NEUTRAL)
@@ -514,8 +519,8 @@ fn neutral_except_a(sample: &ControllerSample) -> bool {
         && !(sample.back
             || sample.start
             || sample.y
-            || sample.l1
-            || sample.r1
+            || sample.l2
+            || sample.r2
             || sample.dpad_up
             || sample.dpad_down
             || sample.dpad_left
@@ -846,6 +851,7 @@ mod tests {
                             sequence: self.sequence,
                             sample_monotonic_ns: self.sequence,
                             connected: true,
+                            input_protocol_version: 2,
                             ..sample.clone()
                         },
                         self.now,
@@ -1068,37 +1074,37 @@ mod tests {
         assert_eq!(source.snapshot().request, Some(RequestMode::Hold));
     }
     #[tokio::test]
-    async fn shoulder_abort_then_idle_requires_release_and_allows_rearming() {
+    async fn trigger_abort_then_idle_requires_release_and_allows_rearming() {
         let source = Source::bind("127.0.0.1:0".parse().unwrap(), vec![]).unwrap();
         let mut controller = Controller::new();
-        let shoulders = ControllerSample {
-            l1: true,
-            r1: true,
+        let triggers = ControllerSample {
+            l2: true,
+            r2: true,
             ..Default::default()
         };
-        controller.send(&mut source.state.lock().unwrap(), shoulders.clone(), 1040);
+        controller.send(&mut source.state.lock().unwrap(), triggers.clone(), 1040);
         assert_eq!(source.snapshot().request, Some(RequestMode::Abort));
         source.fault("Operator abort");
         source.allow_fault_clear("");
-        controller.send(&mut source.state.lock().unwrap(), shoulders.clone(), 2200);
+        controller.send(&mut source.state.lock().unwrap(), triggers.clone(), 2200);
         assert!(!source.take_fault_clear());
         controller.send(
             &mut source.state.lock().unwrap(),
             ControllerSample::default(),
             20,
         );
-        controller.send(&mut source.state.lock().unwrap(), shoulders.clone(), 800);
+        controller.send(&mut source.state.lock().unwrap(), triggers.clone(), 800);
         assert!(!source.take_fault_clear());
         controller.send(
             &mut source.state.lock().unwrap(),
             ControllerSample::default(),
             20,
         );
-        controller.send(&mut source.state.lock().unwrap(), shoulders.clone(), 1040);
+        controller.send(&mut source.state.lock().unwrap(), triggers.clone(), 1040);
         assert!(source.take_fault_clear());
         assert_ne!(source.snapshot().request, Some(RequestMode::Abort));
         assert!(source.disarm());
-        controller.send(&mut source.state.lock().unwrap(), shoulders, 2200);
+        controller.send(&mut source.state.lock().unwrap(), triggers, 2200);
         assert_ne!(source.snapshot().request, Some(RequestMode::Abort));
         assert!(!source.take_fault_clear());
         controller.send(
@@ -1122,30 +1128,30 @@ mod tests {
     fn idle_hold_requires_cleanup_neutral_sticks_and_continuous_samples() {
         let (mut state, mut controller) = fixture();
         state.status.mode = Mode::Fault as i32;
-        let shoulders = ControllerSample {
-            l1: true,
-            r1: true,
+        let triggers = ControllerSample {
+            l2: true,
+            r2: true,
             ..Default::default()
         };
-        controller.send(&mut state, shoulders.clone(), 1040);
+        controller.send(&mut state, triggers.clone(), 1040);
         assert!(!state.clear_requested);
         state.status.can_clear_fault = true;
         controller.send(
             &mut state,
             ControllerSample {
                 forward: 0.5,
-                ..shoulders.clone()
+                ..triggers.clone()
             },
             1040,
         );
         assert!(!state.clear_requested);
-        controller.send(&mut state, shoulders.clone(), 800);
+        controller.send(&mut state, triggers.clone(), 800);
         controller.now += STALE + Duration::from_millis(1);
-        controller.send(&mut state, shoulders.clone(), 1040);
+        controller.send(&mut state, triggers.clone(), 1040);
         assert!(!state.clear_requested);
         assert_eq!(state.status.abort_progress, 0.);
         controller.send(&mut state, ControllerSample::default(), 20);
-        controller.send(&mut state, shoulders, 1040);
+        controller.send(&mut state, triggers, 1040);
         assert!(state.clear_requested);
     }
 
@@ -1293,6 +1299,7 @@ mod tests {
                     sequence: 2,
                     sample_monotonic_ns: 2,
                     connected: false,
+                    input_protocol_version: 2,
                     selection: Some(proto::Selection {
                         choice: Some(proto::selection::Choice::Mode("Locomotion".into())),
                     }),
@@ -1324,8 +1331,8 @@ mod tests {
                 ..Default::default()
             },
             ControllerSample {
-                l1: true,
-                r1: true,
+                l2: true,
+                r2: true,
                 ..Default::default()
             },
         ] {
@@ -1533,6 +1540,7 @@ mod tests {
                     sample_monotonic_ns: 1,
                     abort: true,
                     connected: false,
+                    input_protocol_version: 2,
                     forward: 0.5,
                     ..Default::default()
                 },
@@ -1663,8 +1671,8 @@ mod tests {
         controller.send(&mut state, ControllerSample::default(), 20);
         assert_eq!(state.status.confirm_progress, 0.);
         let abort = ControllerSample {
-            l1: true,
-            r1: true,
+            l2: true,
+            r2: true,
             ..Default::default()
         };
         controller.send(&mut state, abort.clone(), 800);
@@ -1678,7 +1686,7 @@ mod tests {
         assert!(!state.aborted);
     }
     #[test]
-    fn abort_requires_both_shoulders_continuously_for_one_second() {
+    fn abort_requires_both_triggers_continuously_for_one_second() {
         for mode in [
             Mode::Disarmed,
             Mode::Hold,
@@ -1688,12 +1696,12 @@ mod tests {
         ] {
             let (mut state, mut controller) = fixture();
             state.status.mode = mode as i32;
-            for (l1, r1) in [(true, false), (false, true), (false, false)] {
+            for (l2, r2) in [(true, false), (false, true), (false, false)] {
                 controller.send(
                     &mut state,
                     ControllerSample {
-                        l1,
-                        r1,
+                        l2,
+                        r2,
                         ..Default::default()
                     },
                     40,
@@ -1703,8 +1711,8 @@ mod tests {
             controller.send(
                 &mut state,
                 ControllerSample {
-                    l1: true,
-                    r1: true,
+                    l2: true,
+                    r2: true,
                     ..Default::default()
                 },
                 1000,
@@ -1714,7 +1722,7 @@ mod tests {
             controller.send(
                 &mut state,
                 ControllerSample {
-                    l1: true,
+                    l2: true,
                     ..Default::default()
                 },
                 20,
@@ -1723,8 +1731,8 @@ mod tests {
             controller.send(
                 &mut state,
                 ControllerSample {
-                    l1: true,
-                    r1: true,
+                    l2: true,
+                    r2: true,
                     ..Default::default()
                 },
                 1000,
@@ -1733,8 +1741,8 @@ mod tests {
             controller.send(
                 &mut state,
                 ControllerSample {
-                    l1: true,
-                    r1: true,
+                    l2: true,
+                    r2: true,
                     ..Default::default()
                 },
                 40,
@@ -1746,15 +1754,54 @@ mod tests {
     }
 
     #[test]
-    fn either_shoulder_prevents_reconnect_neutrality() {
+    fn held_bumpers_do_not_abort() {
+        let (mut state, mut controller) = fixture();
+        assert_eq!(state.status.input_protocol_version, 2);
+        controller.send(
+            &mut state,
+            ControllerSample {
+                l1: true,
+                r1: true,
+                ..Default::default()
+            },
+            1200,
+        );
+        assert!(!state.aborted);
+        assert_eq!(state.status.abort_progress, 0.);
+    }
+
+    #[test]
+    fn old_console_samples_are_rejected_before_control() {
+        let mut state = State::new(vec![]).unwrap();
+        let sample = ControllerSample {
+            connected: true,
+            l1: true,
+            r1: true,
+            sequence: 1,
+            sample_monotonic_ns: 1,
+            ..Default::default()
+        };
+        assert!(
+            state
+                .receive(sample, Instant::now())
+                .unwrap_err()
+                .to_string()
+                .contains("input protocol version 2 required")
+        );
+        assert!(!state.aborted);
+        assert!(state.received.is_none());
+    }
+
+    #[test]
+    fn either_trigger_prevents_reconnect_neutrality() {
         let mut state = State::new(vec![]).unwrap();
         let mut controller = Controller::new();
-        for (l1, r1) in [(true, false), (false, true)] {
+        for (l2, r2) in [(true, false), (false, true)] {
             controller.send(
                 &mut state,
                 ControllerSample {
-                    l1,
-                    r1,
+                    l2,
+                    r2,
                     ..Default::default()
                 },
                 20,
@@ -1773,8 +1820,8 @@ mod tests {
         controller.send(
             &mut state,
             ControllerSample {
-                l1: true,
-                r1: true,
+                l2: true,
+                r2: true,
                 ..Default::default()
             },
             1040,
@@ -1831,6 +1878,7 @@ mod tests {
             sequence: controller.sequence,
             sample_monotonic_ns: controller.sequence,
             connected: false,
+            input_protocol_version: 2,
             ..Default::default()
         };
         assert!(state.receive(invalid, controller.now).is_err());
@@ -1856,6 +1904,7 @@ mod tests {
                 sequence,
                 sample_monotonic_ns: sequence,
                 connected: false,
+                input_protocol_version: 2,
                 ..Default::default()
             })
             .await
@@ -1864,8 +1913,8 @@ mod tests {
             let rejected = other
                 .exchange(tokio_stream::iter([ControllerSample {
                     connected: true,
-                    l1: true,
-                    r1: true,
+                    l2: true,
+                    r2: true,
                     sequence: 1,
                     sample_monotonic_ns: 1,
                     ..Default::default()

@@ -7,12 +7,12 @@ export function MotionPicker({ operator, sample, choosing, onSelect }) {
     const item = selected.current;
     if (item) {
       const list = item.parentElement;
-      if (item.offsetLeft < list.scrollLeft) list.scrollLeft = item.offsetLeft;
+      if (item.offsetTop < list.scrollTop) list.scrollTop = item.offsetTop;
       if (
-        item.offsetLeft + item.offsetWidth >
-        list.scrollLeft + list.clientWidth
+        item.offsetTop + item.offsetHeight >
+        list.scrollTop + list.clientHeight
       )
-        list.scrollLeft = item.offsetLeft + item.offsetWidth - list.clientWidth;
+        list.scrollTop = item.offsetTop + item.offsetHeight - list.clientHeight;
     }
   }, [operator.selectedMotion]);
   return (

@@ -24,7 +24,7 @@ message ControllerSample {
   bool dpad_down = 13;
   // Explicit console request. Only accepted after fault cleanup, with neutral inputs.
   bool clear_fault = 14;
-  // Abort requires both shoulder buttons continuously for one second.
+  // Bumpers are reserved for console tab navigation.
   bool l1 = 15;
   // Horizontal mode selection; up/down select within the Motion mode.
   bool dpad_left = 16;
@@ -35,6 +35,11 @@ message ControllerSample {
   Selection selection = 19;
   // Rising edge toggles upper-body tracking in Locomotion when configured.
   bool y = 20;
+  // Abort requires both triggers continuously for one second.
+  bool l2 = 21;
+  bool r2 = 22;
+  // Required by the runner before accepting any operator input.
+  uint32 input_protocol_version = 23;
 }
 
 message Selection {
@@ -93,6 +98,8 @@ message OperatorStatus {
   string selected_startup = 29;
   // Assisted startup/Sit phase can accept a fresh one-second A confirmation.
   bool startup_ready = 30;
+  // Console must check this before sending operator input.
+  uint32 input_protocol_version = 31;
 }
 
 message VelocityCommand {

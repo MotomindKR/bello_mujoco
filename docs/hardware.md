@@ -94,7 +94,7 @@ unknown configuration fields are rejected.
 
 Add `--arm` for an authorized commissioning run. The two-second Back+Start chord
 enters Hold, then A for one second enters Stand. Select modes with D-pad left/right and
-confirm with A. L1 + R1 aborts. Stop cleanup damps and releases leases.
+confirm with A. L2 + R2 aborts. Stop cleanup damps and releases leases.
 See the [console guide](policy_console.md) for the complete state sequence.
 
 Named BeyondMimic bundles are preloaded from `motions` and start only from Stand.

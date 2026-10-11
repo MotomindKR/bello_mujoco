@@ -94,8 +94,8 @@ export function AbortButton({ available, sample, progress = 0, idle = false }) {
       />
       <strong>{error || `${label} · 1 s`}</strong>
       <span className="abort-chord">
-        <GamepadButton name="L1" sample={sample} progress={progress} /> +{" "}
-        <GamepadButton name="R1" sample={sample} progress={progress} />
+        <GamepadButton name="L2" sample={sample} progress={progress} /> +{" "}
+        <GamepadButton name="R2" sample={sample} progress={progress} />
       </span>
     </button>
   );

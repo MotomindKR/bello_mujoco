@@ -11,6 +11,8 @@ function sampleController(device, deadzone) {
     y: false,
     l1: false,
     r1: false,
+    l2: false,
+    r2: false,
     dpadUp: false,
     dpadDown: false,
     dpadLeft: false,
@@ -42,6 +44,8 @@ function sampleController(device, deadzone) {
     y: Boolean(buttons.y),
     l1: Boolean(buttons.leftShoulder),
     r1: Boolean(buttons.rightShoulder),
+    l2: Number.isFinite(axes.leftTrigger) && axes.leftTrigger > 0.5,
+    r2: Number.isFinite(axes.rightTrigger) && axes.rightTrigger > 0.5,
     dpadUp: Boolean(buttons.dpadUp),
     dpadDown: Boolean(buttons.dpadDown),
     dpadLeft: Boolean(buttons.dpadLeft),
@@ -50,20 +54,16 @@ function sampleController(device, deadzone) {
 }
 
 function createTabNavigator() {
-  let pressed = null;
-  let chord = false;
+  let previousLeft = false;
+  let previousRight = false;
   return (sample) => {
     const left = sample.connected && sample.l1;
     const right = sample.connected && sample.r1;
-    if (left && right) chord = true;
-    if (left || right) {
-      pressed ||= left ? "left" : "right";
-      return 0;
-    }
-    const direction =
-      !chord && sample.connected && pressed ? (pressed === "left" ? -1 : 1) : 0;
-    pressed = null;
-    chord = false;
+    const leftClick = left && !previousLeft;
+    const rightClick = right && !previousRight;
+    previousLeft = left;
+    previousRight = right;
+    const direction = leftClick === rightClick ? 0 : leftClick ? -1 : 1;
     return direction;
   };
 }

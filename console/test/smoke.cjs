@@ -4,6 +4,7 @@ const path = require("node:path");
 const grpc = require("@grpc/grpc-js");
 const loader = require("@grpc/proto-loader");
 const { _electron: electron } = require("playwright");
+const consoleVersion = require("../package.json").version;
 
 const root = path.resolve(__dirname, "../..");
 const capture = (page, options) =>
@@ -54,11 +55,12 @@ let recoveryFails = false;
 let runnerBusy = true;
 let operatorSessions = 0;
 const runnerStatus = {
+  inputProtocolVersion: 2,
   mode: "MODE_STAND",
   selected: "Motion",
   selectedMotion: "Wave",
   phase: "standing",
-  modes: ["Locomotion", "Motion", "Tracking"],
+  modes: ["Stand", "Locomotion", "Motion", "Tracking"],
   startups: ["Crane", "Back-down"],
   selectedStartup: "Crane",
   sonicReady: true,
@@ -282,6 +284,7 @@ async function serve(service, implementation) {
     Exchange(call) {
       call.on("data", (sample) => replacementSamples.push(sample));
       repeating(call, () => ({
+        inputProtocolVersion: 2,
         mode: "MODE_DISARMED",
         phase: "new robot",
         neutralRequired: true,
@@ -370,6 +373,22 @@ async function serve(service, implementation) {
         document.querySelector(".header-status strong")?.textContent ===
         "Stand",
     );
+    await page.waitForFunction(
+      () => document.querySelectorAll(".topbar .service.online").length === 4,
+    );
+    runnerStatus.inputProtocolVersion = 1;
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll(".service")].some((service) =>
+        service.textContent.includes("Runner update required"),
+      ),
+    );
+    const incompatibleSamples = samples.length;
+    await page.waitForTimeout(100);
+    assert(
+      samples.slice(incompatibleSamples).every((sample) => !sample.connected),
+      "An older runner must receive only neutral controller samples",
+    );
+    runnerStatus.inputProtocolVersion = 2;
     await page.waitForFunction(
       () => document.querySelectorAll(".topbar .service.online").length === 4,
     );
@@ -589,6 +608,36 @@ async function serve(service, implementation) {
             await page.locator(".stick-dial").count(),
             assisted ? 1 : update.mode === "MODE_LOCOMOTION" ? 2 : 0,
           );
+          if (assisted || update.mode === "MODE_LOCOMOTION") {
+            assert(
+              await page.locator(".stick-indicator").evaluateAll((indicators) =>
+                indicators.every((indicator) => {
+                  const outer = indicator.getBoundingClientRect();
+                  const slot = indicator
+                    .closest(".stick-slot")
+                    .getBoundingClientRect();
+                  return (
+                    outer.top >= slot.top &&
+                    outer.bottom <= slot.bottom &&
+                    [".stick-label", ".stick-dial", ".stick-velocity"].every(
+                      (selector) => {
+                        const element = indicator.querySelector(selector);
+                        const inner = element.getBoundingClientRect();
+                        return (
+                          inner.left >= outer.left &&
+                          inner.right <= outer.right &&
+                          inner.top >= outer.top &&
+                          inner.bottom <= outer.bottom &&
+                          element.scrollHeight <= element.clientHeight
+                        );
+                      },
+                    )
+                  );
+                }),
+              ),
+              `Stick visualization and values must fit in ${update.mode} (${update.phase})`,
+            );
+          }
           if (update.mode === "MODE_FAULT") {
             assert(
               await page.locator(".fault").evaluate((element) => {
@@ -715,19 +764,46 @@ async function serve(service, implementation) {
     assert.deepEqual(await temperature.boundingBox(), tempBounds);
     motorTemperature = 31;
     motorAge = 0;
+    assert.deepEqual(
+      await page
+        .locator(".tab-bumper-hint .gamepad-button")
+        .evaluateAll((buttons) =>
+          buttons.map((button) => button.getAttribute("aria-label")),
+        ),
+      ["LB", "RB"],
+    );
+    assert(
+      await page.locator(".status-tabs").evaluate((bar) => {
+        const lastTab = bar.querySelector(".status-tab-list button:last-child");
+        const rightHint = bar.querySelector(".tab-bumper-hint:last-child");
+        const gap =
+          rightHint.getBoundingClientRect().left -
+          lastTab.getBoundingClientRect().right;
+        return gap >= 0 && gap <= 8;
+      }),
+      "Right bumper hint follows the last tab",
+    );
+    assert(
+      await page.locator(".status-tabs").evaluate((bar) => {
+        const tabs = bar.querySelector(".status-tab-list");
+        const barBox = bar.getBoundingClientRect();
+        const tabsBox = tabs.getBoundingClientRect();
+        return (
+          Math.abs(
+            (tabsBox.left + tabsBox.right - barBox.left - barBox.right) / 2,
+          ) < 1
+        );
+      }),
+      "Tab choices are centered in the bar",
+    );
     assert.deepEqual(await page.locator(".mode-option").allTextContents(), [
-      "Stand",
       "Locomotion",
       "Motion",
       "Tracking",
     ]);
     assert.equal(
-      await page.getByRole("button", { name: "Stand", exact: true }).count(),
-      0,
-    );
-    assert.equal(
-      await page.locator('.mode-indicator[aria-current="true"]').textContent(),
-      "Stand",
+      await page.locator(".active-stand").textContent(),
+      "Stand active",
     );
     assert.equal(
       await page.locator(".mode-option.selected").textContent(),
@@ -761,6 +837,28 @@ async function serve(service, implementation) {
     assert.equal(await page.locator(".motion-picker").count(), 0);
     await page.getByRole("button", { name: "Motion", exact: true }).click();
     await page.locator(".motion-choices").waitFor();
+    assert(
+      await page.locator(".operator-card").evaluate((card) => {
+        const list = card
+          .querySelector(".motion-choices")
+          .getBoundingClientRect();
+        const abort = card
+          .querySelector(".abort-button")
+          .getBoundingClientRect();
+        const gap = abort.top - list.bottom;
+        return gap >= 0 && gap <= 16;
+      }),
+      "Motion list fills the space above the abort control",
+    );
+    const motionPositions = await page
+      .locator(".motion-choices li")
+      .evaluateAll((items) =>
+        items.map((item) => item.getBoundingClientRect().y),
+      );
+    assert(
+      motionPositions[1] > motionPositions[0],
+      "Motion choices stack vertically",
+    );
     assert.deepEqual(
       await page.locator(".motion-choice-name").allTextContents(),
       ["Wave", "Bow"],
@@ -781,6 +879,23 @@ async function serve(service, implementation) {
           ?.textContent === "Bow",
     );
     await page.locator(".motion-choices").waitFor();
+    runnerStatus.motions = [
+      "Wave",
+      "Bow",
+      "Lunge",
+      "Applause",
+      "Double wave",
+      ...Array.from({ length: 12 }, (_, index) => `Motion ${index + 1}`),
+      "Magic flourish",
+    ];
+    runnerStatus.selectedMotion = "Magic flourish";
+    await page.waitForFunction(() => {
+      const list = document.querySelector(".motion-choices");
+      const selected = list?.querySelector('li[aria-current="true"]');
+      return selected?.textContent === "Magic flourish" && list.scrollTop > 0;
+    });
+    runnerStatus.motions = ["Wave", "Bow"];
+    runnerStatus.selectedMotion = "Bow";
 
     assert.deepEqual(
       samples
@@ -933,7 +1048,14 @@ async function serve(service, implementation) {
       phase: "standing",
       canClearFault: false,
     });
-    assert.equal(await page.locator("canvas").count(), 1);
+    assert.equal(
+      await page.locator(".model > canvas:not(.axis-indicator)").count(),
+      1,
+    );
+    assert.equal(
+      await page.locator(".model > canvas.axis-indicator").count(),
+      1,
+    );
     assert.equal(await page.locator(".model .model-feedback").count(), 1);
     assert.equal(await page.locator(".hero-heading").count(), 0);
     const cardBounds = await page.locator(".hero").boundingBox();
@@ -1354,14 +1476,17 @@ async function serve(service, implementation) {
         .getAttribute("aria-selected"),
       "true",
     );
-    assert.equal(await page.locator("canvas").count(), 1);
+    assert.equal(
+      await page.locator(".model > canvas:not(.axis-indicator)").count(),
+      1,
+    );
     const streamCalls = calls.length;
     const sessionsBeforeStyle = operatorSessions;
     let lastSequence = BigInt(samples.at(-1).sequence);
-    for (const [label, value, shoulder] of [
-      ["PlayStation", "playstation", "L1"],
-      ["Xbox", "xbox", "LB"],
-      ["Switch", "switch", "L"],
+    for (const [label, value, trigger] of [
+      ["PlayStation", "playstation", "L2"],
+      ["Xbox", "xbox", "LT"],
+      ["Switch", "switch", "ZL"],
     ]) {
       await page.getByRole("button", { name: "Settings", exact: true }).click();
       await page.getByRole("radio", { name: label, exact: true }).check();
@@ -1385,7 +1510,7 @@ async function serve(service, implementation) {
           .locator(".abort-chord kbd")
           .first()
           .getAttribute("aria-label"),
-        shoulder,
+        trigger,
       );
       assert.equal(
         JSON.parse(fs.readFileSync(configPath)).controllerStyle,
@@ -1441,6 +1566,10 @@ async function serve(service, implementation) {
       await page.getByLabel("Robot IP or hostname").inputValue(),
       "127.0.0.1",
     );
+    await page.getByRole("button", { name: "Check for updates" }).waitFor();
+    await page
+      .getByText(`Installed version: ${consoleVersion}`, { exact: true })
+      .waitFor();
     await page.getByLabel("Robot IP or hostname").fill("localhost");
     await page
       .getByText("Individual service addresses", { exact: true })
@@ -1487,6 +1616,15 @@ async function serve(service, implementation) {
     });
     await auditContrast(page);
     await page.setViewportSize({ width: 375, height: 812 });
+    assert(
+      await page.locator(".tab-bumper-hint").evaluateAll((hints) =>
+        hints.every((hint) => {
+          const box = hint.getBoundingClientRect();
+          return box.left >= 0 && box.right <= innerWidth;
+        }),
+      ),
+      "Bumper hints stay visible beside the tab list on narrow screens",
+    );
     await verifyStableOperatorCard();
     assert(
       await page.evaluate(

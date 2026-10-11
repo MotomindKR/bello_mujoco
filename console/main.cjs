@@ -1,6 +1,18 @@
-const { app, BrowserWindow, protocol, net, ipcMain } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  protocol,
+  net,
+  ipcMain,
+  shell,
+} = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
+const os = require("node:os");
+const { createHash } = require("node:crypto");
+const { spawn } = require("node:child_process");
+const { Readable, Transform } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
 const { pathToFileURL } = require("node:url");
 const grpc = require("@grpc/grpc-js");
 const loader = require("@grpc/proto-loader");
@@ -8,6 +20,13 @@ const { validateConnections, validateSettings } = require("./settings.cjs");
 const { sampleController, createTabNavigator } = require("./controller.cjs");
 const { trackingFrame } = require("./tracking.cjs");
 const { emptyTelemetry, displaySnapshot } = require("./snapshot.cjs");
+const {
+  releasesUrl,
+  latestReleaseUrl,
+  linuxPackageKind,
+  releaseAsset,
+  expectedHash,
+} = require("./updates.cjs");
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -93,6 +112,88 @@ let pendingClear;
 let abortHoldTimer;
 let pendingStop = null;
 let pendingSelection;
+let checkedUpdate = null;
+let installingUpdate = false;
+const installedLinuxPackage = () =>
+  process.platform === "linux" &&
+  app.isPackaged &&
+  fs.realpathSync(app.getPath("exe")) ===
+    "/usr/lib/bello-mini-console/bello-mini-console";
+
+async function fetchUpdate(url, timeoutMs = 15000) {
+  const response = await net.fetch(url, {
+    headers: { Accept: "application/vnd.github+json" },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response;
+}
+
+async function downloadUpdate(candidate, directory, onProgress) {
+  const checksums = await (await fetchUpdate(candidate.checksumUrl)).text();
+  const expected = expectedHash(checksums, candidate.name);
+  if (!expected) throw new Error("Release checksum is missing.");
+  const response = await fetchUpdate(candidate.url, 300000);
+  if (!response.body) throw new Error("Release download is empty.");
+  const filename = path.join(directory, candidate.name);
+  const hash = createHash("sha256");
+  let bytes = 0;
+  let lastReport = 0;
+  const progress = new Transform({
+    transform(chunk, _encoding, callback) {
+      hash.update(chunk);
+      bytes += chunk.length;
+      if (Date.now() - lastReport > 250) {
+        onProgress(bytes, candidate.size);
+        lastReport = Date.now();
+      }
+      callback(null, chunk);
+    },
+  });
+  await pipeline(
+    Readable.fromWeb(response.body),
+    progress,
+    fs.createWriteStream(filename, { flags: "wx", mode: 0o600 }),
+  );
+  if (hash.digest("hex") !== expected)
+    throw new Error(
+      "Release checksum does not match. The update was not installed.",
+    );
+  return filename;
+}
+
+async function installLinuxPackage(candidate, filename) {
+  if (!fs.existsSync("/usr/bin/pkexec"))
+    throw new Error("System authorization is unavailable (pkexec is missing).");
+  const installer =
+    candidate.packageKind === "deb" ? "/usr/bin/dpkg" : "/usr/bin/rpm";
+  if (!fs.existsSync(installer))
+    throw new Error("The system package manager is unavailable.");
+  const args =
+    candidate.packageKind === "deb"
+      ? [installer, "-i", filename]
+      : [installer, "-Uvh", filename];
+  await new Promise((resolve, reject) => {
+    const child = spawn("/usr/bin/pkexec", args, {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let errorOutput = "";
+    child.stderr.on("data", (chunk) => {
+      errorOutput = (errorOutput + chunk.toString()).slice(-2000);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else
+        reject(
+          new Error(
+            errorOutput.trim() ||
+              "System authorization or installation failed.",
+          ),
+        );
+    });
+  });
+}
 function cancelAbortHold() {
   clearTimeout(abortHoldTimer);
   abortHoldTimer = null;
@@ -191,6 +292,7 @@ function controllerSample() {
     sequence: sequence.toString(),
     sampleMonotonicNs: process.hrtime.bigint().toString(),
     ...sample,
+    inputProtocolVersion: 2,
   };
 }
 function reconnectingStream(service, create) {
@@ -332,12 +434,18 @@ function startOperator() {
   );
   clients.add(client);
   reconnectingStream("runner", (current) => {
+    snapshot.operator = null;
     const call = client.Exchange();
     operatorCall = call;
     call.on("data", (status) => {
       if (!current()) return;
       snapshot.operator = status;
-      mark("runner");
+      mark(
+        "runner",
+        status.inputProtocolVersion === 2
+          ? ""
+          : "Runner update required for trigger abort controls.",
+      );
       if (
         pendingClear?.sequence &&
         status.clearFaultSequence === pendingClear.sequence
@@ -435,6 +543,7 @@ function runnerReady(call = operatorCall) {
 
 app.whenReady().then(() => {
   ipcMain.handle("select-choice", (event, kind, name) => {
+    if (installingUpdate) return { error: "Console update in progress." };
     if (
       !isConsoleSender(event) ||
       !["mode", "motion", "trackingEnabled", "startup"].includes(kind) ||
@@ -468,6 +577,8 @@ app.whenReady().then(() => {
       return {};
     }
     if (status?.mode !== "MODE_STAND") return { error: "Select in Stand." };
+    if (kind === "mode" && name === "Stand")
+      return { error: "Choice unavailable." };
     const choices =
       kind === "mode"
         ? status.modes
@@ -483,6 +594,7 @@ app.whenReady().then(() => {
     window.setFullScreen(!window.isFullScreen());
   });
   ipcMain.handle("abort-hold", (event, held, action) => {
+    if (installingUpdate) return { error: "Console update in progress." };
     if (
       !isConsoleSender(event) ||
       typeof held !== "boolean" ||
@@ -510,6 +622,7 @@ app.whenReady().then(() => {
     return {};
   });
   ipcMain.handle("clear-fault", (event) => {
+    if (installingUpdate) return { error: "Console update in progress." };
     if (!isConsoleSender(event))
       return { error: "Fault clearing is only available in the console." };
     if (pendingClear)
@@ -571,6 +684,105 @@ app.whenReady().then(() => {
     startConnections();
     return { settings: next };
   });
+  ipcMain.handle("console-version", (event) => {
+    if (!isConsoleSender(event)) return null;
+    return app.getVersion();
+  });
+  ipcMain.handle("check-console-update", async (event) => {
+    if (!isConsoleSender(event))
+      return { error: "Updates are only available in the console." };
+    if (installingUpdate) return { error: "An update is already in progress." };
+    try {
+      const release = await (await fetchUpdate(latestReleaseUrl)).json();
+      const kind = process.platform === "linux" ? linuxPackageKind() : null;
+      checkedUpdate = releaseAsset(
+        release,
+        app.getVersion(),
+        process.platform,
+        process.arch,
+        kind,
+      );
+      if (!checkedUpdate) return { current: true };
+      if (checkedUpdate.unsupported)
+        return {
+          error: "Automatic installation is unavailable on this platform.",
+        };
+      if (checkedUpdate.unavailable)
+        return {
+          error: `Version ${checkedUpdate.version} has no matching installer or checksum yet.`,
+        };
+      return {
+        version: checkedUpdate.version,
+        packageKind: checkedUpdate.packageKind,
+        canInstall: installedLinuxPackage(),
+      };
+    } catch {
+      checkedUpdate = null;
+      return {
+        error:
+          "Could not check releases. Check the network and that the repository is public.",
+      };
+    }
+  });
+  ipcMain.handle("install-console-update", async (event) => {
+    if (!isConsoleSender(event))
+      return { error: "Updates are only available in the console." };
+    if (installingUpdate) return { error: "An update is already in progress." };
+    if (!checkedUpdate?.url || !installedLinuxPackage())
+      return {
+        error: "Install the DEB or RPM first to enable in-app updates.",
+      };
+    if (
+      snapshot.operator &&
+      (snapshot.operator.mode !== "MODE_DISARMED" ||
+        snapshot.operator.phase !== "disarmed")
+    )
+      return { error: "Disarm the robot before installing a console update." };
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bello-update-"));
+    installingUpdate = true;
+    cancelAbortHold();
+    pendingSelection = null;
+    pendingStop = null;
+    const progress = (phase, bytes, total) => {
+      if (!event.sender.isDestroyed())
+        event.sender.send("console-update-progress", { phase, bytes, total });
+    };
+    try {
+      progress("downloading", 0, checkedUpdate.size);
+      const filename = await downloadUpdate(
+        checkedUpdate,
+        directory,
+        (bytes, total) => progress("downloading", bytes, total),
+      );
+      if (
+        snapshot.operator &&
+        (snapshot.operator.mode !== "MODE_DISARMED" ||
+          snapshot.operator.phase !== "disarmed")
+      )
+        throw new Error("Disarm the robot before installing a console update.");
+      progress("installing", 0, 0);
+      await installLinuxPackage(checkedUpdate, filename);
+      checkedUpdate = null;
+      app.relaunch({ args: process.argv.slice(1) });
+      setTimeout(() => app.quit(), 250);
+      return { installed: true };
+    } catch (error) {
+      return { error: error.message };
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+      installingUpdate = false;
+    }
+  });
+  ipcMain.handle("open-console-releases", async (event) => {
+    if (!isConsoleSender(event))
+      return { error: "Updates are only available in the console." };
+    try {
+      await shell.openExternal(releasesUrl);
+      return {};
+    } catch {
+      return { error: "Could not open the release page in your browser." };
+    }
+  });
   const assets = resource(
     "bello_mini",
     "deps/bello-stack/descriptions/bello_mini",
@@ -607,7 +819,9 @@ app.whenReady().then(() => {
   startConnections();
   window.on("blur", cancelAbortHold);
   every(() => {
-    const sample = controllerSample();
+    const sample = installingUpdate
+      ? { ...controllerSample(), ...sampleController(null, config.deadzone) }
+      : controllerSample();
     const tabDirection = tabNavigation(sample);
     if (tabDirection && window && !window.isDestroyed())
       window.webContents.send("tab-cycle", tabDirection);
@@ -644,7 +858,16 @@ app.whenReady().then(() => {
     snapshot.controllerSample = sample;
     if (operatorCall && !operatorCall.destroyed) {
       snapshot.lastSentSequence = sample.sequence;
-      if (!operatorCall.write(sample)) operatorCall.cancel();
+      const outgoing =
+        snapshot.operator?.inputProtocolVersion === 2
+          ? sample
+          : {
+              sequence: sample.sequence,
+              sampleMonotonicNs: sample.sampleMonotonicNs,
+              connected: false,
+              inputProtocolVersion: 2,
+            };
+      if (!operatorCall.write(outgoing)) operatorCall.cancel();
     }
   }, 20);
   every(() => {

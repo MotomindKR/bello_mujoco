@@ -5,10 +5,11 @@ white head shell, vermilion face panel, and dark two-camera visor. Created with
 the built-in imagegen tool on 2026-09-29; no third-party stock art is included.
 Transparent corners are preserved. Packaging creates the macOS ICNS and its
 16-1024 pixel representations under ignored `out/`; Linux uses the PNG.
-The AppImage embeds that same PNG as `.DirIcon` and its desktop launcher icon.
-`package.json` supplies `bello-mini-console.desktop` to both Electron and the
-AppImage maker so Linux can match the running app to its launcher. Release CI
-checks that the extracted AppImage icon is byte-for-byte identical to this source.
+The DEB and RPM packages install that PNG as the desktop launcher icon.
+`package.json` supplies `bello-mini-console.desktop` to Electron so Linux can
+match the running app to its launcher. Release CI checks that the extracted DEB
+and RPM icons are byte-for-byte identical to this source and that both desktop
+entries match the source template.
 
 Generation prompt:
 

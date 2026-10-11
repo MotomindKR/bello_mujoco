@@ -177,7 +177,7 @@ Offset, rotated, or articulated frames are rejected rather than reinterpreted.
 Crane Hold ramps to the standing bundle's nominal pose. Confirm Stand, select a named
 motion from the visible list, then hold A for one second to blend into it.
 Completion or the first
-Ctrl-C blends back to Stand; another Ctrl-C, SIGTERM or holding L1 + R1 for one second stops control.
+Ctrl-C blends back to Stand; another Ctrl-C, SIGTERM or holding L2 + R2 for one second stops control.
 Malformed/stale feedback and rejected commands stop control. Standing and motion
 retain their own gains, periods and histories. Targets and KP/KD blend over
 `motions[].settings.transition_seconds`, including interrupted blends. Hold uses

@@ -28,7 +28,9 @@ export function OperatorCard({ state, children }) {
     live &&
     (operator.mode === "MODE_STAND" ||
       (operator.mode === "MODE_DISARMED" && operator.phase === "disarmed"));
-  const choices = startup ? operator.startups || [] : operator.modes || [];
+  const choices = startup
+    ? operator.startups || []
+    : (operator.modes || []).filter((name) => name !== "Stand");
   const selected = startup ? operator.selectedStartup : operator.selected;
   const activeMode = {
     MODE_STAND: "Stand",
@@ -120,22 +122,16 @@ export function OperatorCard({ state, children }) {
           {selectionError ||
             (startup ? "Startup" : choosing ? "Mode" : "Modes · Stand only")}
         </span>
+        {activeMode === "Stand" && (
+          <span className="active-stand" role="status">
+            Stand active
+          </span>
+        )}
       </div>
       <div className="mode-picker">
         <div className="mode-row">
           <DirectionHint direction="Left" sample={sample} />
           <div className={"mode-list" + (choosing ? "" : " unavailable")}>
-            {!startup && (
-              <span
-                className={
-                  "mode-option mode-indicator" +
-                  (activeMode === "Stand" ? " active" : "")
-                }
-                aria-current={activeMode === "Stand" ? "true" : undefined}
-              >
-                Stand
-              </span>
-            )}
             {choices.map((name) => (
               <button
                 type="button"

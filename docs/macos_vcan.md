@@ -237,7 +237,7 @@ Use the controller sequence:
    its guide. Let the simulated robot settle.
 3. Hold A for one second to enter Stand. D-pad left/right selects Locomotion or a named
    motion; another one-second A press confirms it.
-4. Use L1 + R1 to abort. There is no run-duration limit. The runner damps and
+4. Use L2 + R2 to abort. There is no run-duration limit. The runner damps and
    releases leases; Ctrl-C exits the final status display.
 
 The emulator's Enter key only controls its torso guide. Test two named motions,
