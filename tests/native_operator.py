@@ -98,9 +98,6 @@ class OperatorClient:
         if mode == "Motion":
             for _ in range(len(self.status.motions)):
                 if self.status.selected_motion == name:
-                    if self.status.motion_menu_open:
-                        self.press(a=True)
-                        self.wait(lambda status: not status.motion_menu_open)
                     return
                 self.press(dpad_down=True)
             raise AssertionError(f"motion {name} is unavailable: {self.status}")
