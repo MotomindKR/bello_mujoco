@@ -49,6 +49,7 @@ def render_sonic_checkpoint(
     *,
     steps: int | None = None,
     stop_on_terminal: bool = True,
+    reference_input: str = "robot",
 ) -> dict[str, dict]:
     if not selected_clips:
         raise ValueError("sonic_transfer evaluation requires selected held-out clips")
@@ -75,6 +76,7 @@ def render_sonic_checkpoint(
             (path,),
             evaluation_names=(),
             use_viewer_model=True,
+            evaluation_input=reference_input,
         )
         recorded_held_out = set(runtime.run_config.dataset.evaluation_clips)
         if name not in recorded_held_out:
@@ -105,6 +107,7 @@ def render_sonic_checkpoint(
                 "checkpoint": str(Path(checkpoint).resolve()),
                 "steps_limit": steps,
                 "stop_on_terminal": stop_on_terminal,
+                "reference_input": reference_input,
                 "summary": uniform_clip_summary(results),
                 "clips": results,
             },

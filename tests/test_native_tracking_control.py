@@ -44,11 +44,20 @@ class TrackingHardware(SyntheticHardware):
                 ],
                 velocity=self.reference_velocities,
                 root_orientation_wxyz=[1.0, 0.0, 0.0, 0.0],
+                smpl=reference_pb.SmplReference(
+                    joints_root_relative_z_up=(
+                        np.arange(72, dtype=float).reshape(24, 3) - [0, 1, 2]
+                    ).reshape(-1)
+                    * 0.01,
+                    root_orientation_wxyz=[1, 0, 0, 0],
+                ),
             ),
         )
 
 
-def tracking_bundles(source, *, sonic_target=None, sonic_action=None):
+def tracking_bundles(
+    source, *, sonic_target=None, sonic_action=None, smpl_enabled=False
+):
     names = [f"joint_{i}" for i in range(28)]
     common = dict(
         coordinates=names,
@@ -83,10 +92,16 @@ def tracking_bundles(source, *, sonic_target=None, sonic_action=None):
             action_clip=20.0,
             kp=[4.0] * 28,
             kd=[0.2] * 28,
-            observation_size=7300,
+            observation_size=(1571 if smpl_enabled else 730) * 10,
+            smpl_enabled=smpl_enabled,
             observation_stack_size=10,
             observation_frame=[
                 ["sonic_future_reference", 640],
+                *(
+                    [["sonic_smpl_reference", 840], ["sonic_smpl_selected", 1]]
+                    if smpl_enabled
+                    else []
+                ),
                 ["gravity_direction", 3],
                 ["base_angular_velocity", 3],
                 ["joint_position", 28],
@@ -125,6 +140,8 @@ def tracking_bundles(source, *, sonic_target=None, sonic_action=None):
         "clipped_action",
         "settle_timeout",
         "abort_return",
+        "smpl_return",
+        "smpl_outage",
     ],
 )
 def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
@@ -134,10 +151,14 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
     failure,
 ):
     _, _, source = rust_policy
+    smpl_enabled = failure.startswith("smpl_")
+    failure = failure.removeprefix("smpl_")
+    frame_size = 1571 if smpl_enabled else 730
     names, standing, sonic = tracking_bundles(
         source,
         sonic_target=[0.5] * 28 if failure == "settle_timeout" else None,
         sonic_action=[25.0, -25.0] * 14 if failure == "clipped_action" else None,
+        smpl_enabled=smpl_enabled,
     )
     fake = TrackingHardware(hardware_proto, names, [0.0] * 28)
     fake.reference_failure = "outage"
@@ -155,6 +176,7 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
         endpoint=endpoint,
         groups=["limb"],
         tracking=dict(
+            reference_input="smpl" if smpl_enabled else "robot",
             policy=str(tracking),
             source=str(source),
             endpoint=endpoint,
@@ -302,27 +324,46 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
             assert neutral[-1]["elapsed_seconds"] < handover[0]["elapsed_seconds"]
             first = samples.index(neutral[0])
             live_frame = np.asarray(
-                samples[first - 1]["motion"]["policy"]["observation"][-730:]
+                samples[first - 1]["motion"]["policy"]["observation"][-frame_size:]
             )
             commands = live_frame[:640].reshape(10, 64)[:, :58].reshape(-1)
             # The physics model stores joints in reverse policy order. Verify
-            # the actual live service/runner path uses the checkpoint layout.
+            # the actual live service/runner path keeps named joint order.
             np.testing.assert_allclose(
                 commands[:290].reshape(10, 29),
-                np.tile([*reversed(fake.reference_positions), 0.0], (10, 1)),
+                np.tile([*fake.reference_positions, 0.0], (10, 1)),
                 atol=1e-6,
             )
             np.testing.assert_allclose(
                 commands[290:].reshape(10, 29),
-                np.tile([*reversed(fake.reference_velocities), 0.0], (10, 1)),
+                np.tile([*fake.reference_velocities, 0.0], (10, 1)),
                 atol=1e-6,
             )
             np.testing.assert_array_equal(
-                neutral[0]["motion"]["policy"]["observation"][:-730],
-                samples[first - 1]["motion"]["policy"]["observation"][730:],
+                neutral[0]["motion"]["policy"]["observation"][:-frame_size],
+                samples[first - 1]["motion"]["policy"]["observation"][frame_size:],
             )
+            if smpl_enabled:
+                assert live_frame[1480] == 1
+                human = live_frame[640:1480].reshape(10, 84)
+                expected = (np.arange(72).reshape(24, 3) - [0, 1, 2]).reshape(-1) * 0.01
+                np.testing.assert_allclose(
+                    human[:, :72], np.tile(expected, (10, 1)), atol=1e-6
+                )
+                np.testing.assert_allclose(
+                    human[:, 72:78], np.tile([1, 0, 0, 1, 0, 0], (10, 1))
+                )
+                np.testing.assert_allclose(
+                    human[:, 78:],
+                    np.tile([*fake.reference_positions[23:28], 0], (10, 1)),
+                    atol=1e-6,
+                )
+                assert all(
+                    s["motion"]["policy"]["observation"][-frame_size + 1480] == 0
+                    for s in neutral
+                )
             reference_positions = [
-                s["motion"]["policy"]["observation"][-730] for s in neutral
+                s["motion"]["policy"]["observation"][-frame_size] for s in neutral
             ]
             assert reference_positions[0] > 0.3
             assert reference_positions[-1] < 0.01
@@ -340,7 +381,7 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
                     motion["motor_target"], motion["policy"]["motor_target"]
                 )
                 np.testing.assert_allclose(motion["motor_gains"], [[4.0, 0.2]] * 28)
-                assert len(motion["policy"]["observation"]) == 7300
+                assert len(motion["policy"]["observation"]) == frame_size * 10
             assert "stop" not in fake.calls and "disable" not in fake.calls
             assert not any(s.get("event") == "control_fault" for s in samples)
         except Exception:

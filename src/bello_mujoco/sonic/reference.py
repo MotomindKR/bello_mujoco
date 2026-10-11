@@ -41,6 +41,8 @@ class ReferenceBank:
     body_lin_vel: jax.Array
     body_ang_vel: jax.Array
     foot_contacts: jax.Array
+    smpl_joints: jax.Array | None = None
+    smpl_root_quat: jax.Array | None = None
 
     @classmethod
     def from_clips(
@@ -57,6 +59,18 @@ class ReferenceBank:
             raise ValueError("reference clip names must be unique")
         first = entries[0][1]
         for name, clip, _ in entries:
+            if (clip.smpl_joints is None) != (clip.smpl_root_quat is None):
+                raise ValueError(
+                    "SMPL joints and root orientations must be supplied together"
+                )
+            if (clip.smpl_joints is None) != (first.smpl_joints is None):
+                raise ValueError("all clips must supply the same SONIC input paths")
+            if clip.smpl_joints is not None:
+                from bello_mujoco.sonic.smpl import validate_smpl_motion
+
+                validate_smpl_motion(
+                    clip.smpl_joints, clip.smpl_root_quat, clip.num_frames
+                )
             if not np.isclose(clip.fps, first.fps):
                 raise ValueError(
                     f"reference clip {name!r} has fps={clip.fps}; expected {first.fps}"
@@ -112,6 +126,12 @@ class ReferenceBank:
             body_lin_vel=concatenate("body_lin_vel"),
             body_ang_vel=concatenate("body_ang_vel"),
             foot_contacts=concatenate("foot_contacts"),
+            smpl_joints=concatenate("smpl_joints")
+            if first.smpl_joints is not None
+            else None,
+            smpl_root_quat=concatenate("smpl_root_quat")
+            if first.smpl_root_quat is not None
+            else None,
         )
 
     @property

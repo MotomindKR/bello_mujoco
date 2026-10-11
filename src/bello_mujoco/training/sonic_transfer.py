@@ -26,6 +26,8 @@ from bello_mujoco.repository import (
 )
 from bello_mujoco.sim import WarpConfig
 from bello_mujoco.sonic.checkpoint import import_sonic_checkpoint
+from bello_mujoco.sonic.model import SonicNetworkConfig
+from bello_mujoco.sonic.smpl import SonicInputConfig
 from bello_mujoco.sonic.corpus import MANIFEST, file_sha256, verify_artifact
 from bello_mujoco.training.checkpoint import CheckpointConfig, checkpoint_path
 from bello_mujoco.training.ppo import init_runner_state_with_policy, update_runner_state
@@ -48,7 +50,7 @@ class SonicDatasetConfig:
     directory: Path
     evaluation_clips: tuple[str, ...] = ()
     artifact: str | None = None
-    max_array_bytes: int = 4 * 1024**3
+    max_array_bytes: int = 8 * 1024**3
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,7 @@ class SonicTransferTrainingRunConfig:
     wandb_config: WandbConfig = WandbConfig()
     warp: WarpConfig = WarpConfig()
     sampling_config: SonicSamplingConfig = SonicSamplingConfig()
+    input_config: SonicInputConfig = SonicInputConfig()
 
 
 def compile_sonic_update(env, config, static_policy, optimizer):
@@ -148,12 +151,16 @@ def run_training(run_config: SonicTransferTrainingRunConfig) -> None:
             warp=run_config.warp,
             batch_size=run_config.config.num_envs,
             sampling_config=run_config.sampling_config,
+            input_config=run_config.input_config,
         )
         imported = import_sonic_checkpoint(
             run_config.pretrained.checkpoint,
             revision=run_config.pretrained.revision,
             adapter=env.embodiment,
             key=jax.random.PRNGKey(run_config.config.seed),
+            config=SonicNetworkConfig(
+                smpl_enabled=run_config.input_config.smpl_enabled
+            ),
         )
         log_config(
             run,

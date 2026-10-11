@@ -183,7 +183,10 @@ def test_compiled_sonic_update_passes_bank_as_dynamic_buffers(monkeypatch):
     assert bank.clock_end == 4
 
 
-def test_reference_encoder_preserves_release_blockwise_joint_layout() -> None:
+@pytest.mark.parametrize("reverse_order", [False, True])
+def test_reference_encoder_uses_named_joints_with_release_block_layout(
+    reverse_order,
+) -> None:
     adapter = synthetic_adapter()
     clip = synthetic_clip(0.0, frames=20)
     qpos = np.asarray(clip.qpos).copy()
@@ -193,27 +196,29 @@ def test_reference_encoder_preserves_release_blockwise_joint_layout() -> None:
         qvel[frame, 6:] = 10_000.0 + frame * 100.0 + np.arange(adapter.target_size)
     clip = replace(clip, qpos=jnp.asarray(qpos), qvel=jnp.asarray(qvel))
     bank = ReferenceBank.from_clips((("walk", clip, "train"),))
+    order = np.arange(adapter.target_size)
+    if reverse_order:
+        order = order[::-1]
+    qpos_indices = tuple(int(i) + 7 for i in order)
+    qvel_indices = tuple(int(i) + 6 for i in order)
+    assembler = SonicObservationAssembler(adapter, qpos_indices, qvel_indices)
 
-    reference = (
-        SonicObservationAssembler(adapter)
-        .reference(
-            bank,
-            jnp.asarray(0),
-            jnp.asarray(0.0),
-            jnp.asarray([1.0, 0.0, 0.0, 0.0]),
-        )
-        .reshape(10, 64)
-    )
+    reference = jax.jit(assembler.reference)(
+        bank,
+        jnp.asarray(0),
+        jnp.asarray(0.0),
+        jnp.asarray([1.0, 0.0, 0.0, 0.0]),
+    ).reshape(10, 64)
     sample_frames = np.asarray([0, 5, 10, 15, 19, 19, 19, 19, 19, 19])
     positions = np.stack(
         [
-            np.asarray(adapter.target_position_to_source(qpos[frame, 7:]))
+            np.asarray(adapter.target_position_to_source(qpos[frame, order + 7]))
             for frame in sample_frames
         ]
     )
     velocities = np.stack(
         [
-            np.asarray(adapter.target_vector_to_source(qvel[frame, 6:]))
+            np.asarray(adapter.target_vector_to_source(qvel[frame, order + 6]))
             for frame in sample_frames
         ]
     )
@@ -223,6 +228,25 @@ def test_reference_encoder_preserves_release_blockwise_joint_layout() -> None:
     np.testing.assert_allclose(
         reference[:, 58:64], np.tile([1, 0, 0, 1, 0, 0], (10, 1))
     )
+
+
+@pytest.mark.parametrize(
+    "invalid", ["missing", "duplicate", "root", "mismatched_velocity"]
+)
+def test_reference_encoder_rejects_invalid_joint_indices(invalid) -> None:
+    adapter = synthetic_adapter()
+    positions = list(range(7, 7 + adapter.target_size))
+    velocities = list(range(6, 6 + adapter.target_size))
+    if invalid == "missing":
+        positions.pop()
+    elif invalid == "duplicate":
+        positions[0] = positions[1]
+    elif invalid == "root":
+        positions[0] = 0
+    else:
+        velocities.reverse()
+    with pytest.raises(ValueError, match="named scalar joint"):
+        SonicObservationAssembler(adapter, tuple(positions), tuple(velocities))
 
 
 def test_embodiment_codec_fills_only_waist_pitch_and_round_trips_transmission() -> None:
@@ -434,7 +458,10 @@ def test_sonic_trainable_filter_excludes_pretrained_backbones() -> None:
     assert trainable.std is not None
 
 
-def test_shared_ppo_update_preserves_sonic_frozen_backbone(tmp_path) -> None:
+@pytest.mark.parametrize("smpl_enabled", [False, True])
+def test_shared_ppo_update_preserves_sonic_frozen_backbone(
+    tmp_path, smpl_enabled
+) -> None:
     from bello_mujoco.sonic.model import SonicActor, SonicCritic, SonicNetworkConfig
 
     adapter = synthetic_adapter()
@@ -451,13 +478,14 @@ def test_shared_ppo_update_preserves_sonic_frozen_backbone(tmp_path) -> None:
         return SonicMLP(tensors, rank=rank, alpha=float(rank), key=key)
 
     keys = jax.random.split(jax.random.PRNGKey(32), 3)
-    network = SonicNetworkConfig()
+    network = SonicNetworkConfig(smpl_enabled=smpl_enabled)
     policy = SonicActorCritic(
         SonicActor(
             mlp(640, 64, 0, keys[0]),
             mlp(994, 29, 2, keys[1]),
             adapter,
             network,
+            mlp(840, 64, 0, keys[0]) if smpl_enabled else None,
         ),
         SonicCritic(mlp(1645, 1, 2, keys[2]), adapter, body_count=14),
         jnp.full(29, np.log(0.05), dtype=jnp.float32),
@@ -482,6 +510,11 @@ def test_shared_ppo_update_preserves_sonic_frozen_backbone(tmp_path) -> None:
         generator.normal(size=(2, 1, policy.critic.observation_size)),
         dtype=jnp.float32,
     )
+    if smpl_enabled:
+        frames = observations.reshape(2, 1, 10, network.input_reference_size + 90)
+        frames = frames.at[0, :, :, network.input_reference_size - 1].set(0)
+        frames = frames.at[1, :, :, network.input_reference_size - 1].set(1)
+        observations = frames.reshape(observations.shape)
     means, _, values = jax.vmap(policy)(observations[:, 0], critic_observations[:, 0])
     actions = means + jnp.asarray([[0.1] * 28, [-0.1] * 28])
     log_probability, _, _ = evaluate_actions(
@@ -544,9 +577,18 @@ def test_shared_ppo_update_preserves_sonic_frozen_backbone(tmp_path) -> None:
         updated.policy.actor.decoder.layers[0].lora_b,
         policy.actor.decoder.layers[0].lora_b,
     )
+    if smpl_enabled:
+        np.testing.assert_array_equal(
+            updated.policy.actor.smpl_encoder.layers[0].weight,
+            policy.actor.smpl_encoder.layers[0].weight,
+        )
 
 
-def test_sonic_onnx_matches_jax_actor_and_logical_motor_mapping() -> None:
+@pytest.mark.parametrize("input_path", ["robot_only", "robot", "smpl"])
+@pytest.mark.parametrize("backend", ["reference", "onnxruntime"])
+def test_sonic_onnx_matches_jax_actor_and_logical_motor_mapping(
+    input_path, backend
+) -> None:
     from bello_mujoco.sonic.model import SonicActor, SonicCritic, SonicNetworkConfig
 
     adapter = synthetic_adapter()
@@ -563,12 +605,13 @@ def test_sonic_onnx_matches_jax_actor_and_logical_motor_mapping() -> None:
         return SonicMLP(tensors, rank=rank, alpha=float(rank), key=key)
 
     encoder_key, decoder_key, critic_key = jax.random.split(jax.random.PRNGKey(9), 3)
-    network_config = SonicNetworkConfig()
+    network_config = SonicNetworkConfig(smpl_enabled=input_path != "robot_only")
     actor = SonicActor(
         mlp(640, 64, 0, encoder_key),
         mlp(994, 29, 2, decoder_key),
         adapter,
         network_config,
+        mlp(840, 64, 0, encoder_key) if network_config.smpl_enabled else None,
     )
     policy = SonicActorCritic(
         actor,
@@ -590,8 +633,20 @@ def test_sonic_onnx_matches_jax_actor_and_logical_motor_mapping() -> None:
     )
     graph = sonic_actor_onnx(policy, model=model, env=env, metadata={})
     observation = generator.normal(size=(1, actor.observation_size)).astype(np.float32)
+    if network_config.smpl_enabled:
+        frames = observation.reshape(10, actor.per_step_observation_size)
+        frames[:, network_config.input_reference_size - 1] = float(input_path == "smpl")
+        assert all(not layer.rank for layer in policy.actor.smpl_encoder.layers)
+        assert not policy.trainable_filter().actor.smpl_encoder.layers[0].weight
 
-    action, motor = ReferenceEvaluator(graph).run(None, {"observation": observation})
+    if backend == "reference":
+        runtime = ReferenceEvaluator(graph)
+    else:
+        ort = pytest.importorskip("onnxruntime")
+        runtime = ort.InferenceSession(
+            graph.SerializeToString(), providers=["CPUExecutionProvider"]
+        )
+    action, motor = runtime.run(None, {"observation": observation})
     expected_action = np.asarray(eqx.filter_jit(actor)(jnp.asarray(observation[0])))
     expected_motor = np.clip(
         model.default_joint_target + 0.5 * expected_action,
@@ -876,3 +931,107 @@ def test_sonic_checkpoint_restores_policy_optimizer_and_sampling_state(
         policy.action_mean(observation),
     )
     assert (checkpoint / "policy.eqx").is_file()
+
+
+def paired_synthetic_clip(frames=20):
+    from scipy.spatial.transform import Rotation
+
+    clip = synthetic_clip(0, frames)
+    roots = Rotation.from_euler("z", (np.arange(frames) * 0.03)[:, None])
+    local = np.arange(72, dtype=np.float32).reshape(24, 3) * 0.01
+    local -= local[0].copy()
+    joints = np.stack([rotation.apply(local) for rotation in roots])
+    return replace(
+        clip,
+        smpl_joints=jnp.asarray(joints),
+        smpl_root_quat=jnp.asarray(roots.as_quat(scalar_first=True)),
+    )
+
+
+def test_smpl_window_uses_20ms_frames_per_frame_roots_and_clamps():
+    from scipy.spatial.transform import Rotation
+
+    clip = paired_synthetic_clip()
+    bank = ReferenceBank.from_clips(
+        (("one", clip, "train"), ("two", clip, "evaluation"))
+    )
+    assembler = SonicObservationAssembler(
+        synthetic_adapter(), tuple(range(7, 35)), tuple(range(6, 34)), smpl_enabled=True
+    )
+    human = jax.jit(assembler.human_reference)(
+        bank,
+        jnp.array(0),
+        jnp.array(15),
+        jnp.array([1.0, 0.0, 0.0, 0.0]),
+        jnp.array(0.2),
+    ).reshape(10, 84)
+    local = np.arange(72).reshape(24, 3) * 0.01
+    local -= local[0].copy()
+    np.testing.assert_allclose(
+        human[:, :72], np.tile(local.reshape(-1), (10, 1)), atol=1e-6
+    )
+    angles = (np.minimum(np.arange(15, 25), 19) * 0.03 + 0.2)[:, None]
+    expected = Rotation.from_euler("z", angles).as_matrix()[:, :, :2].reshape(10, 6)
+    np.testing.assert_allclose(human[:, 72:78], expected, atol=1e-6)
+    with pytest.raises(ValueError, match="together"):
+        ReferenceBank.from_clips(
+            (("bad", replace(clip, smpl_root_quat=None), "train"),)
+        )
+
+
+@pytest.mark.parametrize("evaluation_input", [None, "robot", "smpl"])
+@pytest.mark.parametrize("noise_enabled", [False, True])
+def test_mixed_selection_is_random_only_during_training(
+    evaluation_input, noise_enabled, monkeypatch
+):
+    from bello_mujoco.sonic.smpl import SonicInputConfig
+
+    clip = paired_synthetic_clip()
+    bank = ReferenceBank.from_clips((("one", clip, "train"),))
+    env = object.__new__(BelloSonicTransferEnv)
+    assembler = SonicObservationAssembler(
+        synthetic_adapter(), tuple(range(7, 35)), tuple(range(6, 34)), smpl_enabled=True
+    )
+    for key, value in {
+        "reference_bank": bank,
+        "observation_assembler": assembler,
+        "input_config": SonicInputConfig(0.3),
+        "evaluation_input": evaluation_input,
+        "config": SimpleNamespace(
+            observation_noise=SimpleNamespace(
+                enabled=noise_enabled, anchor_orientation=0.05
+            ),
+            decimation=4,
+        ),
+        "model": SimpleNamespace(
+            policy_qpos_indices=tuple(range(7, 35)),
+            policy_qvel_indices=tuple(range(6, 34)),
+            default_joint_target=np.zeros(28),
+            mj_model=SimpleNamespace(opt=SimpleNamespace(timestep=0.005)),
+        ),
+    }.items():
+        object.__setattr__(env, key, value)
+    monkeypatch.setattr(
+        BelloMotionTrackingEnv,
+        "_unpack_actor_feedback",
+        lambda *_: (clip.qpos[0], clip.qvel[0], jnp.zeros(3), clip.qpos[0, 3:7]),
+    )
+    state = SimpleNamespace(
+        reference_time=jnp.array(0.0),
+        alignment_yaw=jnp.array(0.0),
+        joint_default_offset=jnp.zeros(28),
+        last_action=jnp.zeros(28),
+    )
+    values = jax.jit(
+        jax.vmap(lambda key: env.observation(state, key, _feedback=jnp.zeros(1)))
+    )(jax.random.split(jax.random.PRNGKey(21), 128))
+    selected = np.asarray(values[:, 1480])
+    clean = env.observation(state, _feedback=jnp.zeros(1))[640:1480].reshape(10, 84)
+    delta = np.asarray(values[:, 640:1480]).reshape(128, 10, 84) - np.asarray(clean)
+    np.testing.assert_allclose(delta[:, :, 78:], 0, atol=1e-6)
+    assert np.max(np.abs(delta[:, :, :78])) <= 0.050001
+    assert bool(np.any(np.abs(delta[:, :, :78]) > 1e-6)) == noise_enabled
+    if evaluation_input is None:
+        assert 0.15 < selected.mean() < 0.45
+    else:
+        np.testing.assert_array_equal(selected, float(evaluation_input == "smpl"))

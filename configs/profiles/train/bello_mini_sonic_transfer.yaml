@@ -1,10 +1,13 @@
 # Any2Any recipe on canonical Bello Mini dynamics. The corpus and NVIDIA
 # checkpoint are explicit command inputs and remain outside Git.
+input_config:
+  smpl_probability: 0.3
+  smpl_joint_noise_m: 0.05
 dataset:
   directory: motions/local
   evaluation_clips: []
   artifact: null
-  max_array_bytes: 4294967296
+  max_array_bytes: 8589934592
 pretrained:
   checkpoint: checkpoints/sonic_release/last.pt
   revision: ""

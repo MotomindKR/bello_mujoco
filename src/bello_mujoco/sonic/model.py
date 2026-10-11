@@ -26,6 +26,11 @@ class SonicNetworkConfig:
     decoder_lora_alpha: float = 128.0
     critic_lora_rank: int = 32
     critic_lora_alpha: float = 32.0
+    smpl_enabled: bool = False
+
+    @property
+    def input_reference_size(self) -> int:
+        return self.reference_size + (841 if self.smpl_enabled else 0)
 
     @property
     def reference_size(self) -> int:
@@ -150,6 +155,7 @@ def finite_scalar_quantize(value: jax.Array, levels: int = 32) -> jax.Array:
 
 class SonicActor(eqx.Module):
     encoder: SonicMLP
+    smpl_encoder: SonicMLP | None
     decoder: SonicMLP
     adapter: MiniEmbodimentAdapter = eqx.field(static=True)
     config: SonicNetworkConfig = eqx.field(static=True)
@@ -160,7 +166,16 @@ class SonicActor(eqx.Module):
         decoder: SonicMLP,
         adapter: MiniEmbodimentAdapter,
         config: SonicNetworkConfig,
+        smpl_encoder: SonicMLP | None = None,
     ):
+        if config.smpl_enabled != (smpl_encoder is not None):
+            raise ValueError("SONIC SMPL configuration requires its frozen encoder")
+        if smpl_encoder is not None and (
+            smpl_encoder.input_size != 840
+            or smpl_encoder.output_size != 64
+            or any(layer.rank for layer in smpl_encoder.layers)
+        ):
+            raise ValueError("SONIC SMPL encoder must be frozen with layout 840 -> 64")
         if encoder.input_size != config.reference_size:
             raise ValueError(
                 f"SONIC encoder expects {encoder.input_size} inputs; required "
@@ -181,13 +196,14 @@ class SonicActor(eqx.Module):
                 f"{expected_decoder}->{config.source_action_size}"
             )
         self.encoder = encoder
+        self.smpl_encoder = smpl_encoder
         self.decoder = decoder
         self.adapter = adapter
         self.config = config
 
     @property
     def per_step_observation_size(self) -> int:
-        return self.config.reference_size + 6 + 3 * self.adapter.target_size
+        return self.config.input_reference_size + 6 + 3 * self.adapter.target_size
 
     @property
     def observation_size(self) -> int:
@@ -204,7 +220,7 @@ class SonicActor(eqx.Module):
             + (self.config.history_steps, self.per_step_observation_size)
         )
         reference = steps[..., -1, : self.config.reference_size]
-        cursor = self.config.reference_size
+        cursor = self.config.input_reference_size
         gravity = steps[..., :, cursor : cursor + 3]
         cursor += 3
         angular_velocity = steps[..., :, cursor : cursor + 3]
@@ -229,7 +245,26 @@ class SonicActor(eqx.Module):
             ),
             axis=-1,
         )
-        latent = self.encoder(reference).reshape(
+        if self.smpl_encoder is not None:
+            smpl = steps[
+                ..., -1, self.config.reference_size : self.config.reference_size + 840
+            ]
+            selected = steps[..., -1, self.config.input_reference_size - 1] > 0.5
+            if selected.ndim == 0:
+                latent = jax.lax.cond(
+                    selected,
+                    lambda: self.smpl_encoder(smpl),
+                    lambda: self.encoder(reference),
+                )
+            else:
+                latent = jnp.where(
+                    selected[..., None],
+                    self.smpl_encoder(smpl),
+                    self.encoder(reference),
+                )
+        else:
+            latent = self.encoder(reference)
+        latent = latent.reshape(
             reference.shape[:-1] + (self.config.token_count, self.config.token_size)
         )
         tokens = finite_scalar_quantize(latent, self.config.fsq_levels).reshape(
@@ -418,6 +453,16 @@ def sonic_policy_template(
         alpha=0.0,
         network_key=encoder_key,
     )
+    smpl_encoder = (
+        network(
+            (840, 2048, 1024, 512, 512, 64),
+            rank=0,
+            alpha=0.0,
+            network_key=encoder_key,
+        )
+        if config.smpl_enabled
+        else None
+    )
     decoder = network(
         (994, 2048, 2048, 1024, 1024, 512, 512, 29),
         rank=config.decoder_lora_rank,
@@ -431,7 +476,7 @@ def sonic_policy_template(
         network_key=critic_key,
     )
     return SonicActorCritic(
-        SonicActor(encoder, decoder, adapter, config),
+        SonicActor(encoder, decoder, adapter, config, smpl_encoder),
         SonicCritic(critic, adapter, body_count=14, history_steps=config.history_steps),
         jnp.zeros(config.source_action_size, dtype=jnp.float32),
     )

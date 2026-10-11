@@ -2,6 +2,8 @@
 
 import math
 import time
+from dataclasses import replace
+from pathlib import Path
 from types import MappingProxyType
 
 import numpy as np
@@ -105,5 +107,17 @@ def parse_frame(message: pb.PoseFrame, config: PicoGrpcConfig) -> HumanTargetFra
 
 
 class XRobotGrpcStream(PicoGrpcStream[HumanTargetFrame]):
-    def __init__(self, config: PicoGrpcConfig):
-        super().__init__(config, parse_frame)
+    def __init__(self, config: PicoGrpcConfig, *, smpl_model: Path | None = None):
+        if smpl_model is None:
+            super().__init__(config, parse_frame)
+            return
+        from bello_mujoco.sonic.smpl import SmplSkeleton
+
+        skeleton = SmplSkeleton.load(smpl_model)
+
+        def parse_with_smpl(message, settings):
+            frame = parse_frame(message, settings)
+            joints, roots = skeleton.from_xrobot(frame.transforms)
+            return replace(frame, smpl=(joints[0], roots[0]))
+
+        super().__init__(config, parse_with_smpl)

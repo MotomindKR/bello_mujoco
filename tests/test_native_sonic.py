@@ -120,7 +120,11 @@ def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
     commit = subprocess.check_output(
         ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
     ).strip()
-    assembler = SonicObservationAssembler(adapter)
+    assembler = SonicObservationAssembler(
+        adapter,
+        tuple(reversed(range(7, 7 + len(joint_names)))),
+        tuple(reversed(range(6, 6 + len(joint_names)))),
+    )
     metadata = {
         "git_commit": commit,
         "task": "sonic_transfer",
@@ -166,8 +170,7 @@ def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
     graph = sonic_actor_onnx(policy, model=model, env=env, metadata=metadata)
     bundle = sonic_deployment_bundle(
         graph.SerializeToString(),
-        # Deliberately differs from policy order: the checkpoint still consumes
-        # raw MuJoCo reference coordinates, while feedback uses named joints.
+        # Physical storage deliberately differs from named policy joint order.
         physics=floating_joint_physics(reversed(joint_names)),
         clips=(("walk", clip_path),),
     )

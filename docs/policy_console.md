@@ -253,6 +253,7 @@ section to the runner's hardware YAML (`tracking: null` leaves the mode absent):
 ```yaml
 tracking:
   policy: /absolute/path/to/sonic.zip
+  reference_input: robot
   source: /absolute/path/to/sonic-checkpoint-source
   endpoint: http://127.0.0.1:50056
   rpc_timeout_seconds: 0.1
@@ -280,11 +281,29 @@ is only supported for named BeyondMimic motions.
 
 Live positions and velocities are named logical joints. The runner validates
 their mapping against the bundle's `physics.xml` before acquiring control.
-Existing SONIC checkpoints learned reference features in MuJoCo generalized
-coordinate order, which can differ from policy joint order. Both prerecorded
-and live references, including the generated return-to-neutral sequence, use
-that same checkpoint encoding. Feedback and motor commands retain policy order;
-the reference producer must not pre-permute its named joint values.
+Training, prerecorded playback, live references, and return-to-neutral all
+encode reference joints in policy joint-name order. Clip coordinates are
+gathered by the model's joint addresses; live joint values are already named.
+The reference producer must not pre-permute its named joint values.
+
+Dual-input SONIC bundles also support `tracking.reference_input: smpl`.
+Start the reference producer with
+`bello-run-reference smpl_model=/absolute/path/to/SMPL_NEUTRAL.npz`, using the
+same generated neutral skeleton as the paired training corpus. The producer
+adds synchronized human geometry to its full-body response; the runner buffers
+ten human frames at 20 ms spacing. Missing or malformed human data follows the
+existing reference-loss return-to-Stand lifecycle, with no silent substitution
+of the robot encoder. The default input remains `robot`.
+During the explicit neutral-return sequence, a dual-input bundle uses its
+robot encoder and the same shared decoder, interpolating the named robot
+reference to neutral before the short standing-policy handover. No second
+SONIC policy is blended in. Validate both input paths and this return with a
+newly trained bundle in HIL before hardware use. See
+[paired input preparation](sonic_transfer.md#paired-human-input).
+The historical MuJoCo-order compatibility permutation has been removed.
+Existing SONIC checkpoints trained on raw MuJoCo ordering require retraining
+and a new export before use with this runner. Use their historical runner
+checkout to reproduce old evaluations; do not pair old bundles with this runner.
 
 For synchronized diagnostics, `FullBodyReference` also reports root position,
 world linear velocity and root-local angular velocity from the same retargeted

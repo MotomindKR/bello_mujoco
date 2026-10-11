@@ -21,8 +21,25 @@ from bello_mujoco.sonic.reference import ReferenceBank
 @dataclass(frozen=True)
 class SonicObservationAssembler:
     adapter: MiniEmbodimentAdapter
+    qpos_indices: tuple[int, ...]
+    qvel_indices: tuple[int, ...]
     future_frames: int = 10
     future_dt: float = 0.1
+    smpl_enabled: bool = False
+
+    @property
+    def input_reference_size(self) -> int:
+        return self.reference_size + (841 if self.smpl_enabled else 0)
+
+    def __post_init__(self) -> None:
+        count = self.adapter.target_size
+        if (
+            len(self.qpos_indices) != count
+            or set(self.qpos_indices) != set(range(7, 7 + count))
+            or len(self.qvel_indices) != count
+            or tuple(i - 1 for i in self.qpos_indices) != self.qvel_indices
+        ):
+            raise ValueError("SONIC reference indices must map each named scalar joint")
 
     @property
     def reference_size(self) -> int:
@@ -30,7 +47,24 @@ class SonicObservationAssembler:
 
     @property
     def per_step_size(self) -> int:
-        return self.reference_size + 6 + 3 * self.adapter.target_size
+        return self.input_reference_size + 6 + 3 * self.adapter.target_size
+
+    def human_reference(self, bank, clip_id, local_frame, robot_root, alignment_yaw):
+        from bello_mujoco.sonic.smpl import smpl_reference
+
+        if bank.smpl_joints is None or bank.smpl_root_quat is None:
+            raise ValueError("SMPL input requires paired human motion in every clip")
+        offsets = jnp.rint(jnp.arange(10, dtype=jnp.float32) * 0.02 * bank.fps)
+        indices = bank.frame_indices(clip_id, local_frame + offsets)
+        positions = bank.qpos[indices][:, jnp.asarray(self.qpos_indices)]
+        source = jax.vmap(self.adapter.target_position_to_source)(positions)
+        return smpl_reference(
+            bank.smpl_joints[indices],
+            bank.smpl_root_quat[indices],
+            source[:, 23:29],
+            robot_root,
+            yaw_quat_from_angle(alignment_yaw),
+        )
 
     def reference(
         self,
@@ -46,8 +80,8 @@ class SonicObservationAssembler:
             * bank.fps
         ).astype(jnp.int32)
         samples = bank.window(clip_id, local_frame, offsets)
-        target_positions = samples.qpos[..., 7:]
-        target_velocities = samples.qvel[..., 6:]
+        target_positions = samples.qpos[..., jnp.asarray(self.qpos_indices)]
+        target_velocities = samples.qvel[..., jnp.asarray(self.qvel_indices)]
         source_positions = jax.vmap(self.adapter.target_position_to_source)(
             target_positions
         )
@@ -83,9 +117,9 @@ class SonicObservationAssembler:
         previous_action: jax.Array,
     ) -> jax.Array:
         reference = jnp.asarray(reference)
-        if reference.shape != (self.reference_size,):
+        if reference.shape != (self.input_reference_size,):
             raise ValueError(
-                f"SONIC reference must have shape ({self.reference_size},), "
+                f"SONIC reference must have shape ({self.input_reference_size},), "
                 f"got {reference.shape}"
             )
         gravity = quat_rotate_inverse(

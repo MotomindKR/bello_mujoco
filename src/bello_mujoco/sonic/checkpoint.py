@@ -130,6 +130,18 @@ def import_sonic_checkpoint(
     log_std = np.log(source_std)
     encoder_key, decoder_key, critic_key = jax.random.split(key, 3)
     encoder = SonicMLP(encoder_tensors, rank=0, alpha=0.0, key=encoder_key)
+    smpl_encoder = None
+    if config.smpl_enabled:
+        smpl_encoder = SonicMLP(
+            _linear_tensors(
+                policy_state,
+                "actor_module.encoders.smpl.module",
+                linear_indices=(0, 2, 4, 6, 8),
+            ),
+            rank=0,
+            alpha=0.0,
+            key=encoder_key,
+        )
     decoder = SonicMLP(
         decoder_tensors,
         rank=config.decoder_lora_rank,
@@ -142,7 +154,7 @@ def import_sonic_checkpoint(
         alpha=config.critic_lora_alpha,
         key=critic_key,
     )
-    actor = SonicActor(encoder, decoder, adapter, config)
+    actor = SonicActor(encoder, decoder, adapter, config, smpl_encoder)
     policy = SonicActorCritic(
         actor,
         SonicCritic(critic, adapter, body_count=14, history_steps=config.history_steps),

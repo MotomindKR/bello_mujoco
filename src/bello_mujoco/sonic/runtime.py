@@ -12,7 +12,11 @@ import jax
 from bello_mujoco.configuration import dataclass_from_dict
 from bello_mujoco.envs.sonic_transfer import BelloSonicTransferEnv
 from bello_mujoco.repository import require_repository_commit
-from bello_mujoco.sonic.model import SonicActorCritic, sonic_policy_template
+from bello_mujoco.sonic.model import (
+    SonicActorCritic,
+    SonicNetworkConfig,
+    sonic_policy_template,
+)
 from bello_mujoco.sonic.corpus import MANIFEST, file_sha256
 from bello_mujoco.training.sonic_transfer import SonicTransferTrainingRunConfig
 
@@ -31,6 +35,7 @@ def load_sonic_policy_runtime(
     *,
     evaluation_names: tuple[str, ...],
     use_viewer_model: bool,
+    evaluation_input: str = "robot",
 ) -> SonicPolicyRuntime:
     checkpoint_path = Path(checkpoint_path).expanduser().resolve()
     metadata = _load_metadata(checkpoint_path)
@@ -75,10 +80,13 @@ def load_sonic_policy_runtime(
         use_viewer_model=use_viewer_model,
         load_mjx=False,
         sampling_config=run_config.sampling_config,
+        input_config=run_config.input_config,
+        evaluation_input=evaluation_input,
     )
     template = sonic_policy_template(
         env.embodiment,
         key=jax.random.PRNGKey(run_config.config.seed),
+        config=SonicNetworkConfig(smpl_enabled=run_config.input_config.smpl_enabled),
     )
     policy = eqx.tree_deserialise_leaves(checkpoint_path / "policy.eqx", template)
     if policy.actor.observation_size != (

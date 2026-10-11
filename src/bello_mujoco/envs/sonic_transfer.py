@@ -29,6 +29,7 @@ from bello_mujoco.sonic.control import sonic_action_target
 from bello_mujoco.sonic.embodiment import MiniEmbodimentAdapter
 from bello_mujoco.sonic.observations import SonicObservationAssembler
 from bello_mujoco.sonic.reference import ReferenceBank, load_reference_bank
+from bello_mujoco.sonic.smpl import SonicInputConfig
 from bello_mujoco.sonic.sampling import (
     SonicSampler,
     SonicSamplingConfig,
@@ -45,6 +46,8 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
     sampling_config: SonicSamplingConfig = SonicSamplingConfig()
     sampler: SonicSampler | None = None
     sampling_state: SonicSamplingState | None = None
+    input_config: SonicInputConfig = SonicInputConfig()
+    evaluation_input: str | None = None
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -58,6 +61,14 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
             raise ValueError("sonic_transfer requires a reference bank and embodiment")
         if self.observation_assembler is None:
             raise ValueError("sonic_transfer requires an observation assembler")
+        if self.evaluation_input not in {None, "robot", "smpl"}:
+            raise ValueError("SONIC evaluation input must be robot or smpl")
+        if self.input_config.smpl_enabled and self.reference_bank.smpl_joints is None:
+            raise ValueError(
+                "mixed SONIC training requires paired SMPL references; regenerate the corpus"
+            )
+        if self.evaluation_input == "smpl" and not self.input_config.smpl_enabled:
+            raise ValueError("checkpoint has no SMPL encoder")
         if self.reference_bank.joint_names != self.motion.joint_names:
             raise ValueError("SONIC reference bank and model joint orders differ")
         expected_bodies = motion_task_definition(
@@ -100,6 +111,8 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
         use_viewer_model: bool = False,
         load_mjx: bool = True,
         sampling_config: SonicSamplingConfig = SonicSamplingConfig(),
+        input_config: SonicInputConfig = SonicInputConfig(),
+        evaluation_input: str | None = None,
     ) -> BelloSonicTransferEnv:
         if not motion_paths:
             raise ValueError("sonic_transfer requires at least one motion clip")
@@ -117,7 +130,12 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
             motion_paths, model, evaluation_names=evaluation_names
         )
         embodiment = MiniEmbodimentAdapter.from_model(model)
-        assembler = SonicObservationAssembler(embodiment)
+        assembler = SonicObservationAssembler(
+            embodiment,
+            tuple(int(i) for i in model.actuator_qpos_indices),
+            tuple(int(i) for i in model.actuator_qvel_indices),
+            smpl_enabled=input_config.smpl_enabled,
+        )
         first = bank.sample_frames(jnp.asarray(0), jnp.arange(int(bank.lengths[0])))
         from bello_mujoco.motion.clip import MotionClip
 
@@ -132,6 +150,12 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
             body_lin_vel=first.body_lin_vel,
             body_ang_vel=first.body_ang_vel,
             foot_contacts=first.foot_contacts,
+            smpl_joints=bank.smpl_joints[: int(bank.lengths[0])]
+            if bank.smpl_joints is not None
+            else None,
+            smpl_root_quat=bank.smpl_root_quat[: int(bank.lengths[0])]
+            if bank.smpl_root_quat is not None
+            else None,
         )
         return cls(
             model=model,
@@ -142,6 +166,8 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
             embodiment=embodiment,
             observation_assembler=assembler,
             sampling_config=sampling_config,
+            input_config=input_config,
+            evaluation_input=evaluation_input,
         )
 
     @property
@@ -173,15 +199,25 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
     def _sampling_metrics(self, state, observation, done_flags):
         # Updated through the task-state hook after the transition, before reset
         # state can lose the source frame. Nonterminal visits count as exposure.
-        return {
+        metrics = {
             "sampling/visited_bin": self.sampler.bins_for_frames(state.reference_time)
         }
+        if self.input_config.smpl_enabled:
+            metrics["sampling/smpl_fraction"] = observation[
+                ..., self.observation_assembler.input_reference_size - 1
+            ]
+        return metrics
 
     @property
     def observation_layout(self) -> ObservationLayout:
         return ObservationLayout(
             (
                 ("sonic_future_reference", self.observation_assembler.reference_size),
+                *(
+                    (("sonic_smpl_reference", 840), ("sonic_smpl_selected", 1))
+                    if self.input_config.smpl_enabled
+                    else ()
+                ),
                 ("gravity_direction", 3),
                 ("base_angular_velocity", 3),
                 ("joint_position", self.action_size),
@@ -295,6 +331,35 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
                 )
             )
             reference = reference.reshape(-1)
+        if self.input_config.smpl_enabled:
+            human = self.observation_assembler.human_reference(
+                self.reference_bank,
+                clip_id,
+                local_frame,
+                anchor_quat,
+                state.alignment_yaw,
+            )
+            if rng is not None and self.config.observation_noise.enabled:
+                scale = jnp.concatenate(
+                    (
+                        jnp.full(72, self.input_config.smpl_joint_noise_m),
+                        jnp.full(6, self.config.observation_noise.anchor_orientation),
+                    )
+                )
+                noise = jax.random.uniform(
+                    jax.random.fold_in(rng, 2), (10, 78), minval=-1.0, maxval=1.0
+                )
+                human = human.reshape(10, 84).at[:, :78].add(noise * scale).reshape(-1)
+            selected = (
+                jax.random.bernoulli(
+                    jax.random.fold_in(rng, 1), self.input_config.smpl_probability
+                )
+                if rng is not None and self.evaluation_input is None
+                else jnp.asarray(self.evaluation_input == "smpl")
+            )
+            reference = jnp.concatenate(
+                (reference, human, selected.astype(jnp.float32)[None])
+            )
         observation = self.observation_assembler.step(
             reference,
             root_quaternion=qpos[3:7],
@@ -309,7 +374,7 @@ class BelloSonicTransferEnv(BelloMotionTrackingEnv):
         )
         if gravity_key is not None:
             magnitude = self.config.observation_noise.anchor_orientation
-            start = self.observation_assembler.reference_size
+            start = self.observation_assembler.input_reference_size
             observation = observation.at[start : start + 3].add(
                 jax.random.uniform(
                     gravity_key,

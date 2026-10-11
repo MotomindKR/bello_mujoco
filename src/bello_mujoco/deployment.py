@@ -334,7 +334,7 @@ def sonic_actor_onnx(policy, *, model, env, metadata: dict):
             ]
         )
 
-    gravity_offset = config.reference_size
+    gravity_offset = config.input_reference_size
     angular_offset = gravity_offset + 3
     position_offset = angular_offset + 3
     velocity_offset = position_offset + target_size
@@ -412,7 +412,55 @@ def sonic_actor_onnx(policy, *, model, env, metadata: dict):
                 value = op("Mul", [value, sigmoid], f"{prefix}_silu_{index}")
         return value
 
+    encoder_start = len(nodes)
     latent = mlp(reference, actor.encoder, "encoder")
+    if actor.smpl_encoder is not None:
+        robot_nodes = nodes[encoder_start:]
+        del nodes[encoder_start:]
+        start = (history - 1) * step + config.reference_size
+        human = op(
+            "Gather",
+            [
+                "observation",
+                constant("smpl_indices", np.arange(start, start + 840), dtype=np.int64),
+            ],
+            "smpl_reference",
+            axis=1,
+        )
+        selected = op(
+            "Gather",
+            ["observation", constant("smpl_mode_index", [start + 840], dtype=np.int64)],
+            "smpl_mode",
+            axis=1,
+        )
+        selected = op(
+            "Greater", [selected, constant("smpl_threshold", 0.5)], "smpl_selected"
+        )
+        selected = op(
+            "Squeeze",
+            [selected, constant("smpl_condition_axes", [0, 1], dtype=np.int64)],
+            "smpl_condition",
+        )
+        human_start = len(nodes)
+        human_latent = mlp(human, actor.smpl_encoder, "smpl_encoder")
+        human_nodes = nodes[human_start:]
+        del nodes[human_start:]
+
+        def branch(name, branch_nodes, output):
+            return helper.make_graph(
+                branch_nodes,
+                name,
+                [],
+                [helper.make_tensor_value_info(output, TensorProto.FLOAT, [1, 64])],
+            )
+
+        latent = op(
+            "If",
+            [selected],
+            "selected_latent",
+            then_branch=branch("smpl_path", human_nodes, human_latent),
+            else_branch=branch("robot_path", robot_nodes, latent),
+        )
     half_level = (config.fsq_levels - 1) * (1.0 - 1.0e-3) / 2.0
     fsq_offset = 0.5 if config.fsq_levels % 2 == 0 else 0.0
     fsq_shift = np.arctanh(fsq_offset / half_level) if fsq_offset else 0.0
@@ -599,6 +647,7 @@ def export_sonic_checkpoint(config: ExportConfig, output: Path) -> Path:
         "reference_clips": list(config.reference_clips),
         "future_frames": env.observation_assembler.future_frames,
         "future_dt": env.observation_assembler.future_dt,
+        "smpl_enabled": runtime.policy.actor.config.smpl_enabled,
         "source_joint_indices": env.embodiment.target_to_source_indices.tolist(),
         "source_neutral": env.embodiment.source_neutral.tolist(),
         "source_signs": env.embodiment.signs.tolist(),

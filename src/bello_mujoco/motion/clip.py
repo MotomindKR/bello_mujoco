@@ -62,6 +62,10 @@ class MotionClip:
     body_lin_vel: jax.Array
     body_ang_vel: jax.Array
     foot_contacts: jax.Array
+    # Paired human references: 24 SMPL joints relative to pelvis, world Z-up;
+    # root quaternion has SONIC's SMPL base rotation removed. Same clip clock.
+    smpl_joints: jax.Array | None = None
+    smpl_root_quat: jax.Array | None = None
 
     @property
     def num_frames(self) -> int:
@@ -106,11 +110,33 @@ def load_motion_clip(
             "body_ang_vel": np.asarray(archive["body_ang_vel"], dtype=np.float32),
             "foot_contacts": np.asarray(archive["foot_contacts"], dtype=np.float32),
         }
+        human = {}
+        if {"smpl_joints", "smpl_root_quat"} & set(archive.files):
+            from bello_mujoco.sonic.smpl import validate_smpl_motion
+
+            if not {"smpl_joints", "smpl_root_quat", "smpl_frame"} <= set(
+                archive.files
+            ):
+                raise ValueError(
+                    "paired SMPL motion requires joints, root quaternion and frame"
+                )
+            if str(_scalar(archive["smpl_frame"])) != "sonic_root_relative_z_up":
+                raise ValueError("unsupported paired SMPL coordinate frame")
+            human = {
+                name: np.asarray(archive[name], dtype=np.float32)
+                for name in ("smpl_joints", "smpl_root_quat")
+            }
+            validate_smpl_motion(**human, frames=len(arrays["qpos"]))
     _validate_motion(fps, joint_names, body_names, arrays, model)
     return MotionClip(
         fps=fps,
         joint_names=joint_names,
         body_names=body_names,
+        **(
+            human
+            if as_numpy
+            else {name: jnp.asarray(value) for name, value in human.items()}
+        ),
         **(
             arrays
             if as_numpy
@@ -121,6 +147,16 @@ def load_motion_clip(
 
 def save_motion_clip(path: Path | BinaryIO, clip: MotionClip) -> None:
     """Store the in-memory reference actually used by training, not its source path."""
+    human = {}
+    if clip.smpl_joints is not None or clip.smpl_root_quat is not None:
+        from bello_mujoco.sonic.smpl import validate_smpl_motion
+
+        validate_smpl_motion(clip.smpl_joints, clip.smpl_root_quat, clip.num_frames)
+        human = dict(
+            smpl_joints=np.asarray(clip.smpl_joints),
+            smpl_root_quat=np.asarray(clip.smpl_root_quat),
+            smpl_frame="sonic_root_relative_z_up",
+        )
     np.savez_compressed(
         path,
         fps=clip.fps,
@@ -133,6 +169,7 @@ def save_motion_clip(path: Path | BinaryIO, clip: MotionClip) -> None:
         body_lin_vel=np.asarray(clip.body_lin_vel),
         body_ang_vel=np.asarray(clip.body_ang_vel),
         foot_contacts=np.asarray(clip.foot_contacts),
+        **human,
     )
 
 

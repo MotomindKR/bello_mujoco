@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import math
+from pathlib import Path
 
 import grpc
 import numpy as np
@@ -20,6 +21,7 @@ class ProducerConfig:
     listen: str
     xrobot: PicoGrpcConfig
     retarget: GmrLiveRetargetConfig
+    smpl_model: Path | None = None
 
 
 class ReferenceService:
@@ -114,6 +116,22 @@ class ReferenceService:
                 root_linear_velocity_world=qvel[:3].tolist(),
                 root_angular_velocity_local=qvel[3:6].tolist(),
             )
+            if reference.smpl is not None:
+                from bello_mujoco.sonic.smpl import validate_smpl_motion
+
+                joints, root = reference.smpl
+                try:
+                    validate_smpl_motion(joints[None], root[None], 1)
+                except ValueError as error:
+                    context.abort(grpc.StatusCode.INTERNAL, str(error))
+                full_body.smpl.CopyFrom(
+                    pb.SmplReference(
+                        joints_root_relative_z_up=np.asarray(joints)
+                        .reshape(-1)
+                        .tolist(),
+                        root_orientation_wxyz=np.asarray(root).tolist(),
+                    )
+                )
         return pb.GetReferenceResponse(
             robot=self.robot,
             available=True,
@@ -155,7 +173,7 @@ def run(config: ProducerConfig) -> None:
     model = env.model
     indices = model.hold_ctrl_indices
     profile = motion_task_definition(config.asset).gmr.for_xrobot()
-    with XRobotGrpcStream(config.xrobot) as stream:
+    with XRobotGrpcStream(config.xrobot, smpl_model=config.smpl_model) as stream:
         retargeter = GmrRetargeter(env, config.retarget, profile=profile)
         with LiveGmrReferenceSource(stream, retargeter) as source:
             service = ReferenceService(

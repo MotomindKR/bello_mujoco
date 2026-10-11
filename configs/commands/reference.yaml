@@ -1,5 +1,6 @@
 asset: bello_mini
 listen: 127.0.0.1:50056
+smpl_model: null
 xrobot:
   endpoint: 127.0.0.1:50052
   tls_root_certificate_path: null

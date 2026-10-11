@@ -69,6 +69,7 @@ class EvalCommandConfig:
     stochastic_actions: bool
     action_seed: int
     gamepad_enabled: bool
+    sonic_reference_input: Literal["robot", "smpl"] = "robot"
 
 
 @dataclass(frozen=True)
@@ -317,12 +318,14 @@ def _eval_hydra(config: DictConfig) -> None:
             command.output_path,
             steps=command.steps,
             stop_on_terminal=command.stop_on_done,
+            reference_input=command.sonic_reference_input,
         )
         print(json.dumps(stats, indent=2, sort_keys=True))
         return
     if command.task == "motion":
         _reject_explicit_fields(
             (
+                "sonic_reference_input",
                 "command",
                 "torso_command",
                 "stochastic_actions",
@@ -346,6 +349,7 @@ def _eval_hydra(config: DictConfig) -> None:
         return
     _reject_explicit_fields(
         (
+            "sonic_reference_input",
             "output_path",
             "end_effector_payload_mass_kg",
             "motion_dataset",

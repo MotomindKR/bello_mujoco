@@ -2,6 +2,7 @@ task: locomotion
 checkpoint_path: null
 motion_dataset: null
 evaluation_clips: []
+sonic_reference_input: robot
 end_effector_payload_mass_kg: null
 output_path: outputs/evaluation/motion.mp4
 command: [0.0, 0.0, 0.0]

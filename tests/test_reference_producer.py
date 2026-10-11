@@ -85,7 +85,10 @@ def test_unavailability_is_distinct_from_malformed_or_failed_producer(failure):
         )
 
 
-def test_full_body_and_held_joints_come_from_the_same_frame():
+@pytest.mark.parametrize("with_smpl", [False, True])
+def test_full_body_and_held_joints_come_from_the_same_frame(with_smpl):
+    joints = np.arange(72, dtype=float).reshape(24, 3) * 0.01
+    joints -= joints[0].copy()
     frame = RobotReferenceFrame(
         np.array([0.1, -0.2, 1.0, 1.0, 0.0, 0.0, 0.0, 0.3, 0.4]),
         np.array([0.01, -0.02, 0.03, -0.04, 0.05, -0.06, 0.5, 0.6]),
@@ -93,6 +96,7 @@ def test_full_body_and_held_joints_come_from_the_same_frame():
         0,
         time.monotonic(),
         np.zeros(3),
+        smpl=(joints, np.array([1.0, 0.0, 0.0, 0.0])) if with_smpl else None,
     )
     service = ReferenceService(
         "test",
@@ -115,6 +119,18 @@ def test_full_body_and_held_joints_come_from_the_same_frame():
     assert list(decoded.full_body.root_position_world) == [0.1, -0.2, 1.0]
     assert list(decoded.full_body.root_linear_velocity_world) == [0.01, -0.02, 0.03]
     assert list(decoded.full_body.root_angular_velocity_local) == [-0.04, 0.05, -0.06]
+    assert decoded.full_body.HasField("smpl") == with_smpl
+    if with_smpl:
+        np.testing.assert_array_equal(
+            decoded.full_body.smpl.joints_root_relative_z_up, joints.reshape(-1)
+        )
+        np.testing.assert_array_equal(
+            decoded.full_body.smpl.root_orientation_wxyz, [1, 0, 0, 0]
+        )
+        joints[15] = 0
+        with pytest.raises(ValueError, match="placeholder"):
+            service.get(pb.GetReferenceRequest(robot="test"), Context())
+        joints[15] = [0, 0, 0.5]
     frame.qpos[3:7] = 0
     with pytest.raises(ValueError, match="invalid root orientation"):
         service.get(pb.GetReferenceRequest(robot="test"), Context())

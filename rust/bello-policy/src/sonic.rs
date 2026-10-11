@@ -10,6 +10,8 @@ use crate::motion::clip::Clip;
 
 #[derive(Deserialize)]
 struct Settings {
+    #[serde(default)]
+    smpl_enabled: bool,
     hardware_imu_frame: String,
     joint_names: Vec<String>,
     joint_from_motor: Vec<Vec<f64>>,
@@ -48,12 +50,26 @@ pub struct ReferenceFrame {
     pub position: Vec<f64>,
     pub velocity: Vec<f64>,
     pub orientation: DQuat,
+    pub smpl: Option<SmplFrame>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SmplFrame {
+    pub joints: Vec<DVec3>,
+    pub orientation: DQuat,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceInput {
+    #[default]
+    Robot,
+    Smpl,
 }
 
 struct ReferenceLayout {
     qpos_indices: Vec<usize>,
     qvel_indices: Vec<usize>,
-    training_order: Vec<usize>,
 }
 
 impl ReferenceLayout {
@@ -73,8 +89,7 @@ impl ReferenceLayout {
         );
         let mut qpos_indices = Vec::with_capacity(n);
         let mut qvel_indices = Vec::with_capacity(n);
-        let mut training_order = vec![usize::MAX; n];
-        for (named_index, name) in joint_names.iter().enumerate() {
+        for name in joint_names {
             let id = model
                 .name_to_id(MjtObj::mjOBJ_JOINT, name)
                 .with_context(|| format!("missing SONIC joint {name}"))?;
@@ -91,31 +106,29 @@ impl ReferenceLayout {
                 qpos >= 7 && qvel >= 6 && qpos - 7 == qvel - 6,
                 "invalid SONIC reference coordinates for {name}"
             );
-            let slot = &mut training_order[qpos - 7];
-            ensure!(*slot == usize::MAX, "duplicate SONIC joint {name}");
-            *slot = named_index;
+            ensure!(
+                !qpos_indices.contains(&qpos),
+                "duplicate SONIC joint {name}"
+            );
             qpos_indices.push(qpos);
             qvel_indices.push(qvel);
         }
         Ok(Self {
             qpos_indices,
             qvel_indices,
-            training_order,
         })
     }
+}
 
-    fn encode_joints(&self, settings: &Settings, frame: &ReferenceFrame) -> (Vec<f64>, Vec<f64>) {
-        let mut position = settings.source_neutral.clone();
+impl Settings {
+    fn encode_joints(&self, frame: &ReferenceFrame) -> (Vec<f64>, Vec<f64>) {
+        let mut position = self.source_neutral.clone();
         let mut velocity = vec![0.; position.len()];
-        // Existing checkpoints applied the embodiment codec to raw MuJoCo
-        // qpos[7..]/qvel[6..], not named policy order. Preserve that learned
-        // encoding for references only; feedback and actions stay named.
-        for (target, &named) in self.training_order.iter().enumerate() {
-            let source = settings.source_joint_indices[target];
-            let sign = settings.source_signs[target];
-            position[source] = settings.source_neutral[source]
-                + (frame.position[named] - settings.default_joint_position[target]) * sign;
-            velocity[source] = frame.velocity[named] * sign;
+        for (target, &source) in self.source_joint_indices.iter().enumerate() {
+            let sign = self.source_signs[target];
+            position[source] = self.source_neutral[source]
+                + (frame.position[target] - self.default_joint_position[target]) * sign;
+            velocity[source] = frame.velocity[target] * sign;
         }
         (position, velocity)
     }
@@ -130,6 +143,7 @@ pub struct Sonic {
     last_action: Vec<f32>,
     root_from_hardware_imu: DQuat,
     reference_layout: ReferenceLayout,
+    input: ReferenceInput,
 }
 
 impl Sonic {
@@ -215,14 +229,17 @@ impl Sonic {
         let reference_layout = ReferenceLayout::load(&policy.physics_xml, &settings.joint_names)?;
         let root_from_hardware_imu =
             checked_quaternion(DQuat::from_array(settings.root_from_hardware_imu_xyzw))?;
-        let layout = [
-            ("sonic_future_reference", settings.future_frames * 64),
+        let mut layout = vec![("sonic_future_reference", settings.future_frames * 64)];
+        if settings.smpl_enabled {
+            layout.extend([("sonic_smpl_reference", 840), ("sonic_smpl_selected", 1)]);
+        }
+        layout.extend([
             ("gravity_direction", 3),
             ("base_angular_velocity", 3),
             ("joint_position", n),
             ("joint_velocity", n),
             ("last_action", n),
-        ];
+        ]);
         ensure!(
             policy
                 .metadata
@@ -233,6 +250,7 @@ impl Sonic {
             "unsupported SONIC observation layout"
         );
         Ok(Self {
+            input: ReferenceInput::Robot,
             policy,
             settings,
             clip,
@@ -267,7 +285,20 @@ impl Sonic {
         &self.settings.joint_names
     }
     pub fn future_dt(&self) -> f64 {
-        self.settings.future_dt
+        if self.input == ReferenceInput::Smpl {
+            0.02
+        } else {
+            self.settings.future_dt
+        }
+    }
+
+    pub fn select_input(&mut self, input: ReferenceInput) -> Result<()> {
+        ensure!(
+            input != ReferenceInput::Smpl || self.settings.smpl_enabled,
+            "SONIC bundle has no SMPL encoder"
+        );
+        self.input = input;
+        Ok(())
     }
     pub fn root_from_imu(&self) -> DQuat {
         self.root_from_hardware_imu
@@ -302,6 +333,7 @@ impl Sonic {
                 let offset = (i as f32 * self.settings.future_dt as f32 * fps).round_ties_even();
                 let sample = clip.sample_frame(f64::from(frame + offset));
                 ReferenceFrame {
+                    smpl: None,
                     position: self
                         .reference_layout
                         .qpos_indices
@@ -327,6 +359,20 @@ impl Sonic {
         alignment_root: DQuat,
         references: &[ReferenceFrame],
     ) -> Result<Step> {
+        self.step_reference_input(feedback, alignment_root, references, self.input)
+    }
+
+    pub fn step_reference_input(
+        &mut self,
+        feedback: &Feedback,
+        alignment_root: DQuat,
+        references: &[ReferenceFrame],
+        input: ReferenceInput,
+    ) -> Result<Step> {
+        ensure!(
+            input != ReferenceInput::Smpl || self.settings.smpl_enabled,
+            "SONIC bundle has no SMPL encoder"
+        );
         let n = self.settings.joint_names.len();
         ensure!(
             feedback.motor_position.len() == n && feedback.motor_velocity.len() == n,
@@ -385,8 +431,7 @@ impl Sonic {
                 "invalid SONIC reference joints"
             );
             let reference_orientation = checked_quaternion(sample.orientation)?;
-            let (source_position, source_velocity) =
-                self.reference_layout.encode_joints(&self.settings, sample);
+            let (source_position, source_velocity) = self.settings.encode_joints(sample);
             source_positions.extend(source_position);
             source_velocities.extend(source_velocity);
             root_orientations.push(rotation_6d(
@@ -410,6 +455,30 @@ impl Sonic {
         }
         let gravity = orientation.conjugate() * DVec3::NEG_Z;
         let mut observation = reference;
+        if self.settings.smpl_enabled {
+            if input == ReferenceInput::Smpl {
+                for sample in references {
+                    let human = sample.smpl.as_ref().context("SMPL reference missing")?;
+                    ensure!(
+                        human.joints.len() == 24
+                            && human.joints.iter().all(|v| v.is_finite())
+                            && human.joints[0].length() < 1e-5
+                            && human.joints[15].length() > 0.1,
+                        "invalid SMPL human geometry"
+                    );
+                    let root = checked_quaternion(human.orientation)?;
+                    for joint in &human.joints {
+                        observation.extend((root.conjugate() * *joint).to_array());
+                    }
+                    observation.extend(rotation_6d(orientation.conjugate() * alignment * root));
+                    let (joints, _) = self.settings.encode_joints(sample);
+                    observation.extend(&joints[23..29]);
+                }
+                observation.push(1.);
+            } else {
+                observation.extend([0.; 841]);
+            }
+        }
         observation.extend(gravity.to_array());
         observation.extend(
             (self.root_from_hardware_imu * DVec3::from_array(feedback.angular_velocity_local))
@@ -482,12 +551,13 @@ mod tests {
         </body></worldbody></mujoco>"#;
 
     #[test]
-    fn named_live_reference_preserves_training_coordinate_order() {
+    fn reference_encoding_uses_named_joint_order() {
         let names = ["c", "a", "b"].map(String::from);
         let layout = ReferenceLayout::load(PHYSICS, &names).unwrap();
         assert_eq!(layout.qpos_indices, [9, 7, 8]);
         assert_eq!(layout.qvel_indices, [8, 6, 7]);
         let settings = Settings {
+            smpl_enabled: false,
             hardware_imu_frame: "imu".into(),
             joint_names: names.to_vec(),
             joint_from_motor: vec![],
@@ -502,23 +572,24 @@ mod tests {
             root_from_hardware_imu_xyzw: [0., 0., 0., 1.],
         };
         let live = ReferenceFrame {
+            smpl: None,
             position: vec![3., 1., 2.],
             velocity: vec![30., 10., 20.],
             orientation: DQuat::IDENTITY,
         };
-        let (position, velocity) = layout.encode_joints(&settings, &live);
-        assert_eq!(position, [11.8, 20., 29.1, 37.3]);
-        assert_eq!(velocity, [20., 0., -10., -30.]);
-        // Both callers expose named joints, even though the clip is stored in
-        // generalized coordinates and the source codec preserves training order.
+        let (position, velocity) = settings.encode_joints(&live);
+        assert_eq!(position, [10.8, 20., 27.1, 38.3]);
+        assert_eq!(velocity, [10., 0., -30., -20.]);
+        // Clip storage order must not change the encoder's named joint inputs.
         let qpos = [0., 0., 1., 1., 0., 0., 0., 1., 2., 3.];
         let qvel = [0., 0., 0., 0., 0., 0., 10., 20., 30.];
         let clip = ReferenceFrame {
+            smpl: None,
             position: layout.qpos_indices.iter().map(|&i| qpos[i]).collect(),
             velocity: layout.qvel_indices.iter().map(|&i| qvel[i]).collect(),
             orientation: DQuat::IDENTITY,
         };
-        assert_eq!(layout.encode_joints(&settings, &clip), (position, velocity));
+        assert_eq!(settings.encode_joints(&clip), (position, velocity));
         assert_eq!(live.position, [3., 1., 2.]);
     }
 

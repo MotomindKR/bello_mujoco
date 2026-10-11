@@ -46,7 +46,7 @@ uv run python -m bello_mujoco.sonic.corpus upload /data/bello-mini-sonic \
 Upload requires an existing private W&B project. Keep the printed immutable
 `:vN` reference; never use `:latest` for training. Mirrored or segmented versions
 of the same source must retain its source-sequence identity. The reference bank
-is device-resident; the default uncompressed-array safety limit is 4 GiB and is
+is device-resident; the default uncompressed-array safety limit is 8 GiB and is
 checked before environment construction. This limit is not a VRAM estimate.
 Loading validates clips on the CPU and transfers concatenated arrays once.
 The bank is an explicit JIT argument, not a multi-gigabyte embedded compiler
@@ -86,9 +86,95 @@ run from the original NVIDIA weights, not resuming adapters from another bank.
 
 ## Reference and Mini departures
 
-The actor retains the release layout: ten 50 Hz proprio/action samples, ten
-future reference frames spaced at 0.1 seconds, a frozen 640→64 SiLU encoder,
-32-level FSQ arranged as two 32-dimensional tokens, and a frozen
+### Paired human input
+
+The default transfer profile samples the SMPL encoder on 30% of control steps
+and the robot encoder on 70%, using `input_config.smpl_probability: 0.3`.
+Both encoders stay frozen; one shared dynamics decoder learns the Mini LoRA
+adapters. `train/sampling/smpl_fraction` records the sampled fraction. Setting the
+probability to zero explicitly selects robot-only training. Missing human
+references in mixed training fail at initialization; zero placeholders are
+rejected. Existing robot-only checkpoints cannot supply a human encoder.
+With observation noise enabled, human XYZ features receive uniform noise of
+`+/-input_config.smpl_joint_noise_m` (default 0.05 m). Human root features use
+the existing `env_config.observation_noise.anchor_orientation` amplitude;
+wrist reference values remain uncorrupted, matching the source tokenizer.
+
+Prepare paired references from the original AMASS sources, preserving the Mini
+clips and their immutable splits. First extract a compact neutral skeleton from
+the licensed SMPL-X model:
+
+```bash
+uv run python -m bello_mujoco.sonic.smpl_model \
+  --smplx /Volumes/home/datasets/amass/body_models/smplx/SMPLX_NEUTRAL.npz \
+  --output outputs/sonic-paired/models/SMPL_NEUTRAL.npz
+```
+
+This uses the pinned SONIC `compute_human_joints` geometry: the first 22 SMPL-X
+body joints followed by thumb endpoints 39 and 54, with neutral finger
+rotations. The compact 24-joint tree collapses those neutral finger chains to
+the wrists. Both offline and live paths use this same neutral shape and remove
+the template pelvis offset. Original subject shape coefficients and global
+translation are not encoder inputs. The generated model records its licensed
+source SHA-256 and must remain outside Git.
+
+Create `sources.json`, mapping each Mini clip's filename stem to its original
+AMASS file, SHA-256, and start time on that file's clock:
+
+```json
+{
+  "clip_name": {
+    "path": "AMASS_subdataset/subject/motion_stageii.npz",
+    "sha256": "64 lowercase hexadecimal characters",
+    "start_seconds": 0.0
+  }
+}
+```
+
+For a corpus prepared by `sonic.amass`, its `preparation.json` accepted records
+contain `path`, `source_sha256`, and `start_frame`; divide `start_frame` by the
+preparation frame rate to obtain `start_seconds`. Verify each record's clip
+checksum against the original corpus manifest before using this mapping.
+
+```bash
+uv run python -m bello_mujoco.sonic.pair_smpl \
+  --corpus /data/original-mini-clips \
+  --source-root /Volumes/home/datasets/amass \
+  --sources /data/sources.json \
+  --models outputs/sonic-paired/models \
+  --output outputs/sonic-paired/clips --workers 4
+```
+
+The tool verifies source and robot checksums, resamples human rotations onto
+the exact Mini clip clock, adds `smpl_joints` and `smpl_root_quat`, and publishes
+a new corpus atomically. Existing robot arrays and source-sequence splits are
+preserved. The new manifest records source/model hashes. Upload this new corpus
+as its own immutable artifact and start fresh from NVIDIA's pretrained weights.
+
+Human clip arrays contain 24 pelvis-relative XYZ positions in world Z-up and
+the canonical WXYZ root quaternion (raw SMPL root multiplied on the right by
+the inverse of `[0.5, 0.5, 0.5, 0.5]`). At observation assembly, each frame is
+rotated into its own root frame. The 84 values per frame are 72 joint values,
+six relative-root rotation values (row-major first two matrix columns), and
+six G1 wrist values. A dual-input actor frame contains robot reference 640,
+human reference 840, selector 1, and Mini proprioception 90: 1,571 values,
+stacked ten times. Exported ONNX uses `If` to execute only the selected encoder.
+
+Evaluate the same checkpoint separately with
+`bello-eval task=sonic_transfer sonic_reference_input=robot` and
+`sonic_reference_input=smpl`, supplying the usual checkpoint, paired corpus,
+held-out clips and output path. Evaluation fixes the selected input even when
+observation noise uses a random key. These comparisons and HIL tests are still
+required for every newly trained checkpoint; data preparation alone does not
+establish tracking quality.
+
+### Shared policy and observation contract
+
+The actor retains ten 50 Hz proprio/action samples. Robot references use ten
+future frames spaced at 0.1 seconds and a frozen 640-to-64 SiLU encoder.
+Human references use ten frames spaced at 0.02 seconds and the released frozen
+840-to-64 SMPL encoder. Both feed the same 32-level FSQ, arranged as two
+32-dimensional tokens, and the same frozen
 994→29 dynamics decoder with rank-64/alpha-128 LoRA on every linear layer. The
 pretrained critic uses rank-32/alpha-32 LoRA. Actor and critic use the effective
 Any2Any 5e-5 adaptive rate: the reference scheduler overwrites both optimizer
@@ -116,6 +202,13 @@ positions precede all future velocities before the combined buffer is reshaped
 into 58-value rows and paired with per-frame root orientations. Training and
 Rust playback preserve that ordering because the frozen encoder was trained on
 it.
+This block layout is separate from the Mini joint mapping: each position and
+velocity frame is gathered in canonical policy joint-name order using the
+model's qpos/qvel addresses before the Mini-to-G1 codec. Training, Python
+evaluation, Rust clip playback, and live tracking use the same named ordering.
+The old raw-MuJoCo-order compatibility permutation is removed. Checkpoints
+trained under that old input contract require retraining and re-export for the
+current runner; reproduce them using their historical source and runner.
 Rust also uses the training clock's float32 frame arithmetic and ties-to-even
 rounded future-frame offsets, including clips whose frame rate is not a
 multiple of 10 Hz. This prevents interpolation drift on long or fast motions.

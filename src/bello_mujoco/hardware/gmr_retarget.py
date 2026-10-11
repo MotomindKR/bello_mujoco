@@ -83,6 +83,7 @@ class HumanTargetFrame:
     received_at: float
     foot_contacts: np.ndarray | None = None
     track_id: str = ""
+    smpl: tuple[np.ndarray, np.ndarray] | None = None
 
     def age_ms(self) -> float:
         return self.source_age_ms + (time.monotonic() - self.received_at) * 1000
@@ -283,6 +284,7 @@ class GmrRetargeter:
             source_age_ms=None,
             received_at=frame.received_at,
             torso_command=self._torso_command(qpos),
+            smpl=frame.smpl,
         )
         if self.validate_reference is not None:
             self.validate_reference(result)
@@ -327,6 +329,7 @@ class GmrRetargeter:
                 source_age_ms=frame.source_age_ms,
                 received_at=frame.received_at,
                 torso_command=self._torso_command(qpos),
+                smpl=frame.smpl,
             )
             if self.validate_reference is not None:
                 self.validate_reference(result)

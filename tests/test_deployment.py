@@ -127,7 +127,9 @@ def test_policy_publication_does_not_overwrite_or_leave_staging_files(tmp_path):
 
 @pytest.mark.parametrize("with_motion", [False, True])
 def test_bundle_contains_policy_and_only_required_reference(with_motion):
-    motion = SimpleNamespace(
+    from bello_mujoco.motion.clip import MotionClip
+
+    motion = MotionClip(
         fps=50.0,
         joint_names=("hinge",),
         body_names=("body",),
