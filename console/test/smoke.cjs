@@ -1154,9 +1154,13 @@ async function serve(service, implementation) {
       ["dark", "Dark", true],
       ["system", "System", true],
     ]) {
-      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Settings", exact: true })
+        .dispatchEvent("click");
       await page.getByRole("radio", { name: label, exact: true }).check();
-      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Save", exact: true })
+        .dispatchEvent("click");
       await page.waitForFunction(
         (value) =>
           document.documentElement.classList.contains("dark") === value,
