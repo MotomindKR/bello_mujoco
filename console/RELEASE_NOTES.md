@@ -1,3 +1,7 @@
+## Bello Mini Console 0.3.3
+
+- Fix Nintendo Switch Pro controller ZL/ZR input on Linux. SDL now uses the kernel event device, which reports reliable press and release events instead of invalid trigger axis values. This restores held abort and fault recovery without changing the runner protocol.
+
 ## Bello Mini Console 0.3.2
 
 - Keep locomotion movement intent active during an unfinished L2 + R2 abort hold. The runner enters Fault and zeros movement only after the full one-second hold. This runner change needs the matching source revision on the robot.

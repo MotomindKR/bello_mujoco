@@ -241,6 +241,9 @@ function mark(service, error = "") {
 }
 function startController() {
   try {
+    // The Linux Switch HID mapping reports ZL/ZR as invalid axes; evdev maps their buttons correctly.
+    if (process.platform === "linux")
+      process.env.SDL_JOYSTICK_HIDAPI_SWITCH = "0";
     sdl = require("@kmamal/sdl");
     const scan = () => {
       try {
