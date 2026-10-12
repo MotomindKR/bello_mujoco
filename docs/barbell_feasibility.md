@@ -80,7 +80,9 @@ under ignored outputs, without changing the canonical robot description.
 
 The bar is a free rigid body with explicit mass/inertia and collidable shaft/end
 weights. Two **ideal shaft-axis hinges** connect the configured grip sites.
-They keep each hand's local +Y aligned with the shaft and allow only axial spin.
+They keep each hand's configured local shaft axis aligned with the shaft and
+allow only axial spin. Hold diagnostics default to local +Y; the palms-down
+lifting profile uses mirrored local -X/+X axes.
 Each hinge uses two point constraints separated by 0.10 m along the shaft,
 without adding mass or generalized coordinates. They transmit unlimited force
 and transverse torque, but no torque about the free shaft axis:
@@ -343,3 +345,18 @@ uv run pytest -q tests/test_statics.py tests/test_barbell_hold.py tests/test_bar
 ```
 
 These tests use synthetic mechanisms, not snapshots of robot-specific YAML.
+
+## Palms-down lifting experiment
+
+The fixed-15 kg lifting profile now has explicit mirrored shaft and palm axes;
+see [training configuration](training_configuration.md#rigid-barbell-profiles).
+The receiving pose places both palms over the shaft facing down. The complete
+lift is retargeted, rather than adding a wrist offset to an old learned policy.
+Geometry checks cover grip coincidence, shaft alignment, body collisions and
+joint/motor position limits, including interpolated frames. The inverse-dynamics
+screen separately reports effort overload and missing contact equilibrium.
+
+The 40 mm palm-normal and 25 mm finger-direction grip offsets remain provisional
+sphere-proxy assumptions. Ideal hinges do not establish physical grip strength.
+Training this reference does not update the live robot, its standing policy, or
+its handoff targets; those require a matching evaluated policy and integration.

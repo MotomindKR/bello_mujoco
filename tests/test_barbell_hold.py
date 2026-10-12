@@ -5,7 +5,7 @@ import mujoco
 import numpy as np
 import pytest
 
-from bello_mujoco.models.barbell import grip_wrench_columns
+from bello_mujoco.models.barbell import Grip, grip_wrench_columns
 
 from bello_mujoco.evaluation.barbell_hold import (
     add_barbell,
@@ -23,7 +23,7 @@ def geometry():
         shaft_diameter_m=0.02,
         grip_spacing_m=0.4,
         hands=tuple(
-            SimpleNamespace(body=side, side=side, grip_local_m=(0, 0, 0))
+            Grip(body=side, side=side, grip_local_m=(0, 0, 0))
             for side in ("left", "right")
         ),
     )

@@ -1,31 +1,59 @@
 config:
-  total_timesteps: 100000000
+  total_timesteps: 2949120000
   num_envs: 1024
 motion:
-  directory: outputs/barbell-15kg
+  directory: outputs/barbell-palms-down
   sequence: handover_cycle
 asset_config:
   asset: bello_mini
   target_total_mass_kg: 49.5
   barbell:
     mass_kg: 15.0
+    hands:
+    - body: left_end_effector_sphere_link
+      side: left
+      grip_local_m:
+      - 0.0
+      - -0.04
+      - -0.025
+      shaft_axis_local:
+      - -1
+      - 0.0
+      - 0.0
+      palm_normal_local:
+      - 0.0
+      - -1
+      - 0.0
+    - body: right_end_effector_sphere_link
+      side: right
+      grip_local_m:
+      - 0.0
+      - 0.04
+      - -0.025
+      shaft_axis_local:
+      - 1
+      - 0.0
+      - 0.0
+      palm_normal_local:
+      - 0.0
+      - 1
+      - 0.0
   joint_default_positions:
-    left_shoulder_pitch_joint: 0.000367519
-    left_shoulder_roll_joint: -0.013369513
-    left_shoulder_yaw_joint: -0.006997438
-    left_elbow_pitch_joint: -1.048458276
-    left_wrist_yaw_joint: 0.004661893
-    left_wrist_pitch_joint: 0.786308457
-    left_wrist_roll_joint: 0.018025604
-    right_shoulder_pitch_joint: 0.000367519
-    right_shoulder_roll_joint: 0.013369513
-    right_shoulder_yaw_joint: 0.006997438
-    right_elbow_pitch_joint: -1.048458276
-    right_wrist_yaw_joint: -0.004661893
-    right_wrist_pitch_joint: 0.786308457
-    right_wrist_roll_joint: -0.018025604
+    left_shoulder_pitch_joint: -0.17091749807668974
+    left_shoulder_roll_joint: 0.08805562582554867
+    left_shoulder_yaw_joint: -0.7182254725663879
+    left_elbow_pitch_joint: -0.3508316145209658
+    left_wrist_yaw_joint: -0.8599537025591691
+    left_wrist_pitch_joint: 0.14318531911284307
+    left_wrist_roll_joint: 1.133773848187055
+    right_shoulder_pitch_joint: -0.17091749807668974
+    right_shoulder_roll_joint: -0.08805562582554867
+    right_shoulder_yaw_joint: 0.7182254725663879
+    right_elbow_pitch_joint: -0.3508316145209658
+    right_wrist_yaw_joint: 0.8599537025591691
+    right_wrist_pitch_joint: 0.14318531911284307
+    right_wrist_roll_joint: -1.133773848187055
 env_config:
-  # Exploratory simulation: retain the failed screen in the reference/checkpoint.
   allow_unscreened_reference: true
   reset:
     joint_pos_noise:
@@ -40,13 +68,18 @@ env_config:
     - 0.0
     - 0.0
 checkpoint_config:
-  every_updates: 100
-  name: bello_mini_barbell_15kg_handover_cycle_seed${config.seed}
+  every_updates: 2000
+  name: barbell_palms_down_15kg_20261012_seed${config.seed}
 wandb_config:
   group: bello-mini-barbell-motion
   tags:
   - bello-mini
   - beyondmimic
-  - rigid-bar
   - fixed-15kg
+  - palms-down
+  - mirrored-grip-frames
   - exploratory-unscreened-reference
+video_config:
+  every_updates: 10000
+  steps: 1010
+  render_final: true

@@ -130,7 +130,13 @@ def bar_metrics(model, data, world_id=0):
         hand_body = int(
             model.mj_model.site_bodyid[model.mj_model.site(f"{side}_hand_grip").id]
         )
-        hand_axis = quat_rotate(data.xquat[hand_body], jnp.array([0.0, 1.0, 0.0]))
+        grip = model.mj_model.site(f"{side}_hand_grip").id
+        axis = model.mj_model.site(f"{side}_hand_grip_axis").id
+        local_axis = model.mj_model.site_pos[axis] - model.mj_model.site_pos[grip]
+        local_axis = (
+            local_axis / np.linalg.norm(local_axis) * (1 if side == "left" else -1)
+        )
+        hand_axis = quat_rotate(data.xquat[hand_body], jnp.asarray(local_axis))
         bar_axis = quat_rotate(
             data.xquat[model.bar_body_id], jnp.array([0.0, 1.0, 0.0])
         )

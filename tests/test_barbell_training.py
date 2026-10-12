@@ -34,7 +34,7 @@ from bello_mujoco.motion.clip import (
 from bello_mujoco.sim import ModelRandomizationConfig, _randomized_model_fields
 
 
-def mechanism(mass=30.0):
+def mechanism(mass=30.0, *, rotated_hands=False):
     root = ET.fromstring("""<mujoco><worldbody>
     <body name="root" pos="0 0 1"><freejoint name="root_free"/><geom size=".1" mass="3"/>
       <body name="torso"><geom size=".05" mass="2"/>
@@ -45,9 +45,60 @@ def mechanism(mass=30.0):
     config = RigidBarConfig(
         hands=(Grip("left", "left", (0, 0, 0)), Grip("right", "right", (0, 0, 0)))
     )
+    if rotated_hands:
+        for side, sign in (("left", -1), ("right", 1)):
+            root.find(f".//body[@name='{side}']").set(
+                "quat", f"{2**-0.5} 0 0 {sign * 2**-0.5}"
+            )
+        config = replace(
+            config,
+            hands=(
+                Grip("left", "left", (0, 0, 0), (-1, 0, 0), (0, -1, 0)),
+                Grip("right", "right", (0, 0, 0), (1, 0, 0), (0, 1, 0)),
+            ),
+        )
     add_barbell(root, config, (0, 0, 1), mass, (0.02, 1.0))
     model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
     return model
+
+
+def test_mirrored_hand_axes_preserve_grip_hinge_and_detect_rotation():
+    from bello_mujoco.models.barbell import grip_axis_errors
+
+    model = mechanism(rotated_hands=True)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    np.testing.assert_allclose(grip_axis_errors(model, data), 0, atol=1e-12)
+    for side in ("left", "right"):
+        for anchor in ("grip", "grip_axis"):
+            np.testing.assert_allclose(
+                data.site_xpos[model.site(f"{side}_hand_{anchor}").id],
+                data.site_xpos[model.site(f"{side}_bar_{anchor}").id],
+                atol=1e-12,
+            )
+    model.body_quat[model.body("left").id] = [1, 0, 0, 0]
+    mujoco.mj_forward(model, data)
+    np.testing.assert_allclose(
+        grip_axis_errors(model, data), [np.pi / 2, 0], atol=1e-12
+    )
+
+
+@pytest.mark.parametrize("axis", [(0, 0, 0), (2, 0, 0), (float("nan"), 0, 0)])
+def test_invalid_grip_axis_rejected(axis):
+    with pytest.raises(ValueError, match="unit vectors"):
+        RigidBarConfig(
+            hands=(Grip("left", "left", shaft_axis_local=axis), Grip("right", "right"))
+        )
+
+
+def test_shaft_normal_to_palm_is_rejected():
+    with pytest.raises(ValueError, match="palm plane"):
+        RigidBarConfig(
+            hands=(
+                Grip("left", "left", shaft_axis_local=(1, 0, 0)),
+                Grip("right", "right"),
+            )
+        )
 
 
 def test_payload_mixture_is_reproducible_and_world_prefix_stable():
@@ -243,7 +294,8 @@ def test_loaded_arm_sampler_never_selects_rest_and_jit_vmap_agree():
 @pytest.mark.skipif(
     jax.default_backend() != "gpu", reason="MJX-Warp throughput requires CUDA"
 )
-def test_warp_hinge_grips_world_loads_and_throughput():
+@pytest.mark.parametrize("rotated_hands", [False, True])
+def test_warp_hinge_grips_world_loads_and_throughput(rotated_hands):
     import time
     import json
 
@@ -254,6 +306,18 @@ def test_warp_hinge_grips_world_loads_and_throughput():
     geometry = RigidBarConfig(
         hands=(Grip("left", "left", (0, 0, 0)), Grip("right", "right", (0, 0, 0)))
     )
+    if rotated_hands:
+        for side, sign in (("left", -1), ("right", 1)):
+            root.find(f".//body[@name='{side}']").set(
+                "quat", f"{2**-0.5} 0 0 {sign * 2**-0.5}"
+            )
+        geometry = replace(
+            geometry,
+            hands=(
+                Grip("left", "left", (0, 0, 0), (-1, 0, 0), (0, -1, 0)),
+                Grip("right", "right", (0, 0, 0), (1, 0, 0), (0, 1, 0)),
+            ),
+        )
     add_barbell(root, geometry, (0, 0, 1), 30.0, (0.02, 1.0))
     model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
     count = 256
@@ -341,10 +405,11 @@ def test_motion_profile_keeps_fixed_object_and_all_policy_actions():
         )
 
 
-def test_contact_metrics_select_world_and_ignore_parked_prop():
+@pytest.mark.parametrize("rotated_hands", [False, True])
+def test_contact_metrics_select_world_and_ignore_parked_prop(rotated_hands):
     from bello_mujoco.envs.barbell import bar_metrics
 
-    model = mechanism()
+    model = mechanism(rotated_hands=rotated_hands)
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
     root_geom = int(model.body_geomadr[model.body("root").id])
@@ -368,7 +433,7 @@ def test_contact_metrics_select_world_and_ignore_parked_prop():
         geom_body_ids=model.geom_bodyid,
         payload_mass=np.array([30.0, 0.0]),
     )
-    result = bar_metrics(meta, view, 0)
+    result = jax.jit(lambda world: bar_metrics(meta, view, world))(0)
     assert result["barbell/unintended_contact_force_n"] == 5.0
     assert result["barbell/grip_error_m"] == pytest.approx(0.0, abs=1e-6)
     assert result["barbell/grip_force_n"] == 0.0

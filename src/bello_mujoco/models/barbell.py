@@ -27,8 +27,10 @@ def grip_axis_errors(model, data):
     bar_axis = data.xmat[model.body("barbell").id].reshape(3, 3)[:, 1]
     errors = []
     for side in ("left", "right"):
-        body = model.site_bodyid[model.site(f"{side}_hand_grip").id]
-        hand_axis = data.xmat[body].reshape(3, 3)[:, 1]
+        sign = 1 if side == "left" else -1
+        first, second = (model.site(f"{side}_hand_{name}").id for name in GRIP_ANCHORS)
+        hand_axis = sign * (data.site_xpos[second] - data.site_xpos[first])
+        hand_axis /= np.linalg.norm(hand_axis)
         errors.append(
             np.arctan2(
                 np.linalg.norm(np.cross(hand_axis, bar_axis)),
@@ -58,6 +60,8 @@ class Grip:
     body: str
     side: str
     grip_local_m: tuple[float, float, float] = (0.0, 0.0, -0.09)
+    shaft_axis_local: tuple[float, float, float] = (0.0, 1.0, 0.0)
+    palm_normal_local: tuple[float, float, float] = (1.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -97,6 +101,15 @@ class RigidBarConfig:
         for hand in self.hands:
             if len(hand.grip_local_m) != 3 or not np.isfinite(hand.grip_local_m).all():
                 raise ValueError("grip coordinates must contain three finite values")
+            for axis in (hand.shaft_axis_local, hand.palm_normal_local):
+                if (
+                    len(axis) != 3
+                    or not np.isfinite(axis).all()
+                    or not np.isclose(np.linalg.norm(axis), 1.0)
+                ):
+                    raise ValueError("grip axes must be finite unit vectors")
+            if abs(np.dot(hand.shaft_axis_local, hand.palm_normal_local)) > 1e-6:
+                raise ValueError("bar shaft must lie in the palm plane")
 
 
 def two_end_weight_inertia(mass, radius, width, center_offset):
@@ -159,7 +172,7 @@ def add_barbell(root, geometry, center, mass, solref):
         if body is None:
             raise ValueError(f"missing hand attachment body: {hand.body}")
         sign = 1 if hand.side == "left" else -1
-        # Two separated points define a hinge along local +Y, the shaft axis.
+        # Two separated points define a hinge along the configured shaft axis.
         # This leaves axial spin free while resisting off-axis hand rotation.
         for anchor, offset in zip(GRIP_ANCHORS, (0.0, GRIP_AXIS_SPAN_M), strict=True):
             offset *= sign
@@ -167,7 +180,10 @@ def add_barbell(root, geometry, center, mass, solref):
                 body,
                 "site",
                 name=f"{hand.side}_hand_{anchor}",
-                pos=format_vec(np.asarray(hand.grip_local_m) + [0, offset, 0]),
+                pos=format_vec(
+                    np.asarray(hand.grip_local_m)
+                    + offset * np.asarray(hand.shaft_axis_local)
+                ),
                 size="0.005",
             )
             ET.SubElement(
@@ -207,9 +223,11 @@ def attach_bar_to_model(path, config):
     center = np.mean(points, axis=0)
     axis = (points[0] - points[1]) / np.linalg.norm(points[0] - points[1])
     for hand in config.hands:
-        hand_axis = data.xmat[model.body(hand.body).id].reshape(3, 3)[:, 1]
+        hand_axis = (
+            data.xmat[model.body(hand.body).id].reshape(3, 3) @ hand.shaft_axis_local
+        )
         if np.linalg.norm(hand_axis - axis) > 1e-4:
-            raise ValueError("home hand local +Y must align with the bar shaft")
+            raise ValueError("home hand shaft axis must align with the bar")
     quat = np.empty(4)
     mujoco.mju_quatZ2Vec(quat, axis)
     # Z->Y local rotation makes the bar's local Y axis follow the grip line.

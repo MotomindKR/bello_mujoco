@@ -150,10 +150,14 @@ or geometry inventory as fixed expectations.
 ## Rigid barbell profiles
 
 `asset_config.barbell` describes one rigid free body and two shaft-axis hinge grips.
-Each hand's local +Y stays aligned with the shaft; only rotation around that
-axis is free. Two point constraints spaced 0.10 m along the axis implement
+Each hand's configured `shaft_axis_local` stays aligned with the shaft; only
+rotation around that axis is free. `palm_normal_local` describes the palm-facing
+normal and must be a unit vector perpendicular to the shaft axis. Both vectors
+use the attachment body's local frame. Defaults retain the hold profiles' +Y
+shaft and +X palm normal. Two point constraints spaced 0.10 m along the axis implement
 each hinge, with no extra mass or free-body coordinates. All four constraints
-disconnect in unloaded worlds. The approved hand-local -Z offset is unchanged.
+disconnect in unloaded worlds. `grip_local_m` sets the shaft-center offset from
+the attachment body.
 It is incompatible with `end_effector_payload_mass_kg`. `target_total_mass_kg`
 scales the robot before adding the bar. Normal walking profiles leave it null.
 
@@ -181,3 +185,17 @@ For exploratory barbell simulation, `env_config.allow_unscreened_reference`
 the archive result or relaxing mass, torque, grip, or collision constraints.
 The fixed-15 kg profile enables this setting; saved simulation checkpoints retain
 it. Rust deployment continues to require a passed screen.
+
+The palms-down lifting profile uses mirrored hand frames: left shaft -X / palm
+-Y and right shaft +X / palm +Y. Grip offsets are `(0, -0.040, -0.025)` m
+and `(0, +0.040, -0.025)` m respectively. These are provisional sphere-proxy
+grips, not measured finger contacts. At the retargeted receiving pose, both
+palms face world -Z. The full reference must be retargeted and its body
+kinematics, velocities and contact masks regenerated for these frames.
+
+This experiment starts fresh weights with the new motion archive; restoring an
+old checkpoint would also restore its old reference. The profile keeps the
+49.5 kg robot, 15 kg bar, existing actuator limits and original motion timing.
+It requests 120,000 updates, checkpoints every 2,000, and video every 10,000.
+The rental deadline may end the run earlier. A failed inverse-dynamics screen
+remains recorded as failed even when exploratory simulation training is enabled.

@@ -31,6 +31,7 @@ class Hand:
     side: str
     grip_local_m: tuple[float, float, float]
     palm_normal_local: tuple[float, float, float]
+    shaft_axis_local: tuple[float, float, float] = (0.0, 1.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,12 @@ def solve_pose(robot, data, config, *, report_visual=True, wrist_pitch_targets=N
     )
     diagnostics = []
     for hand in config.hands:
+        if not np.allclose(
+            desired_rotation.apply(hand.shaft_axis_local),
+            torso_rotation[:, 1],
+            atol=1e-6,
+        ):
+            raise ValueError("configured hand shaft axis does not align with the bar")
         if (
             abs(desired_rotation.apply(hand.palm_normal_local) @ torso_rotation[:, 1])
             > 1e-6
