@@ -55,6 +55,9 @@ asset_config:
     right_wrist_roll_joint: -1.133773848187055
 env_config:
   allow_unscreened_reference: true
+  reward:
+    grip_transverse_torque_weight: -5.0
+    grip_transverse_torque_scale_nm: 10.0
   reset:
     joint_pos_noise:
     - 0.0
@@ -79,6 +82,8 @@ wandb_config:
   - palms-down
   - mirrored-grip-frames
   - exploratory-unscreened-reference
+  - requested-peak-torque-penalty
+  - grip-transverse-torque-penalty
 video_config:
   every_updates: 10000
   steps: 1010

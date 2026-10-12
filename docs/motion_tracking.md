@@ -179,3 +179,28 @@ uses the applied control after command delay and control limits, actuator-space
 length/velocity (including differential transmissions), and each world's
 randomized gains. `torque_l1_weight` continues to penalize applied torque.
 This peak-request penalty does not model continuous thermal or stall limits.
+
+### Grip transverse torque penalty
+
+`env_config.reward.grip_transverse_torque_weight` optionally penalizes the
+reaction moment carried by the ideal hand-bar attachment, using
+`weight * control_timestep * (torque / grip_transverse_torque_scale_nm)^2`.
+The torque is the existing `barbell/grip_transverse_torque_nm` diagnostic:
+the larger of the two hands' moment magnitudes perpendicular to the shaft.
+Both transverse directions contribute; free spin around the shaft does not.
+This is attachment reaction torque, not an individual wrist motor's torque
+or finger squeeze force. The scale is a normalization, not a safety threshold.
+
+The default weight is zero. A nonzero weight requires a barbell model, must
+be negative, and uses the same constraint-force feedback in native evaluation
+and MJX-Warp training. The normalization scale must be positive and finite.
+The weighted contribution is logged as `reward/grip_transverse_torque`.
+Unloaded worlds contribute zero. The reward samples the final physics substep
+of each control step, like the existing grip diagnostic; it is not a maximum
+over every physics substep.
+
+The barbell profile on this experimental branch uses weight `-5.0` and scale
+`10.0` Nm, retaining the requested peak-motor-torque penalty. At the 0.02 s
+control timestep, 20 Nm costs 0.4 reward and 30 Nm costs 0.9 reward per step.
+This experiment changes the reward only; the ideal grip remains unchanged
+and hardware feasibility still needs separate evaluation.

@@ -142,6 +142,70 @@ def test_unknown_motion_observation_mode_rejected():
         MotionTrackingEnvConfig(observation_mode="unknown")
 
 
+@pytest.mark.parametrize("weight", [1.0, float("nan"), float("inf"), -float("inf")])
+def test_grip_torque_weight_rejects_invalid_values(weight):
+    with pytest.raises(ValueError, match="grip_transverse_torque_weight"):
+        MotionRewardConfig(grip_transverse_torque_weight=weight)
+
+
+@pytest.mark.parametrize("scale", [0.0, -1.0, float("nan"), float("inf")])
+def test_grip_torque_scale_rejects_invalid_values(scale):
+    with pytest.raises(ValueError, match="grip_transverse_torque_scale_nm"):
+        MotionRewardConfig(grip_transverse_torque_scale_nm=scale)
+
+
+def test_grip_torque_reward_requires_barbell():
+    with pytest.raises(ValueError, match="requires a barbell model"):
+        BelloMotionTrackingEnv(
+            model=SimpleNamespace(target_limits=None, bar_body_id=-1),
+            motion=None,
+            actuator_config=None,
+            config=MotionTrackingEnvConfig(
+                reward=MotionRewardConfig(grip_transverse_torque_weight=-5.0)
+            ),
+        )
+
+
+def test_grip_torque_penalty_changes_only_its_reward_component_under_jit_vmap(
+    env, monkeypatch
+):
+    from bello_mujoco.envs import motion_tracking as module
+
+    monkeypatch.setattr(
+        BelloMotionTrackingEnv, "_torque_costs", lambda *args: (0.0, 0.0)
+    )
+    monkeypatch.setattr(BelloMotionTrackingEnv, "_joint_limit_cost", lambda *args: 0.0)
+    monkeypatch.setattr(
+        BelloMotionTrackingEnv, "_undesired_contact_count", lambda *args: 0.0
+    )
+    data = mujoco.MjData(env.model.mj_model)
+    state, _ = reset_native_motion_rollout(env, data)
+    baseline, baseline_components = env._reward(state, state)
+    monkeypatch.setattr(
+        module,
+        "bar_metrics",
+        lambda model, data, world: {
+            "barbell/grip_transverse_torque_nm": jnp.asarray(world) * 10.0
+        },
+    )
+    object.__setattr__(
+        env,
+        "config",
+        replace(
+            env.config,
+            reward=replace(env.config.reward, grip_transverse_torque_weight=-5.0),
+        ),
+    )
+    reward, components = jax.jit(
+        jax.vmap(lambda world: env._reward(state, state, world))
+    )(jnp.arange(3))
+    expected = np.array([0.0, -0.1, -0.4])
+    np.testing.assert_allclose(components["reward/grip_transverse_torque"], expected)
+    np.testing.assert_allclose(reward - baseline, expected, atol=1e-7)
+    for key, value in baseline_components.items():
+        np.testing.assert_allclose(components[key], value)
+
+
 @pytest.mark.parametrize("mode", ["full_state", "proprioceptive"])
 def test_motion_observation_mode_survives_strict_config_roundtrip(mode):
     from bello_mujoco.configuration import dataclass_from_dict

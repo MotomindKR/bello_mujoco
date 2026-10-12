@@ -142,6 +142,8 @@ class MotionRewardConfig:
     joint_limit_soft_factor: float = 0.9
     torque_l1_weight: float = 0.0
     torque_peak_weight: float = 0.0
+    grip_transverse_torque_weight: float = 0.0
+    grip_transverse_torque_scale_nm: float = 10.0
     undesired_contact_weight: float = 0.0
     root_position_sigma: float = 0.20
     root_orientation_sigma: float = 0.35
@@ -150,6 +152,22 @@ class MotionRewardConfig:
     body_linear_velocity_sigma: float = 1.0
     body_angular_velocity_sigma: float = math.pi
     undesired_contact_force_threshold: float = 1.0
+
+    def __post_init__(self) -> None:
+        if (
+            not math.isfinite(self.grip_transverse_torque_weight)
+            or self.grip_transverse_torque_weight > 0
+        ):
+            raise ValueError(
+                "grip_transverse_torque_weight must be finite and nonpositive"
+            )
+        if (
+            not math.isfinite(self.grip_transverse_torque_scale_nm)
+            or self.grip_transverse_torque_scale_nm <= 0
+        ):
+            raise ValueError(
+                "grip_transverse_torque_scale_nm must be positive and finite"
+            )
 
 
 @dataclass(frozen=True)
@@ -206,6 +224,11 @@ class BelloMotionTrackingEnv:
 
     def __post_init__(self) -> None:
         _ = self.model.target_limits
+        if (
+            self.config.reward.grip_transverse_torque_weight != 0
+            and self.model.bar_body_id < 0
+        ):
+            raise ValueError("grip transverse torque reward requires a barbell model")
         if self.model.actuator_joint_names != self.motion.joint_names:
             raise ValueError("model and motion actuator orders do not match")
         actuator_count = self.model.mj_model.nu
@@ -1002,6 +1025,15 @@ class BelloMotionTrackingEnv:
             "reward/undesired_contact": cfg.undesired_contact_weight
             * self._undesired_contact_count(state, world_id),
         }
+        if cfg.grip_transverse_torque_weight != 0:
+            torque = bar_metrics(self.model, state.data, world_id)[
+                "barbell/grip_transverse_torque_nm"
+            ]
+            components["reward/grip_transverse_torque"] = (
+                cfg.grip_transverse_torque_weight
+                * self.control_timestep
+                * jnp.square(torque / cfg.grip_transverse_torque_scale_nm)
+            )
         return jnp.sum(jnp.stack(tuple(components.values()))), components
 
     def termination_flags(

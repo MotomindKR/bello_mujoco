@@ -439,3 +439,56 @@ def test_contact_metrics_select_world_and_ignore_parked_prop(rotated_hands):
     assert result["barbell/grip_force_n"] == 0.0
     assert result["barbell/grip_axis_error_rad"] == pytest.approx(0.0, abs=1e-6)
     assert all(float(value) == 0.0 for value in bar_metrics(meta, view, 1).values())
+
+
+@pytest.mark.parametrize("rotated_hands", [False, True])
+@pytest.mark.parametrize(
+    "axis_force", [(0, 100, 0), (30, 100, 0), (0, 100, 40), (30, 100, 40)]
+)
+def test_grip_moment_covers_both_transverse_directions_and_ignores_axial_force(
+    rotated_hands, axis_force
+):
+    from bello_mujoco.envs.barbell import bar_metrics
+    from bello_mujoco.models.barbell import GRIP_AXIS_SPAN_M
+
+    model = mechanism(rotated_hands=rotated_hands)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    ids = np.repeat(
+        [
+            model.equality(f"{side}_ideal_{anchor}").id
+            for side in ("left", "right")
+            for anchor in ("grip", "grip_axis")
+        ],
+        3,
+    )
+    force = np.asarray(axis_force, dtype=float)
+    # Opposing forces at each pair create a pure couple; right is twice left.
+    forces = np.concatenate([-force, force, -2 * force, 2 * force])
+    impl = SimpleNamespace(
+        contact__geom=jnp.zeros((1, 2), dtype=jnp.int32),
+        contact__worldid=jnp.zeros(1, dtype=jnp.int32),
+        nacon=jnp.array([0]),
+        contact__efc_address=jnp.array([[-1]]),
+        efc__force=jnp.asarray(forces),
+        efc__type=jnp.zeros(len(forces), dtype=jnp.int32),
+        efc__id=jnp.asarray(ids),
+        nefc=jnp.array([len(forces)]),
+    )
+    view = SimpleNamespace(
+        xpos=jnp.asarray(data.xpos), xquat=jnp.asarray(data.xquat), _impl=impl
+    )
+    meta = SimpleNamespace(
+        mj_model=model,
+        bar_body_id=model.body("barbell").id,
+        geom_body_ids=model.geom_bodyid,
+        payload_mass=np.array([30.0, 0.0]),
+    )
+    result = jax.jit(jax.vmap(lambda world: bar_metrics(meta, view, world)))(
+        jnp.arange(2)
+    )
+    expected = 2 * GRIP_AXIS_SPAN_M * np.hypot(force[0], force[2])
+    np.testing.assert_allclose(
+        result["barbell/grip_transverse_torque_nm"], [expected, 0], rtol=1e-6, atol=2e-6
+    )
+    np.testing.assert_allclose(result["barbell/grip_force_n"], 0, atol=1e-6)

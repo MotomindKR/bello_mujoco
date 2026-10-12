@@ -71,6 +71,8 @@ env_config:
     joint_limit_weight: -0.02
     torque_l1_weight: 0.0
     torque_peak_weight: 0.0
+    grip_transverse_torque_weight: 0.0
+    grip_transverse_torque_scale_nm: 10.0
     root_position_sigma: 0.20
     root_orientation_sigma: 0.35
     body_position_sigma: 0.15
