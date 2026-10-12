@@ -34,4 +34,12 @@ message FullBodyReference {
   repeated double root_position_world = 5; // Metres, xyz.
   repeated double root_linear_velocity_world = 6; // Metres/second, xyz.
   repeated double root_angular_velocity_local = 7; // Radians/second, xyz.
+  SmplReference smpl = 8;
+}
+
+// Same timestamp as the robot reference. SMPL's canonical 24-joint order,
+// metres relative to pelvis in world Z-up. Root has SONIC's base rotation removed.
+message SmplReference {
+  repeated double joints_root_relative_z_up = 1; // 24 x XYZ.
+  repeated double root_orientation_wxyz = 2;
 }

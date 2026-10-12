@@ -1,10 +1,10 @@
 //! A bounded delayed reference window. No extrapolation or motor ownership.
 use crate::{
     reference::{Sample, Source},
-    sonic::{ReferenceFrame, Sonic},
+    sonic::{ReferenceFrame, ReferenceInput, SmplFrame, Sonic},
 };
-use anyhow::{Result, ensure};
-use glam::{DQuat, EulerRot};
+use anyhow::{Context, Result, ensure};
+use glam::{DQuat, DVec3, EulerRot};
 use serde::Deserialize;
 use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub reference_input: ReferenceInput,
     pub policy: PathBuf,
     pub source: PathBuf,
     pub endpoint: String,
@@ -52,6 +54,7 @@ pub struct Buffer {
     delay: Duration,
     max_age_ms: f64,
     dt: f64,
+    input: ReferenceInput,
     pub status: Status,
 }
 
@@ -83,6 +86,7 @@ impl Buffer {
             "tracking poll period exceeds sample gap"
         );
         Ok(Self {
+            input: config.reference_input,
             frames: VecDeque::new(),
             names,
             last_sequence: None,
@@ -171,7 +175,37 @@ impl Buffer {
             .iter()
             .map(|name| body.joint_names.iter().position(|n| n == name).unwrap())
             .collect::<Vec<_>>();
+        let smpl = if self.input == ReferenceInput::Smpl {
+            let human = body.smpl.context("Producer has no SMPL reference")?;
+            ensure!(
+                human.joints_root_relative_z_up.len() == 72
+                    && human.root_orientation_wxyz.len() == 4,
+                "invalid SMPL reference layout"
+            );
+            let joints: Vec<_> = human
+                .joints_root_relative_z_up
+                .chunks_exact(3)
+                .map(|v| DVec3::new(v[0], v[1], v[2]))
+                .collect();
+            let q = human.root_orientation_wxyz;
+            let orientation = DQuat::from_xyzw(q[1], q[2], q[3], q[0]);
+            ensure!(
+                joints.iter().all(|v| v.is_finite())
+                    && joints[0].length() < 1e-5
+                    && joints[15].length() > 0.1
+                    && orientation.is_finite()
+                    && (orientation.length() - 1.).abs() < 1e-3,
+                "invalid SMPL reference geometry"
+            );
+            Some(SmplFrame {
+                joints,
+                orientation: orientation.normalize(),
+            })
+        } else {
+            None
+        };
         let frame = ReferenceFrame {
+            smpl,
             position: indices.iter().map(|&i| body.position[i]).collect(),
             velocity: indices.iter().map(|&i| body.velocity[i]).collect(),
             orientation: orientation.normalize(),
@@ -217,6 +251,20 @@ impl Buffer {
                 let blend =
                     |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(a, b)| a + t * (b - a)).collect();
                 return Some(ReferenceFrame {
+                    smpl: previous
+                        .frame
+                        .smpl
+                        .as_ref()
+                        .zip(next.frame.smpl.as_ref())
+                        .map(|(a, b)| SmplFrame {
+                            joints: a
+                                .joints
+                                .iter()
+                                .zip(&b.joints)
+                                .map(|(a, b)| a.lerp(*b, t))
+                                .collect(),
+                            orientation: a.orientation.slerp(b.orientation, t),
+                        }),
                     position: blend(&previous.frame.position, &next.frame.position),
                     velocity: blend(&previous.frame.velocity, &next.frame.velocity),
                     orientation: previous.frame.orientation.slerp(next.frame.orientation, t),
@@ -271,6 +319,7 @@ impl NeutralReturn {
         let rate = 6. * t * (1. - t) / self.duration;
         let yaw = DQuat::from_rotation_z(self.initial.orientation.to_euler(EulerRot::ZYX).0);
         ReferenceFrame {
+            smpl: None,
             position: self
                 .initial
                 .position
@@ -312,7 +361,8 @@ pub struct Tracking {
     returning: Option<NeutralReturn>,
 }
 impl Tracking {
-    pub fn new(sonic: Sonic, config: &Config) -> Result<Self> {
+    pub fn new(mut sonic: Sonic, config: &Config) -> Result<Self> {
+        sonic.select_input(config.reference_input)?;
         for value in [
             config.neutral_return_seconds,
             config.neutral_joint_tolerance_radians,
@@ -439,14 +489,14 @@ impl Tracking {
             returning.window(
                 Instant::now(),
                 self.sonic.policy.metadata.control_timestep,
-                self.sonic.future_dt(),
+                0.1,
             )
         });
         let (initial, frames) = generated
             .as_ref()
             .or(self.window.as_ref())
             .ok_or_else(|| anyhow::anyhow!(self.buffer.status.message.clone()))?;
-        let step = self.sonic.step_reference(
+        let step = self.sonic.step_reference_input(
             &crate::sonic::Feedback {
                 motor_position: feedback.motor_position.clone(),
                 motor_velocity: feedback.motor_velocity.clone(),
@@ -457,6 +507,11 @@ impl Tracking {
             },
             initial.orientation,
             frames,
+            if generated.is_some() {
+                ReferenceInput::Robot
+            } else {
+                self.config.reference_input
+            },
         )?;
         self.last_reference = Some(initial.clone());
         Ok(step)
@@ -473,6 +528,7 @@ mod tests {
         let started = Instant::now();
         let returning = NeutralReturn {
             initial: ReferenceFrame {
+                smpl: None,
                 position: vec![0.8, -0.4],
                 velocity: vec![0.3, -0.2],
                 orientation: DQuat::from_euler(EulerRot::ZYX, 0.7, 0.3, -0.2),
@@ -517,6 +573,7 @@ mod tests {
 
     fn config() -> Config {
         Config {
+            reference_input: ReferenceInput::Robot,
             policy: "policy.zip".into(),
             source: ".".into(),
             endpoint: "http://localhost:50056".into(),
