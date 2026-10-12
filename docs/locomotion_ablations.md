@@ -73,3 +73,51 @@ or convergence; follow with matched training seeds before selecting a policy.
 
 These four runs retain the gait clock. Removing it needs a separate experiment
 with phase-free foot rewards and matching deployment observations.
+
+## Contact-force correction and bounded pilot
+
+The original `629bfd8` ablations are invalid for assessing contact shaping.
+They read the first constraint row as the normal force. With pyramidal friction,
+normal force is the sum of all pyramid edges (`2 * (condim - 1)` rows), or one
+row for frictionless contacts. The old result depends on friction direction and
+can be zero under load. This affects contact classification, slip, impact,
+non-foot contact and self-collision costs. Native evaluation already used
+`mj_contactForce`. The decoder now agrees with that API for pyramidal and
+elliptic cones; motion contact classification uses the same correction.
+
+`bello_mini_contact_pilot` keeps the tracking variant's rewards, 14-action policy,
+seed and command distribution, changes contact decoding, and trains from scratch
+for 100,024,320 transitions. This is a diagnostic pilot, not a deployment recipe.
+It records forward walking every 1,024 updates and at completion, without the
+expensive push suite. Failed pilots must not be promoted to longer runs. A passing
+forward rollout still requires standing, lateral, turning, transition and
+multiple-seed evaluation before selecting a controller.
+
+```bash
+uv run --group training bello-train experiment=bello_mini_contact_pilot
+```
+
+The frozen `video_config.walking_acceptance` config enables reward-independent
+checks. Defaults discard the first 2 seconds and require at least 6 measured
+seconds, no termination or invalid values, planar velocity RMSE <= 0.10 m/s,
+yaw-rate RMSE <= 0.20 rad/s, and mean stance slip <= 0.05 m/s. Slip is the
+normal-load-weighted tangential velocity at actual foot-ground contact points,
+not the moving sole center. Debounced single support must occupy >= 20% of the
+window, each leg must have >= 5%, and there must be >= 4 support alternations.
+Contact debounce is 0.04 seconds. These are explicit screening thresholds, not
+proof of hardware safety or general locomotion quality.
+
+Acceptance requires a translating command of at least 0.2 m/s and first-failure
+stopping. `walking/accepted` and individual `walking/pass_*` checks are logged
+with the video phase. The adjacent `.walking.jsonl` is uploaded to W&B and stores
+commands, measured velocities, body XY/yaw, sole XYZ, support, forces and slip.
+The training logger also preserves the `tracking/*` velocity-error diagnostics;
+previous ablations computed these but accidentally dropped them during reduction.
+
+Validation on 2026-10-12: a static 1 kg GPU contact reports 9.81013 N with the
+corrected decoder versus 9.81010 N in native MuJoCo; the old pyramidal decoder
+reports 2.45253 N. A Mini checkpoint spot check found equal viewer/training
+physical parameters and matching native trajectories, with CPU/GPU one-step
+maximum qpos error 2.49e-7, qvel error 4.97e-5, and same-state actor feedback
+error 2.77e-5. These checks identify and repair the contact measurement mismatch;
+they do not establish long-horizon CPU/GPU policy equivalence.

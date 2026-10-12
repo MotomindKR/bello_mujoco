@@ -291,7 +291,9 @@ def test_native_contact_view_pads_without_changing_active_contacts(env):
         ncon=3,
         nefc=5,
         contact=SimpleNamespace(
-            geom=np.array([[0, 1]] * 3), efc_address=np.array([0, 2, 4])
+            geom=np.array([[0, 1]] * 3),
+            dim=np.array([1, 3, 4]),
+            efc_address=np.array([0, 2, 4]),
         ),
         efc_force=np.arange(5, dtype=np.float32),
     )
@@ -310,6 +312,7 @@ def test_native_contact_view_pads_without_changing_active_contacts(env):
     np.testing.assert_array_equal(contacts.contact__geom[:3], data.contact.geom)
     np.testing.assert_array_equal(contacts.contact__efc_address[:, 0], [0, 2, 4, -1])
     np.testing.assert_array_equal(contacts.efc__force, [0, 1, 2, 3, 4, 0, 0, 0])
+    np.testing.assert_array_equal(contacts.contact__dim, [1, 3, 4, 0])
     assert int(contacts.nacon[0]) == 3
 
 

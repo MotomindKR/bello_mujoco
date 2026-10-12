@@ -32,7 +32,7 @@ from bello_mujoco.envs.observations import (
 
 def test_contact_classification_masks_worlds_padding_and_support_geometry():
     model = SimpleNamespace(
-        mj_model=SimpleNamespace(ngeom=4),
+        mj_model=SimpleNamespace(ngeom=4, opt=SimpleNamespace(cone=0)),
         geom_body_ids=np.asarray([0, 10, 20, 10]),
         foot_body_ids=np.asarray([10, 20]),
         foot_geom_ids=np.asarray([1, 2]),
@@ -45,6 +45,7 @@ def test_contact_classification_masks_worlds_padding_and_support_geometry():
     def evaluate(world):
         data = SimpleNamespace(
             _impl=SimpleNamespace(
+                contact__dim=jnp.ones(5, dtype=jnp.int32),
                 contact__geom=jnp.asarray([[0, 1], [2, 0], [0, 3], [1, 2], [0, 1]]),
                 nacon=jnp.asarray([4]),
                 contact__worldid=jnp.asarray([0, 1, 0, 0, 0]),

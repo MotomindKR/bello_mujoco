@@ -155,3 +155,10 @@ Runtime initialization validates the selected robot, including default-pose
 collisions. Unit tests exercise algorithms and invalid-input handling with
 synthetic inputs. Do not test a robot's YAML values, joint count, nominal angles,
 or geometry inventory as fixed expectations.
+
+The diagnostic `bello_mini_contact_pilot` profile and
+`video_config.walking_acceptance` thresholds are described in
+[locomotion ablations](locomotion_ablations.md#contact-force-correction-and-bounded-pilot).
+The optional walking gate logs pass/fail checks and uploads contact-point slip
+and trajectory traces alongside training videos. It does not automatically
+extend a pilot or select a deployable policy.

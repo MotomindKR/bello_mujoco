@@ -32,12 +32,14 @@ ExperimentName = Literal[
     "bello_mini_ablation_tracking",
     "bello_mini_ablation_gait",
     "bello_mini_ablation_whole_body",
+    "bello_mini_contact_pilot",
     "motion",
     "bello_mini_motion",
     "bello_mini_sonic_transfer",
 ]
 CONFIG_ROOT = project_data_path("configs")
 _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
+    "bello_mini_contact_pilot": Path("profiles/train/bello_mini_contact_pilot.yaml"),
     "smoke": Path("profiles/train/smoke.yaml"),
     "bello_mini_ablation_baseline": Path(
         "profiles/train/bello_mini_ablation_baseline.yaml"
@@ -250,6 +252,12 @@ def locomotion_training_profile(name: ExperimentName) -> TrainingRunConfig:
     from bello_mujoco.training.locomotion import TrainingRunConfig
 
     profile_layers = {
+        "bello_mini_contact_pilot": (
+            "bello_mini_locomotion",
+            "bello_mini_ablation_baseline",
+            "bello_mini_ablation_tracking",
+            "bello_mini_contact_pilot",
+        ),
         "bello_locomotion": ("bello_locomotion",),
         "bello_mini_locomotion": ("bello_mini_locomotion",),
         "bello_mini_standing": ("bello_mini_locomotion", "bello_mini_standing"),

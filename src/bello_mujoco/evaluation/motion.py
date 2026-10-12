@@ -346,6 +346,8 @@ def native_motion_state(
     capacity = 1 << max(0, ncon - 1).bit_length()
     contact_geom = np.zeros((capacity, 2), dtype=np.int32)
     contact_geom[:ncon] = mj_data.contact.geom[:ncon]
+    contact_dim = np.zeros(capacity, dtype=np.int32)
+    contact_dim[:ncon] = mj_data.contact.dim[:ncon]
     contact_address = np.full(capacity, -1, dtype=np.int32)
     contact_address[:ncon] = mj_data.contact.efc_address[:ncon]
     efc_force = np.zeros(1 << max(0, nefc - 1).bit_length(), dtype=np.float32)
@@ -353,6 +355,7 @@ def native_motion_state(
         efc_force[:nefc] = np.asarray(mj_data.efc_force[:nefc], dtype=np.float32)
     impl = NativeContactData(
         contact__geom=jax.numpy.asarray(contact_geom),
+        contact__dim=jax.numpy.asarray(contact_dim),
         nacon=jax.numpy.asarray([ncon], dtype=jax.numpy.int32),
         contact__worldid=jax.numpy.zeros(capacity, dtype=jax.numpy.int32),
         contact__efc_address=jax.numpy.asarray(contact_address[:, None]),

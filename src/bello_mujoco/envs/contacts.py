@@ -2,6 +2,7 @@
 
 import jax
 import jax.numpy as jnp
+import mujoco
 
 from bello_mujoco.envs.geometry import (
     pair_contains,
@@ -9,6 +10,30 @@ from bello_mujoco.envs.geometry import (
     pair_both_contained,
     foot_terrain_contact_membership,
 )
+
+
+def contact_normal_forces(mj_model, impl):
+    """Decode normal loads from MJX-Warp constraint rows, as mj_contactForce does."""
+    base = jnp.asarray(impl.contact__efc_address, dtype=jnp.int32)[:, 0]
+    force = jnp.asarray(impl.efc__force, dtype=jnp.float32)
+    if force.shape[0] == 0:
+        return jnp.zeros(base.shape, dtype=jnp.float32)
+    if mj_model.opt.cone == mujoco.mjtCone.mjCONE_PYRAMIDAL:
+        dim = jnp.asarray(impl.contact__dim, dtype=jnp.int32)
+        count = jnp.where(dim == 1, 1, 2 * (dim - 1))
+        # Six-dimensional contacts have ten pyramid edges. The first edge alone
+        # can be zero even when the contact carries the robot's weight.
+        offsets = jnp.arange(10)
+        addresses = base[:, None] + offsets
+        valid = (base[:, None] >= 0) & (offsets < count[:, None])
+        valid &= addresses < force.shape[0]
+        values = force[jnp.clip(addresses, 0, force.shape[0] - 1)]
+        return jnp.abs(jnp.sum(jnp.where(valid, values, 0.0), axis=1))
+    return jnp.where(
+        (base >= 0) & (base < force.shape[0]),
+        jnp.abs(force[jnp.clip(base, 0, force.shape[0] - 1)]),
+        0.0,
+    )
 
 
 def contact_forces(model, config, data, world_id: jax.Array | int = 0):
@@ -30,15 +55,7 @@ def contact_forces(model, config, data, world_id: jax.Array | int = 0):
     active = (jnp.arange(contact_geom.shape[0], dtype=jnp.int32) < nacon) & (
         contact_worldid == jnp.asarray(world_id, dtype=jnp.int32)
     )
-    contact_efc_address = jnp.asarray(impl.contact__efc_address, dtype=jnp.int32)
-    normal_efc_address = contact_efc_address[:, 0]
-    efc_force = jnp.asarray(impl.efc__force, dtype=jnp.float32)
-    clipped_address = jnp.clip(normal_efc_address, 0, efc_force.shape[0] - 1)
-    normal_force = jnp.where(
-        normal_efc_address >= 0,
-        jnp.abs(efc_force[clipped_address]),
-        jnp.zeros_like(normal_efc_address, dtype=jnp.float32),
-    )
+    normal_force = contact_normal_forces(model.mj_model, impl)
     foot_forceful_contact = normal_force > jnp.asarray(
         config.foot_contact_force_threshold, dtype=jnp.float32
     )

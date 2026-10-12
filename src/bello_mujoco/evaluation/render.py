@@ -15,6 +15,11 @@ import jax.numpy as jnp
 import mujoco
 import numpy as np
 
+from bello_mujoco.evaluation.walking import (
+    WalkingAcceptanceConfig,
+    WalkingDiagnostics,
+    native_walking_sample,
+)
 from bello_mujoco.evaluation.video import (
     CameraConfig,
     open_rollout_video_resources,
@@ -237,6 +242,7 @@ def render_policy_rollout(
     push_at_step: int | None = None,
     push_velocity: tuple[float, float] = (0.0, 0.0),
     record_standing: bool = False,
+    walking_acceptance: WalkingAcceptanceConfig = WalkingAcceptanceConfig(),
     torso_command: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> RolloutStats:
     env.command_config.torso.validate_target(torso_command)
@@ -248,6 +254,17 @@ def render_policy_rollout(
         raise ValueError(
             "standing diagnostics require zero command and first-failure stopping"
         )
+    if walking_acceptance.enabled and (
+        record_standing or not stop_on_done or np.linalg.norm(command[:2]) < 0.2
+    ):
+        raise ValueError(
+            "walking acceptance requires translation >= 0.2 m/s and first-failure stopping"
+        )
+    walking = (
+        WalkingDiagnostics(env.control_timestep, walking_acceptance)
+        if walking_acceptance.enabled
+        else None
+    )
     mj_model = env.model.mj_model
     mj_data = mujoco.MjData(mj_model)
     reset_mujoco_data(env, mj_data)
@@ -345,6 +362,12 @@ def render_policy_rollout(
                 diagnostics.record(
                     mujoco_standing_sample(env, mj_data, done_flags["done/terminal"])
                 )
+            if walking is not None:
+                walking.record(
+                    native_walking_sample(
+                        env, mj_data, command_array, done_flags["done/any"]
+                    )
+                )
             done = bool(done_flags["done/any"])
             if done:
                 record_rollout_done(
@@ -402,6 +425,12 @@ def render_policy_rollout(
             with output_path.with_suffix(".jsonl").open("w") as trace:
                 for sample in diagnostics.samples:
                     trace.write(json.dumps(sample, allow_nan=False) + "\n")
+        if walking is not None:
+            with output_path.with_suffix(".walking.jsonl").open("w") as trace:
+                for sample in walking.samples:
+                    trace.write(json.dumps(sample, allow_nan=False) + "\n")
+    if walking is not None:
+        stats.update(walking.summary())
     stats["survived_rollout"] = int(stats["completed_episodes"] == 0)
     if diagnostics is not None:
         stats.update(diagnostics.summary())

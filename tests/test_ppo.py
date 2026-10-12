@@ -879,3 +879,14 @@ def test_ppo_validation_rejects_invalid_contracts(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         validate_ppo_config(config)
+
+
+def test_velocity_tracking_diagnostics_reach_training_logs():
+    result = environment_metric_means(
+        {
+            "tracking/vx_error": jnp.array([-0.2, -0.1]),
+            "tracking/vy_abs_error": jnp.array([0.02, 0.04]),
+        }
+    )
+    assert float(result["tracking/vx_error"]) == pytest.approx(-0.15)
+    assert float(result["tracking/vy_abs_error"]) == pytest.approx(0.03)

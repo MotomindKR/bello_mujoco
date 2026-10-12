@@ -11,6 +11,7 @@ import jax
 @dataclass(frozen=True)
 class NativeContactData:
     contact__geom: jax.Array
+    contact__dim: jax.Array
     nacon: jax.Array
     contact__worldid: jax.Array
     contact__efc_address: jax.Array

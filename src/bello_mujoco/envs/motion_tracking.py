@@ -10,6 +10,7 @@ from typing import Literal
 import chex
 import jax
 import jax.numpy as jnp
+from bello_mujoco.envs.contacts import contact_normal_forces
 from bello_mujoco.envs.observations import sample_feedback_delay
 from bello_mujoco.envs.feedback import (
     ObservationLowPassFilterConfig,
@@ -1582,12 +1583,7 @@ class BelloMotionTrackingEnv:
             jnp.asarray(impl.contact__worldid, dtype=jnp.int32)
             == jnp.asarray(world_id, dtype=jnp.int32)
         )
-        addresses = jnp.asarray(impl.contact__efc_address, dtype=jnp.int32)[:, 0]
-        forces = jnp.asarray(impl.efc__force, dtype=jnp.float32)
-        clipped = jnp.clip(addresses, 0, forces.shape[0] - 1)
-        normal_force = jnp.where(
-            addresses >= 0, jnp.abs(forces[clipped]), jnp.zeros_like(addresses)
-        )
+        normal_force = contact_normal_forces(self.model.mj_model, impl)
         forceful = normal_force > self.config.reward.undesired_contact_force_threshold
         contact_body = jnp.asarray(self.model.geom_body_ids)[contact_geom]
         robot_body_ids = np.unique(self.model.geom_body_ids[self.model.robot_geom_ids])

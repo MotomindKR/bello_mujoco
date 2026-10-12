@@ -194,7 +194,7 @@ def environment_metric_means(info: dict[str, jax.Array]) -> dict[str, jax.Array]
         group = name.partition("/")[0]
         if group in {"reward", "done", "random_push", "foot_contact", "target"}:
             key = f"mean_{name}"
-        elif group == "sampling":
+        elif group in {"sampling", "tracking"}:
             key = name
         elif group == "command":
             key = f"{name}_fraction"

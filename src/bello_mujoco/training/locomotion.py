@@ -20,6 +20,7 @@ from bello_mujoco.envs.locomotion_config import BelloEnvConfig, DoneConfig
 from bello_mujoco.envs.locomotion import BelloLocomotionEnv
 from bello_mujoco.envs.rewards import CommandConfig, RewardConfig
 from bello_mujoco.policy import policy_observation_size
+from bello_mujoco.evaluation.walking import WalkingAcceptanceConfig
 from bello_mujoco.evaluation.video import CameraConfig
 from bello_mujoco.evaluation.render import render_policy_rollout_isolated
 from bello_mujoco.evaluation.software import require_linux_software_rendering
@@ -75,6 +76,7 @@ class TrainingVideoConfig:
     log_wandb: bool = True
     wandb_name: str = "train/rollout"
     camera_config: CameraConfig = CameraConfig()
+    walking_acceptance: WalkingAcceptanceConfig = WalkingAcceptanceConfig()
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,17 @@ def run_training(run_config: TrainingRunConfig) -> None:
     validate_ppo_config(config)
     validate_video_config(video_config)
     command_config.torso.validate_target(video_config.torso_command)
+    if video_config.enabled and video_config.walking_acceptance.enabled:
+        duration = (
+            video_config.steps
+            * env_config.decimation
+            * env_config.simulation_physics.timestep
+        )
+        gate = video_config.walking_acceptance
+        if duration < gate.warmup_seconds + gate.minimum_window_seconds:
+            raise ValueError(
+                "walking acceptance video is shorter than warmup plus minimum window"
+            )
     if (
         video_config.enabled
         and video_config.standing_push_enabled
@@ -441,6 +454,13 @@ def render_training_video(
                     update=update,
                     context={"phase": name.removesuffix("/video")},
                 )
+                walking = options.get("walking_acceptance")
+                if walking is not None and walking.enabled and run is not None:
+                    run.save(
+                        str(path.with_suffix(".walking.jsonl")),
+                        base_path=str(config.output_dir),
+                        policy="now",
+                    )
                 if options.get("record_standing") and run is not None:
                     run.save(
                         str(path.with_suffix(".jsonl")),
@@ -448,7 +468,13 @@ def render_training_video(
                         policy="now",
                     )
 
-    render_case(output_path, config.wandb_name)
+    render_case(
+        output_path,
+        config.wandb_name,
+        diagnostic=config.walking_acceptance.enabled,
+        walking_acceptance=config.walking_acceptance,
+    )
+
     if config.standing_suite_enabled or config.standing_push_enabled:
         speed = config.standing_push_speed
         directions = (
@@ -515,6 +541,12 @@ def validate_video_config(config: TrainingVideoConfig) -> None:
         raise ValueError("video_config.standing_push_speed must be positive and finite")
     if not config.enabled:
         return
+    if config.walking_acceptance.enabled and (
+        not config.stop_on_done or math.hypot(*config.command[:2]) < 0.2
+    ):
+        raise ValueError(
+            "walking acceptance requires translation >= 0.2 m/s and stop_on_done=true"
+        )
     if config.every_updates <= 0:
         raise ValueError(
             f"video_config.every_updates must be positive, got {config.every_updates}"
