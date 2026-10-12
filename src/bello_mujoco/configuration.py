@@ -28,6 +28,10 @@ ExperimentName = Literal[
     "bello_locomotion",
     "bello_mini_locomotion",
     "bello_mini_standing",
+    "bello_mini_ablation_baseline",
+    "bello_mini_ablation_tracking",
+    "bello_mini_ablation_gait",
+    "bello_mini_ablation_whole_body",
     "motion",
     "bello_mini_motion",
     "bello_mini_sonic_transfer",
@@ -35,6 +39,16 @@ ExperimentName = Literal[
 CONFIG_ROOT = project_data_path("configs")
 _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
     "smoke": Path("profiles/train/smoke.yaml"),
+    "bello_mini_ablation_baseline": Path(
+        "profiles/train/bello_mini_ablation_baseline.yaml"
+    ),
+    "bello_mini_ablation_tracking": Path(
+        "profiles/train/bello_mini_ablation_tracking.yaml"
+    ),
+    "bello_mini_ablation_gait": Path("profiles/train/bello_mini_ablation_gait.yaml"),
+    "bello_mini_ablation_whole_body": Path(
+        "profiles/train/bello_mini_ablation_whole_body.yaml"
+    ),
     "bello_locomotion": Path("profiles/train/bello_locomotion.yaml"),
     "bello_mini_locomotion": Path("profiles/train/bello_mini_locomotion.yaml"),
     "bello_mini_standing": Path("profiles/train/bello_mini_standing.yaml"),
@@ -239,6 +253,28 @@ def locomotion_training_profile(name: ExperimentName) -> TrainingRunConfig:
         "bello_locomotion": ("bello_locomotion",),
         "bello_mini_locomotion": ("bello_mini_locomotion",),
         "bello_mini_standing": ("bello_mini_locomotion", "bello_mini_standing"),
+        "bello_mini_ablation_baseline": (
+            "bello_mini_locomotion",
+            "bello_mini_ablation_baseline",
+        ),
+        "bello_mini_ablation_tracking": (
+            "bello_mini_locomotion",
+            "bello_mini_ablation_baseline",
+            "bello_mini_ablation_tracking",
+        ),
+        "bello_mini_ablation_gait": (
+            "bello_mini_locomotion",
+            "bello_mini_ablation_baseline",
+            "bello_mini_ablation_tracking",
+            "bello_mini_ablation_gait",
+        ),
+        "bello_mini_ablation_whole_body": (
+            "bello_mini_locomotion",
+            "bello_mini_ablation_baseline",
+            "bello_mini_ablation_tracking",
+            "bello_mini_ablation_gait",
+            "bello_mini_ablation_whole_body",
+        ),
     }
     if name != "smoke" and name not in profile_layers:
         raise ValueError(f"{name!r} is not a locomotion experiment")

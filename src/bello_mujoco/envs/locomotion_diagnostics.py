@@ -82,6 +82,13 @@ def gait_diagnostics(
         }
     return {
         **placement_metrics,
+        "tracking/vx_error": velocity[0] - next_state.command[0],
+        "tracking/vy_error": velocity[1] - next_state.command[1],
+        "tracking/vx_abs_error": jnp.abs(velocity[0] - next_state.command[0]),
+        "tracking/vy_abs_error": jnp.abs(velocity[1] - next_state.command[1]),
+        "tracking/yaw_abs_error": jnp.abs(
+            next_state.tracking_ang_vel_z - next_state.command[2]
+        ),
         "gait/linear_velocity_error_sq": jnp.sum(
             (velocity - next_state.command[:2]) ** 2
         ),

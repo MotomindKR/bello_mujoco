@@ -465,6 +465,7 @@ from bello_mujoco.evaluation.video import CameraConfig
 from bello_mujoco.evaluation.render import render_policy_rollout
 from bello_mujoco.locomotion_runtime import load_locomotion_policy_runtime
 from bello_mujoco.training.checkpoint import load_checkpoint_update
+from bello_mujoco.deployment import ExportConfig, export_checkpoint
 
 paths = list(Path(sys.argv[1]).glob("smoke_*"))
 if len(paths) != 1:
@@ -489,7 +490,12 @@ if not video.is_file() or video.stat().st_size == 0:
     raise RuntimeError("restored policy produced no video")
 if not video.with_suffix(".jsonl").is_file():
     raise RuntimeError("restored policy produced no settling diagnostics")
-print({"preflight_checkpoint_restored": str(checkpoint), "policy_video": str(video)})
+bundle = export_checkpoint(ExportConfig(
+    checkpoint_path=checkpoint,
+    output_path=Path(sys.argv[1]) / "policy.zip",
+))
+print({"preflight_checkpoint_restored": str(checkpoint), "policy_video": str(video),
+       "deployment_bundle": str(bundle), "action_size": runtime.env.action_size})
 PY
 fi
 

@@ -69,6 +69,10 @@ from bello_mujoco.envs.locomotion_config import (
 from bello_mujoco.envs.locomotion_state import BelloState
 from bello_mujoco.envs import locomotion_step
 from bello_mujoco.envs.torso import neutral_torso_quaternion, torso_orientation_error
+from bello_mujoco.envs.whole_body import (
+    centroidal_angular_momentum,
+    swing_cross_track_velocity,
+)
 
 
 @dataclass(frozen=True)
@@ -1503,6 +1507,16 @@ class BelloLocomotionEnv:
                 ang_vel_xy=ang_vel_xy,
                 projected_gravity=projected_gravity,
                 torso_orientation_error=self._torso_orientation_error(next_state),
+                normalized_centroidal_momentum=(
+                    self._normalized_centroidal_momentum(next_state)
+                    if self.reward_config.enabled("centroidal_momentum_xy")
+                    else None
+                ),
+                swing_lateral_velocity=(
+                    self._swing_cross_track_velocity(next_state, foot_linear_velocity)
+                    if self.reward_config.enabled("swing_lateral_velocity")
+                    else None
+                ),
                 base_height=base_height,
                 joint_pos=next_state.data.qpos[qpos_idx],
                 joint_pos_rel=joint_pos_rel,
@@ -1555,6 +1569,28 @@ class BelloLocomotionEnv:
                 action_clip_limit=jnp.asarray(self.action_clip, dtype=jnp.float32),
             ),
             self.command_config,
+        )
+
+    def _normalized_centroidal_momentum(self, state: BelloState) -> jax.Array:
+        # cinert includes each world's randomized mass, COM and inertia.
+        momentum = centroidal_angular_momentum(state.data._impl.cinert, state.data.cvel)
+        mass = jnp.sum(state.data._impl.cinert[:, 9])
+        return momentum / jnp.maximum(
+            mass * self.reward_config.limits_pose.base_height_target**2, 1e-6
+        )
+
+    def _swing_cross_track_velocity(
+        self, state: BelloState, velocity: jax.Array
+    ) -> jax.Array:
+        frame = self._reward_frame_link("track_lin_vel_xy")
+        heading = yaw_quat(self._link_quat(state, frame))
+        relative_position = (
+            state.data.xpos[jnp.asarray(self.model.foot_body_ids)]
+            - state.data.xpos[self._link_body_id(frame)]
+        )
+        rotate = jax.vmap(lambda value: quat_rotate_inverse(heading, value))
+        return swing_cross_track_velocity(
+            state.command, rotate(relative_position), rotate(velocity)
         )
 
     @cached_property

@@ -2,6 +2,11 @@
 
 Values belong in YAML, not duplicated documentation tables.
 
+Experimental `bello_mini_ablation_baseline`, `bello_mini_ablation_tracking`,
+`bello_mini_ablation_gait`, and `bello_mini_ablation_whole_body` profiles compare
+velocity tracking, foot/contact rewards and whole-body control. See
+[the ablation contract](locomotion_ablations.md) for inheritance and evaluation.
+
 SONIC's `sampling_config` controls its temporal-bin, exposure-normalized
 curriculum. `env_config.adaptive_sampling` is the BeyondMimic EMA recipe and
 must stay at inactive defaults for SONIC. See [the sampler contract](sonic_transfer.md#adaptive-motion-sampling).

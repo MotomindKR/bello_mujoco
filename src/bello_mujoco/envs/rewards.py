@@ -265,6 +265,9 @@ class RewardWeights:
     torque_peak: float = -12.0
     joint_force_peak: float = -4.0
     touchdown_impact: float = -4.0
+    foot_contact_load: float = 0.0
+    swing_lateral_velocity: float = 0.0
+    centroidal_momentum_xy: float = 0.0
     joint_pose: float = -0.1
     stand_still: float = 1.0
     stand_foot_motion: float = -1.0
@@ -301,6 +304,7 @@ class RewardLinks:
 
 @dataclass(frozen=True)
 class TrackingRewardConfig:
+    respect_command_deadband: bool = True
     torso_orientation_std: float = 0.25
     lin_vel_xy_moving_std: float = 0.30
     lin_vel_xy_still_std: float = 0.25
@@ -325,6 +329,9 @@ class StandingRewardConfig:
 
 @dataclass(frozen=True)
 class GaitRewardConfig:
+    unbounded_touchdown: bool = False
+    swing_clearance_overshoot_weight: float = 0.0
+    swing_lateral_speed_scale: float = 0.5
     stance_slip_angular_speed_scale: float = 0.0
     swing_clearance_target: float = 0.08
     joint_force_soft_limit_body_weights: float = 0.8
@@ -393,6 +400,8 @@ class RewardConfig:
                 "gait_contact",
                 "gait_stance_slip",
                 "touchdown_impact",
+                "foot_contact_load",
+                "swing_lateral_velocity",
                 "stand_contact",
                 "stand_still",
                 "stand_foot_heading",
@@ -492,6 +501,8 @@ class RewardInputs:
     foot_clearance_samples: jax.Array | None = None
     swing_progress: jax.Array | None = None
     motor_continuous_torque: jax.Array | None = None
+    swing_lateral_velocity: jax.Array | None = None
+    normalized_centroidal_momentum: jax.Array | None = None
 
 
 def positive_huber(value: jax.Array) -> jax.Array:
@@ -518,6 +529,8 @@ def compute_locomotion_reward(
     )
     standing_double_support = standing_command & jnp.all(inputs.foot_contact)
     linear_still = jnp.abs(inputs.command[:2]) < command_config.linear_deadband
+    if not config.tracking.respect_command_deadband:
+        linear_still = inputs.command[:2] == 0.0
     linear_target = jnp.where(linear_still, 0.0, inputs.command[:2])
     linear_std = jnp.where(
         linear_still,
@@ -536,6 +549,8 @@ def compute_locomotion_reward(
     )
     moving_lin_vel_xy_error = jnp.where(standing_command, 0.0, moving_lin_vel_xy_error)
     yaw_still = jnp.abs(inputs.command[2]) < command_config.yaw_deadband
+    if not config.tracking.respect_command_deadband:
+        yaw_still = inputs.command[2] == 0.0
     yaw_target = jnp.where(yaw_still, 0.0, inputs.command[2])
     yaw_std = jnp.where(
         yaw_still,
@@ -642,6 +657,21 @@ def compute_locomotion_reward(
         inputs.foot_touchdown.astype(jnp.float32)
         * (jnp.tanh(touchdown_force_excess**2) + jnp.tanh(touchdown_speed_ratio**2))
     )
+    if config.gait.unbounded_touchdown:
+        touchdown_impact = jnp.mean(
+            inputs.foot_touchdown.astype(jnp.float32)
+            * (
+                positive_huber(touchdown_force_excess)
+                + positive_huber(touchdown_speed_ratio)
+            )
+        )
+    # Every substep peak contributes, including delayed peaks after first contact.
+    foot_contact_load = jnp.mean(positive_huber(touchdown_force_excess))
+    centroidal_momentum_xy = jnp.asarray(0.0)
+    if config.enabled("centroidal_momentum_xy"):
+        if inputs.normalized_centroidal_momentum is None:
+            raise ValueError("centroidal momentum reward requires momentum inputs")
+        centroidal_momentum_xy = jnp.sum(inputs.normalized_centroidal_momentum[:2] ** 2)
     joint_pose = jnp.sum(inputs.joint_pos_rel**2 * inputs.joint_pose_weights)
     foot_linear_speed_sq = jnp.sum(inputs.foot_linear_velocity**2, axis=1)
     stand_foot_linear_motion = jnp.tanh(
@@ -743,9 +773,26 @@ def compute_locomotion_reward(
             * jnp.sin(jnp.pi * inputs.swing_progress) ** 2
         )
         shortfall = jnp.maximum(target[:, None] - inputs.foot_clearance_samples, 0.0)
+        overshoot = jnp.maximum(inputs.foot_clearance_samples - target[:, None], 0.0)
         gait_swing_clearance = gait_active * jnp.mean(
             desired_swing[:, None]
-            * (shortfall / config.gait.swing_clearance_target) ** 2
+            * (
+                (shortfall / config.gait.swing_clearance_target) ** 2
+                + config.gait.swing_clearance_overshoot_weight
+                * (overshoot / config.gait.swing_clearance_target) ** 2
+            )
+        )
+
+    swing_lateral_velocity = jnp.asarray(0.0)
+    if config.enabled("swing_lateral_velocity"):
+        if inputs.swing_lateral_velocity is None or inputs.swing_progress is None:
+            raise ValueError("swing lateral reward requires velocity and phase inputs")
+        swing_lateral_velocity = gait_active * jnp.mean(
+            desired_swing
+            * (1.0 - actual_contact)
+            * jnp.sin(jnp.pi * inputs.swing_progress) ** 2
+            * (inputs.swing_lateral_velocity / config.gait.swing_lateral_speed_scale)
+            ** 2
         )
 
     alignment_active = (
@@ -810,6 +857,9 @@ def compute_locomotion_reward(
         "torque_peak": torque_peak,
         "joint_force_peak": joint_force_peak,
         "touchdown_impact": touchdown_impact,
+        "foot_contact_load": foot_contact_load,
+        "swing_lateral_velocity": swing_lateral_velocity,
+        "centroidal_momentum_xy": centroidal_momentum_xy,
         "joint_pose": joint_pose,
         "stand_still": stand_still,
         "stand_foot_motion": stand_foot_motion,
@@ -851,6 +901,17 @@ def reward_terms(config: RewardConfig) -> dict[str, float]:
 
 
 def validate_reward_config(config: RewardConfig) -> None:
+    for name, value in (
+        ("tracking.respect_command_deadband", config.tracking.respect_command_deadband),
+        ("gait.unbounded_touchdown", config.gait.unbounded_touchdown),
+    ):
+        if type(value) is not bool:
+            raise TypeError(f"{name} must be a boolean")
+    if (
+        config.gait.swing_clearance_overshoot_weight
+        and not config.gait.phase_shaped_clearance
+    ):
+        raise ValueError("clearance overshoot requires phase_shaped_clearance")
     if type(config.standing.contact_independent_alignment) is not bool:
         raise TypeError("standing.contact_independent_alignment must be a boolean")
     pose_weights = config.limits_pose.joint_pose_weights
@@ -874,6 +935,7 @@ def validate_reward_config(config: RewardConfig) -> None:
         "gait.crossing_scale": config.gait.crossing_scale,
         "gait.stumble_load_body_weights": config.gait.stumble_load_body_weights,
         "gait.stumble_speed_scale": config.gait.stumble_speed_scale,
+        "gait.swing_lateral_speed_scale": config.gait.swing_lateral_speed_scale,
     }.items():
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"{name} must be positive and finite")
@@ -973,6 +1035,7 @@ def validate_reward_config(config: RewardConfig) -> None:
             "limits_pose.knee_deviation_apply_while_moving must be a boolean"
         )
     nonnegative = {
+        "gait.swing_clearance_overshoot_weight": config.gait.swing_clearance_overshoot_weight,
         "gait.stance_slip_angular_speed_scale": (
             config.gait.stance_slip_angular_speed_scale
         ),

@@ -1,0 +1,15 @@
+# Equal transition budget and seed for all four cumulative ablations.
+config:
+  seed: 0
+  total_timesteps: 1000038400
+checkpoint_config:
+  every_updates: 2048
+  name: mini_ablation_baseline_seed0
+  wandb_artifact_name: mini_ablation_baseline_seed0
+wandb_config:
+  group: mini-whole-body-ablation-20261012
+  run_name: mini_ablation_baseline_seed0
+  tags: [locomotion, ablation, baseline, seed0]
+video_config:
+  every_updates: 4096
+  filename_prefix: mini_ablation_baseline_seed0

@@ -26,6 +26,97 @@ from bello_mujoco.envs.rewards import (
 )
 
 
+def test_strict_tracking_preserves_small_command_components_and_penalizes_underspeed():
+    config = reward_config(
+        track_lin_vel_xy=4.0,
+        track_ang_vel_z=3.0,
+        tracking=TrackingRewardConfig(respect_command_deadband=False),
+    )
+    command = jnp.asarray([0.5, 0.05, 0.04])
+    exact = reward_inputs(
+        command=command,
+        lin_vel_xy=command[:2],
+        yaw_vel_z=command[2],
+        gait_active=jnp.asarray(True),
+    )
+    compute = jax.jit(lambda inputs: compute_locomotion_reward(config, inputs)[0])
+    ideal = float(compute(exact))
+    assert ideal > float(
+        compute(
+            exact.replace(lin_vel_xy=jnp.asarray([0.5, 0]), yaw_vel_z=jnp.asarray(0.0))
+        )
+    )
+    assert ideal > float(compute(exact.replace(lin_vel_xy=jnp.asarray([0.4, 0.05]))))
+
+
+def test_unbounded_impact_penalizes_large_and_delayed_peaks():
+    config = reward_config(
+        touchdown_impact=-4.0,
+        foot_contact_load=-1.0,
+        gait=GaitRewardConfig(unbounded_touchdown=True),
+    )
+    inputs = reward_inputs(foot_touchdown=jnp.asarray([True, False]))
+    compute = jax.jit(
+        lambda force: compute_locomotion_reward(
+            config, inputs.replace(foot_peak_normal_force=jnp.asarray([force, 0.0]))
+        )[0]
+    )
+    assert float(compute(8.0)) < float(compute(4.0)) < float(compute(2.0))
+    delayed = inputs.replace(
+        foot_touchdown=jnp.zeros(2, dtype=bool),
+        foot_peak_normal_force=jnp.asarray([4.0, 0.0]),
+    )
+    _, terms = compute_locomotion_reward(config, delayed)
+    assert float(terms["reward/touchdown_impact"]) == 0
+    assert float(terms["reward/foot_contact_load"]) < 0
+
+
+def test_swing_target_penalizes_excessive_height_and_contact_gates_lateral_cost():
+    config = reward_config(
+        gait_swing_clearance=-1.0,
+        swing_lateral_velocity=-1.0,
+        gait=GaitRewardConfig(
+            phase_shaped_clearance=True, swing_clearance_overshoot_weight=0.5
+        ),
+    )
+    inputs = reward_inputs(
+        gait_active=jnp.asarray(True),
+        desired_foot_contact=jnp.zeros(2),
+        foot_contact=jnp.zeros(2),
+        swing_progress=jnp.full(2, 0.5),
+        foot_clearance_samples=jnp.full((2, 4), 0.08),
+        swing_lateral_velocity=jnp.ones(2),
+    )
+    _, ideal = compute_locomotion_reward(config, inputs)
+    _, high = compute_locomotion_reward(
+        config, inputs.replace(foot_clearance_samples=jnp.full((2, 4), 0.16))
+    )
+    _, stance = compute_locomotion_reward(
+        config, inputs.replace(foot_contact=jnp.ones(2))
+    )
+    assert float(ideal["reward/gait_swing_clearance"]) == 0
+    assert float(high["reward/gait_swing_clearance"]) < 0
+    assert float(ideal["reward/swing_lateral_velocity"]) < 0
+    assert float(stance["reward/swing_lateral_velocity"]) == 0
+
+
+def test_momentum_cost_leaves_commanded_yaw_free():
+    config = reward_config(centroidal_momentum_xy=-5.0)
+    inputs = reward_inputs(normalized_centroidal_momentum=jnp.asarray([0.0, 0.0, 2.0]))
+    assert float(compute_locomotion_reward(config, inputs)[0]) == 0
+    assert (
+        float(
+            compute_locomotion_reward(
+                config,
+                inputs.replace(
+                    normalized_centroidal_momentum=jnp.asarray([0.2, 0.1, 2.0])
+                ),
+            )[0]
+        )
+        < 0
+    )
+
+
 def test_standing_alignment_deadband_support_and_blend():
     config = reward_config(
         stand_foot_foreaft=-4.0,
@@ -345,6 +436,8 @@ def reward_config(
 
 def reward_inputs(**updates) -> RewardInputs:
     inputs = RewardInputs(
+        swing_lateral_velocity=jnp.asarray([0.2, -0.1]),
+        normalized_centroidal_momentum=jnp.asarray([0.1, -0.2, 0.3]),
         torso_orientation_error=jnp.asarray(0.0),
         command=jnp.zeros(3, dtype=jnp.float32),
         lin_vel_xy=jnp.zeros(2, dtype=jnp.float32),

@@ -66,6 +66,7 @@ DONE_FLAG_KEYS = (
 @dataclass(frozen=True)
 class NativeDataImplementation:
     cacc: jax.Array
+    cinert: jax.Array
     cfrc_int: jax.Array
     actuator_velocity: jax.Array
     efc__force: jax.Array
@@ -814,6 +815,7 @@ def mujoco_eval_state(
             np.asarray(mj_data.qfrc_constraint, dtype=np.float32).copy()
         ),
         _impl=NativeDataImplementation(
+            cinert=jnp.asarray(np.asarray(mj_data.cinert, dtype=np.float32).copy()),
             cacc=jnp.asarray(np.asarray(mj_data.cacc, dtype=np.float32).copy()),
             cfrc_int=jnp.asarray(np.asarray(mj_data.cfrc_int, dtype=np.float32).copy()),
             actuator_velocity=jnp.asarray(

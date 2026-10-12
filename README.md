@@ -29,6 +29,8 @@ Maintained experiments are `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
 `bello_mini_standing`, `motion`, `bello_mini_motion`, and
 `bello_mini_sonic_transfer`. SONIC transfer is an explicit pretrained-only
 workflow; see [SONIC transfer](docs/sonic_transfer.md). Values live in YAML, not documentation tables.
+Experimental velocity/gait/whole-body comparisons use the
+[`bello_mini_ablation_*` recipes](docs/locomotion_ablations.md).
 Checkpoints require their exact clean root Git commit and pinned dependencies.
 Historical policies run from historical checkouts, without compatibility fallbacks.
 

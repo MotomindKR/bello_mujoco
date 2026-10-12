@@ -1,0 +1,20 @@
+reward_config:
+  tracking:
+    respect_command_deadband: false
+    lin_vel_xy_moving_std: 0.25
+    lin_vel_xy_still_std: 0.2
+    ang_vel_z_moving_std: 0.3
+    ang_vel_z_still_std: 0.2
+  weights:
+    track_lin_vel_xy: 4.0
+    track_ang_vel_z: 3.0
+    moving_lin_vel_xy_error: -4.0
+    moving_ang_vel_z_error: -2.0
+checkpoint_config:
+  name: mini_ablation_tracking_seed0
+  wandb_artifact_name: mini_ablation_tracking_seed0
+wandb_config:
+  run_name: mini_ablation_tracking_seed0
+  tags: [locomotion, ablation, strict-tracking, seed0]
+video_config:
+  filename_prefix: mini_ablation_tracking_seed0

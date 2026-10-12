@@ -1,0 +1,20 @@
+reward_config:
+  gait:
+    unbounded_touchdown: true
+    swing_clearance_overshoot_weight: 0.5
+    swing_lateral_speed_scale: 0.5
+  weights:
+    touchdown_impact: -4.0
+    foot_contact_load: -1.0
+    swing_lateral_velocity: -0.25
+    centroidal_momentum_xy: -5.0
+    ang_vel_xy: -0.35
+    action_acceleration: -0.002
+checkpoint_config:
+  name: mini_ablation_gait_seed0
+  wandb_artifact_name: mini_ablation_gait_seed0
+wandb_config:
+  run_name: mini_ablation_gait_seed0
+  tags: [locomotion, ablation, strict-tracking, gait, seed0]
+video_config:
+  filename_prefix: mini_ablation_gait_seed0

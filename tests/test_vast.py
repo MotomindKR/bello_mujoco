@@ -730,6 +730,11 @@ def test_remote_command_preflights_software_rendering() -> None:
     assert script.index("preflight_checkpoint_restored") < script.rindex(
         "uv run --no-sync bello-train"
     )
+    locomotion_preflight = script.split(
+        'if [[ -z "$motion_path" && "$experiment" == bello_*', 1
+    )[1].split("\nPY", 1)[0]
+    assert "export_checkpoint(ExportConfig(" in locomotion_preflight
+    assert '"action_size": runtime.env.action_size' in locomotion_preflight
 
 
 def test_sonic_preflight_configures_software_before_runtime_imports() -> None:
