@@ -299,6 +299,14 @@ impl Live {
         matches!(self.phase, Phase::Standing)
     }
 
+    pub fn returning_to_stand(&self) -> bool {
+        self.interrupt.returning()
+            || matches!(
+                self.phase,
+                Phase::ToNeutral | Phase::ToStanding(_) | Phase::Standing
+            )
+    }
+
     pub fn motion_limits(&self) -> &TargetLimits {
         &self.motion.policy().target_limits
     }

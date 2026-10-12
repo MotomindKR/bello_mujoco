@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 pub mod control;
 pub mod following;
 pub mod gait;
+pub mod hands;
 pub mod hardware;
 pub mod locomotion;
 pub mod motion;

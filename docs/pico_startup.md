@@ -102,6 +102,9 @@ does not configure the CAN bus. It is independent of hardwared and policy
 arming; stop it separately with Ctrl-C.
 
 The armed server starts with writes suspended and listens on `127.0.0.1:50057`.
+With `control.hand_tracking` configured, the body runner acquires and renews
+hand tracking leases in full-body Tracking and while locomotion's upper-body
+tracking toggle is enabled. Leaving those states releases the hands.
 Acquire each hand and select `TRACKING` or `APPLICATION` using the
 [hand control API](hand_control.md); renew the lease while controlling it.
 Tracking is no longer selected automatically at startup. Application control

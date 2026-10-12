@@ -5,6 +5,34 @@
 Linker O6/L6 hands, then starts in `HOLD`. Startup no longer follows tracking
 automatically. `arm=false` remains tracking preflight: no server and no CAN.
 
+The body runner can own these leases automatically. Set `control.hand_tracking`
+in its hardware YAML:
+
+```yaml
+control:
+  hand_tracking:
+    endpoint: http://127.0.0.1:50057
+    rpc_timeout_seconds: 0.05
+    renew_period_seconds: 0.2
+```
+
+With this configured, entering full-body `Tracking` selects hand `TRACKING`.
+In `Locomotion`, enabling upper-body tracking selects hand `TRACKING`; turning
+the toggle off releases both leases. Stand, Hold, Sit, prerecorded motions,
+Barbell, controller loss, and abort suspend automatic hand tracking. Tracking's
+return to Stand releases the hands when the return begins. Barbell keeps its
+own exclusive application leases. The runner never steals another owner's
+leases; partial acquisition is released, and failures are logged and retried
+while tracking is requested.
+
+Hand RPCs run independently of body commands. Leases are renewed at the
+configured period, not the policy tick rate. Stale optical hand data suspends
+writes in the hand server and resumes with fresh data and a measured-position
+reseed. Stalled body ticks stop lease renewal and release the hands. A missing
+or failed hand service suspends hand tracking without stopping body control.
+Use `GetStatus` to inspect ownership, source, and suspension reasons. Set
+`control.hand_tracking: null` for robots without this integration.
+
 The contract is [hand.proto](../src/bello_mujoco/hardware/hand.proto).
 The Python client is `bello_mujoco.hardware.hand_server.HandControlClient`.
 Other clients can generate bindings from the same schema. The listener is

@@ -16,6 +16,8 @@ import yaml
 from bello_mujoco.hardware import _operator_pb2 as operator_pb
 from bello_mujoco.hardware import reference_pb2 as reference_pb
 from native_operator import OperatorClient, operator_endpoint
+from native_hands import hand_service as hand_service, wait_hands
+from bello_mujoco.hardware import hand_pb2 as hand_pb
 from native_runtime import floating_joint_physics
 from test_native_control import SyntheticHardware, bundle, start_services
 from test_native_control import hardware_proto as hardware_proto
@@ -132,6 +134,7 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
     hardware_proto,
     tmp_path,
     failure,
+    hand_service,
 ):
     _, _, source = rust_policy
     names, standing, sonic = tracking_bundles(
@@ -172,7 +175,9 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
         ),
     )
     address = operator_endpoint()
-    settings["control"].update(ramp_seconds=0.06, operator_listen=address)
+    settings["control"].update(
+        ramp_seconds=0.06, operator_listen=address, hand_tracking=hand_service.config
+    )
     policy_log = tmp_path / "policy.jsonl"
     settings["control"]["policy_log_path"] = str(policy_log)
     config = tmp_path / "hardware.json"
@@ -207,6 +212,15 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
             operator.wait(
                 lambda s: s.mode == operator_pb.MODE_TRACKING and s.phase == "motion"
             )
+            wait_hands(
+                hand_service,
+                lambda hands: all(
+                    h.owned and h.source == hand_pb.TRACKING for h in hands
+                ),
+            )
+            time.sleep(1.1)
+            assert all(h.owned for h in hand_service.controller.status().hands)
+            assert hand_service.transport.writes
             if failure in ("brief_outage", "brief_stale"):
                 fake.reference_failure = failure.removeprefix("brief_")
                 time.sleep(0.06)
@@ -233,6 +247,12 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
                 fake.reference_failure = failure
             if failure == "abort_return":
                 operator.wait(lambda s: s.phase == "returning to neutral")
+                wait_hands(
+                    hand_service,
+                    lambda hands: all(
+                        not h.owned and h.source == hand_pb.HOLD for h in hands
+                    ),
+                )
                 operator.press(1.1, l2=True, r2=True)
                 operator.wait(
                     lambda s: s.mode == operator_pb.MODE_FAULT and s.can_clear_fault
@@ -248,6 +268,12 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
                 )
                 return
             operator.wait(lambda s: s.mode == operator_pb.MODE_STAND)
+            wait_hands(
+                hand_service,
+                lambda hands: all(
+                    not h.owned and h.source == hand_pb.HOLD for h in hands
+                ),
+            )
             # Inspect the large observation log after control stops. Parsing it
             # here can starve the synthetic Python gRPC server of the GIL.
             first_return_log_end = policy_log.stat().st_size
@@ -273,6 +299,12 @@ def test_tracking_returns_to_stand_and_can_reenter_after_rebuffering(
                 lambda s: s.mode == operator_pb.MODE_FAULT and s.can_clear_fault
             )
             assert fake.state == hardware_proto.GROUP_STATE_DAMPED
+            wait_hands(
+                hand_service,
+                lambda hands: all(
+                    not h.owned and h.source == hand_pb.HOLD for h in hands
+                ),
+            )
             assert "disable" not in fake.calls
             with policy_log.open("rb") as recorded:
                 completed = recorded.read(first_return_log_end).rsplit(b"\n", 1)[0]

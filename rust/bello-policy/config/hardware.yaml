@@ -15,6 +15,7 @@ motions: []
 tracking: null
 barbell: null
 control:
+  hand_tracking: null
   following:
     enabled: false
     endpoint: http://127.0.0.1:50056

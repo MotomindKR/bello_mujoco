@@ -222,3 +222,12 @@ rate (5 Hz by default).
 The optional runner `barbell` configuration exposes the dedicated console mode;
 see [Barbell mode](barbell_mode.md) for policy sources, arm poses, hand leases,
 confirmation gates, and cancellation behavior.
+
+## Runner-owned hand tracking
+
+`control.hand_tracking` optionally connects the runner to the leased hand API.
+Configure `endpoint`, `rpc_timeout_seconds`, and `renew_period_seconds` as
+documented in [hand control](hand_control.md). Full-body Tracking and locomotion
+with upper-body tracking enabled select hand tracking; leaving tracking releases
+the leases. The canonical commissioning config leaves this `null` until the
+hand service is installed and calibrated.

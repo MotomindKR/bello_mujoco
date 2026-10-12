@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub following: crate::following::Config,
+    pub hand_tracking: Option<crate::hands::Config>,
     pub client_name: String,
     pub operator_listen: std::net::SocketAddr,
     pub command_validity_seconds: f64,
@@ -36,6 +37,9 @@ pub struct Config {
 
 impl Config {
     fn validate(&self) -> Result<()> {
+        if let Some(hands) = &self.hand_tracking {
+            hands.validate()?;
+        }
         ensure!(!self.client_name.is_empty(), "missing control owner");
         for value in [
             self.command_validity_seconds,
@@ -284,6 +288,12 @@ pub async fn run(
             None
         };
         let mut controls = Vec::new();
+        let mut hand_tracking = config.hand_tracking.clone().map(|settings| {
+            crate::hands::Tracking::start(
+                settings,
+                Duration::from_secs_f64(config.command_validity_seconds),
+            )
+        });
         let motion_interrupt = Arc::new(Mutex::new(None::<crate::motion::live::Interrupt>));
         let operation = async {
             let (startup_target, measured_startup, lying) = loop {
@@ -585,6 +595,14 @@ pub async fn run(
                     tracking_enabled = false;
                     operator.set_tracking(following.is_some(), false, false);
                 }
+                if let Some(hands) = &hand_tracking {
+                    hands.set_enabled(
+                        !input.lost
+                            && ((mode == Mode::Locomotion && tracking_enabled)
+                                || (mode == Mode::Tracking
+                                    && !motions["Tracking"].returning_to_stand())),
+                    );
+                }
                 let max_tilt = if mode == Mode::Barbell {
                     None
                 } else if let Some(sequence) = &sit {
@@ -738,6 +756,12 @@ pub async fn run(
                         hardware.config.max_tilt_radians,
                     )?;
                     let policy_finished = Instant::now();
+                    if mode == Mode::Tracking
+                        && motion.returning_to_stand()
+                        && let Some(hands) = &hand_tracking
+                    {
+                        hands.set_enabled(false);
+                    }
                     if step.period != active_period {
                         deadline = tokio::time::Instant::now();
                         active_period = step.period;
@@ -867,6 +891,9 @@ pub async fn run(
             operator.fault(&format!("{error:#}"));
         }
         let mut cleanup_errors = Vec::new();
+        if let Some(hands) = &hand_tracking {
+            hands.set_enabled(false);
+        }
         for closed in join_all(
             controls
                 .into_iter()
@@ -885,6 +912,11 @@ pub async fn run(
             && let Err(error) = runtime.close().await
         {
             cleanup_errors.push(format!("barbell hands: {error:#}"));
+        }
+        if let Some(hands) = &mut hand_tracking
+            && let Err(error) = hands.close().await
+        {
+            cleanup_errors.push(format!("tracking hands: {error:#}"));
         }
         if !cleanup_errors.is_empty() {
             operator.fault(&format!(

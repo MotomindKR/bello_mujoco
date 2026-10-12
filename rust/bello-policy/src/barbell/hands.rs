@@ -5,9 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tonic::transport::Endpoint;
 
-pub mod proto {
-    tonic::include_proto!("bello.hand.v1");
-}
+use crate::hands::proto;
 use proto::{hand_control_client::HandControlClient, *};
 
 #[derive(Debug, Clone, Deserialize)]
