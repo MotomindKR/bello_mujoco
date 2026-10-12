@@ -148,9 +148,15 @@ the trained policy.
 Generated bundles and pose documents stay outside Git. The reviewed receiving-pose document
 has `coordinates`, `normal`, `unloaded_forward`, and `loaded_forward` arrays in
 full motor order. Normal held coordinates must match the primary policy.
-Standing v2 must accept `arm_target` observations: the configured unloaded and
-loaded poses are supplied to both the actor's conditioning input and the held
-motor targets. Loaded held coordinates must match the checkpoint's trained preload.
+`barbell.standing` accepts either an arm-conditioned standing policy or the
+original locomotion policy with held arm joints. For an arm-conditioned policy,
+the configured poses feed both the actor and the held motor targets; loaded held
+coordinates must match its trained preload. For an unconditioned locomotion
+policy, the coordinator supplies only the held motor targets. Its observation
+layout and weights remain unchanged, with zero velocity commands. The explicit
+`loaded_forward` pose supplies arm compensation independently of that policy's
+unloaded default pose. Set `barbell.standing.policy` and `.source` to the
+locomotion bundle and its exact source checkout to select this behavior.
 All poses are validated against policy and hardware bounds. Evaluate a changed
 receiving pose through the full loaded sequence before deployment; arm conditioning
 alone does not establish stability at a new pose. Do not substitute the loaded
@@ -173,7 +179,7 @@ Start the [hand service](hand_control.md) with calibrated hands. Its configured
 rate ceiling must permit `barbell.hands.max_raw_rate_per_second`. Connect the
 matching console and runner (input protocol **4**), enter Stand, then select
 **Barbell**. With both hands empty, hold **A for one second** to enter. The runner
-acquires both hand leases, opens the fingers, blends into standing v2 with normal
+acquires both hand leases, opens the fingers, blends into the configured standing policy with normal
 arms, and starts the reach. Failed acquisition releases any partially acquired
 lease; it never steals another owner's hand.
 

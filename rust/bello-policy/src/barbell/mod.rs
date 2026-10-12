@@ -1,4 +1,4 @@
-//! Standing-v2 arm conditioning, hand ownership, and motion as one operator mode.
+//! Standing control, external arm targets, hand ownership, and motion as one mode.
 pub mod hands;
 pub mod sequence;
 use crate::{
@@ -105,9 +105,11 @@ impl Runtime {
         }
         for &i in standing.held_indices() {
             ensure!(
-                (poses.loaded_forward[i] - f64::from(standing.policy.metadata.default_position[i]))
+                !standing.arm_conditioned()
+                    || (poses.loaded_forward[i]
+                        - f64::from(standing.policy.metadata.default_position[i]))
                     .abs()
-                    < 1e-6,
+                        < 1e-6,
                 "barbell loaded arm target differs from trained preload"
             );
             ensure!(

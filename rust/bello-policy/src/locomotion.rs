@@ -188,12 +188,16 @@ impl Locomotion {
 
     pub fn set_arm_target(&mut self, target: &[f64]) -> Result<()> {
         ensure!(
-            self.arm_conditioned,
-            "standing policy requires arm_target observations"
+            !self.held_indices.is_empty(),
+            "arm targets require joints outside the policy actions"
         );
         self.policy.target_limits.validate(target)?;
         self.arm_target = target.to_vec();
         Ok(())
+    }
+
+    pub fn arm_conditioned(&self) -> bool {
+        self.arm_conditioned
     }
 
     pub fn held_indices(&self) -> &[usize] {
@@ -379,10 +383,8 @@ impl Locomotion {
             self.history[start..].copy_from_slice(&observation);
         }
         let mut output = self.policy.infer(&self.history)?;
-        if self.arm_conditioned {
-            for &i in &self.held_indices {
-                output.motor_target[i] = self.arm_target[i] as f32;
-            }
+        for &i in &self.held_indices {
+            output.motor_target[i] = self.arm_target[i] as f32;
         }
         self.last_action = output
             .action

@@ -56,6 +56,9 @@ class Hands:
 
 
 @pytest.mark.parametrize(
+    "arm_conditioned", [True, False], ids=["standing-v2", "locomotion"]
+)
+@pytest.mark.parametrize(
     ("failure", "unscreened"),
     [
         (None, False),
@@ -67,7 +70,7 @@ class Hands:
     ],
 )
 def test_console_barbell_cycle_and_ownership(
-    rust_policy, hardware_proto, tmp_path, failure, unscreened
+    rust_policy, hardware_proto, tmp_path, failure, unscreened, arm_conditioned
 ):
     _, _, source = rust_policy
     fake = MotionHardware(hardware_proto)
@@ -122,6 +125,8 @@ def test_console_barbell_cycle_and_ownership(
             ),
         )
     )
+    if not arm_conditioned:
+        v2.write_bytes(standing.read_bytes())
     motion = tmp_path / "motion.zip"
     # Match the two standing policies' 20-ms period.
     from io import BytesIO
@@ -337,6 +342,10 @@ def test_console_barbell_cycle_and_ownership(
             assert ("motion" in phases) == (failure is None)
             for row in rows:
                 command = row.get("barbell", {}).get("sequence")
+                if command and command["phase"] == "support":
+                    step = row["barbell"]["policy"]["standing"]
+                    assert step["motor_target"][1] == pytest.approx(0.1)
+                    assert len(step["observation"]) == (9 if arm_conditioned else 2)
                 if command and command["phase"] in {
                     "load",
                     "enter_motion",
