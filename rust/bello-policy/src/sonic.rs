@@ -158,6 +158,7 @@ impl Sonic {
                         .reference_clips
                         .remove(name)
                         .with_context(|| format!("bundle has no clip {name:?}"))?,
+                    false,
                 )
             })
             .transpose()?;

@@ -15,6 +15,8 @@ max_linear_acceleration: 100.0
 motions: []
 tracking: null
 barbell:
+  # Explicit deployment override; never changes the reference's saved screen result.
+  allow_unscreened_reference: false
   standing:
     policy: outputs/policies/standing-v2.zip
     source: outputs/policy-sources/standing-v2

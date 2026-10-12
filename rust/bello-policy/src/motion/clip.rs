@@ -56,7 +56,7 @@ fn floats(archive: &mut Archive<'_>, name: &str, shape: &[u64]) -> Result<Vec<f6
 }
 
 impl Clip {
-    pub fn load(bytes: &[u8]) -> Result<Self> {
+    pub fn load(bytes: &[u8], allow_unscreened_reference: bool) -> Result<Self> {
         let mut archive = Archive::new(Cursor::new(bytes))?;
         let (shape, fps) = array::<f64>(&mut archive, "fps")?;
         ensure!(
@@ -131,9 +131,18 @@ impl Clip {
                     && mass[0].is_finite()
                     && mass[0] > 0.
                     && passed_shape.is_empty()
-                    && passed == [true],
-                "barbell motion requires a passed positive-mass reference screen"
+                    && passed.len() == 1,
+                "barbell motion requires a positive reference mass and scalar screen result"
             );
+            ensure!(
+                passed[0] || allow_unscreened_reference,
+                "barbell reference screen failed; explicit barbell.allow_unscreened_reference is required"
+            );
+            if !passed[0] {
+                eprintln!(
+                    "WARNING: accepting barbell reference with screen_passed=false via explicit override"
+                );
+            }
             Some(mass[0])
         } else {
             None

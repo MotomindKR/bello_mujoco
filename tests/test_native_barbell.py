@@ -56,10 +56,18 @@ class Hands:
 
 
 @pytest.mark.parametrize(
-    "failure", [None, "cancel", "disconnect", "hand_fault", "busy"]
+    ("failure", "unscreened"),
+    [
+        (None, False),
+        (None, True),
+        ("cancel", False),
+        ("disconnect", False),
+        ("hand_fault", False),
+        ("busy", False),
+    ],
 )
 def test_console_barbell_cycle_and_ownership(
-    rust_policy, hardware_proto, tmp_path, failure
+    rust_policy, hardware_proto, tmp_path, failure, unscreened
 ):
     _, _, source = rust_policy
     fake = MotionHardware(hardware_proto)
@@ -132,7 +140,11 @@ def test_console_barbell_cycle_and_ownership(
                 graph.metadata_props[0].value = json.dumps(metadata)
                 data = graph.SerializeToString()
             archive.writestr(name, data)
-    motion.write_bytes(modified.getvalue())
+    motion.write_bytes(
+        barbell_reference(modified.getvalue(), 11, "screen")
+        if unscreened
+        else modified.getvalue()
+    )
     poses = tmp_path / "poses.json"
     poses.write_text(
         json.dumps(
@@ -148,6 +160,7 @@ def test_console_barbell_cycle_and_ownership(
     settings["motions"] = []
     settings["control"]["max_loop_lag_seconds"] = 0.5
     settings["barbell"] = dict(
+        allow_unscreened_reference=unscreened,
         standing=dict(policy=str(v2), source=str(source)),
         motion=dict(policy=str(motion), source=str(source)),
         motion_settings=dict(
@@ -178,6 +191,20 @@ def test_console_barbell_cycle_and_ownership(
     )
     config = tmp_path / "hardware.json"
     config.write_text(json.dumps(settings))
+    if unscreened:
+        accepted = motion.read_bytes()
+        original_content = modified.getvalue()
+        for invalid, allow in (("screen", False), ("mass", True), ("mapping", True)):
+            settings["barbell"]["allow_unscreened_reference"] = allow
+            motion.write_bytes(barbell_reference(original_content, 11, invalid))
+            result = rust_policy[0](
+                content=standing.read_bytes(), hardware_config=settings
+            )
+            assert result.returncode != 0
+            assert invalid in result.stderr
+        motion.write_bytes(accepted)
+        settings["barbell"]["allow_unscreened_reference"] = True
+        config.write_text(json.dumps(settings))
     output = tmp_path / "runner.log"
     client = None
     with output.open("w") as log:
@@ -197,6 +224,8 @@ def test_console_barbell_cycle_and_ownership(
         )
         try:
             client = OperatorClient(settings["control"]["operator_listen"], fake)
+            if unscreened:
+                assert "screen_passed=false via explicit override" in output.read_text()
             client.stand()
             if occupied:
                 # Renew immediately before entry; hold confirmation lasts one second.
@@ -344,9 +373,7 @@ def test_console_barbell_cycle_and_ownership(
             pool.shutdown(wait=True)
 
 
-@pytest.mark.parametrize("invalid", [None, "mass", "screen", "mapping"])
-def test_motion_bundle_with_bar_before_robot_validates_and_infers(rust_policy, invalid):
-    """Exercise nonzero root addresses and object quaternions, not just loading."""
+def barbell_reference(content, frames, invalid):
     from io import BytesIO
     from zipfile import ZipFile
     import xml.etree.ElementTree as ET
@@ -354,8 +381,6 @@ def test_motion_bundle_with_bar_before_robot_validates_and_infers(rust_policy, i
     import numpy as np
     import onnx
 
-    run, _, source = rust_policy
-    content = motion_bundle(source, frames=3, observation_mode="proprioceptive")
     modified = BytesIO()
     with ZipFile(BytesIO(content)) as original, ZipFile(modified, "w") as archive:
         for name in original.namelist():
@@ -377,13 +402,15 @@ def test_motion_bundle_with_bar_before_robot_validates_and_infers(rust_policy, i
                 arrays = dict(np.load(BytesIO(data)))
                 arrays["qpos"] = np.concatenate(
                     (
-                        np.tile(np.array([0, 0, 1, 1, 0, 0, 0], np.float32), (3, 1)),
+                        np.tile(
+                            np.array([0, 0, 1, 1, 0, 0, 0], np.float32), (frames, 1)
+                        ),
                         arrays["qpos"],
                     ),
                     axis=1,
                 )
                 arrays["qvel"] = np.concatenate(
-                    (np.zeros((3, 6), np.float32), arrays["qvel"]), axis=1
+                    (np.zeros((frames, 6), np.float32), arrays["qvel"]), axis=1
                 )
                 arrays.update(
                     free_joint_qpos=np.array([0, 7], np.int64),
@@ -400,7 +427,18 @@ def test_motion_bundle_with_bar_before_robot_validates_and_infers(rust_policy, i
                 np.savez(buffer, **arrays)
                 data = buffer.getvalue()
             archive.writestr(name, data)
-    content = modified.getvalue()
+    return modified.getvalue()
+
+
+@pytest.mark.parametrize("invalid", [None, "mass", "screen", "mapping"])
+def test_motion_bundle_with_bar_before_robot_validates_and_infers(rust_policy, invalid):
+    """Exercise nonzero root addresses and object quaternions, not just loading."""
+    import numpy as np
+
+    run, _, source = rust_policy
+    content = barbell_reference(
+        motion_bundle(source, frames=3, observation_mode="proprioceptive"), 3, invalid
+    )
     checked = run(content=content, check=True)
     if invalid:
         assert checked.returncode != 0

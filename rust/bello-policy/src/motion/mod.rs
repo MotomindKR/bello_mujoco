@@ -99,6 +99,10 @@ pub struct Motion {
 
 impl Motion {
     pub fn new(policy: Policy) -> Result<Self> {
+        Self::load(policy, false)
+    }
+
+    pub(crate) fn load(policy: Policy, allow_unscreened_reference: bool) -> Result<Self> {
         ensure!(
             policy.metadata.task == "motion_tracking",
             "motion bundle required"
@@ -163,6 +167,7 @@ impl Motion {
                 .reference_motion
                 .as_deref()
                 .context("missing motion clip")?,
+            allow_unscreened_reference,
         )?;
         ensure!(
             clip.joint_names == settings.joint_names,
@@ -192,7 +197,7 @@ impl Motion {
             ensure!(
                 clip.object_mass_kg
                     .is_some_and(|mass| (model.body_mass()[bar] - mass).abs() <= 1e-8),
-                "motion object mass must match the screened reference mass"
+                "motion object mass must match the reference mass"
             );
         }
         let mut qpos_indices = Vec::with_capacity(n);

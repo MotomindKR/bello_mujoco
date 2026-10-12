@@ -28,6 +28,8 @@ pub struct Bundle {
 pub struct Config {
     pub standing: Bundle,
     pub motion: Bundle,
+    #[serde(default)]
+    pub allow_unscreened_reference: bool,
     pub motion_settings: crate::motion::live::Config,
     pub arm_poses: PathBuf,
     pub timing: Timing,
@@ -118,7 +120,10 @@ impl Runtime {
         let size = standing.policy.metadata.observation_size;
         standing.policy.infer(&vec![0.; size])?;
         let motion = Live::connect(
-            Motion::new(Policy::load(&config.motion.policy, &config.motion.source)?)?,
+            Motion::load(
+                Policy::load(&config.motion.policy, &config.motion.source)?,
+                config.allow_unscreened_reference,
+            )?,
             &standing,
             config.motion_settings,
         )

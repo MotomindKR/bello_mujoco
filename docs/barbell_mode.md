@@ -85,13 +85,15 @@ uv run bello-eval-barbell \
   standing_policy=/path/to/standing-v2.zip \
   native_binary=/path/to/historical-native-policy-binary \
   onnxruntime_library=/path/to/libonnxruntime \
-  neutral_pose_path=/path/to/neutral-pose.json \
+  arm_poses_path=/path/to/handover-targets.json \
   output_path=outputs/barbell-mode/review
 ```
 
-The neutral pose document contains `coordinates` and `motor_positions` arrays
-in the bundle's actuator coordinate order. It supplies the reviewed unloaded
-arms-down pose; all supplied poses are checked against standing target limits.
+The arm pose document contains `coordinates`, `normal`, `unloaded_forward`, and
+`loaded_forward` arrays in the bundle's actuator coordinate order. Use the same
+reviewed document as the console's `barbell.arm_poses`. The evaluator uses these
+explicit unloaded and loaded targets instead of deriving an older receiving pose
+from standing metadata. All supplied poses are checked against standing target limits.
 Standing metadata is read from the exported ONNX bundle, not a separate config.
 The complete motion duration must match the checkpoint clip. No policy is
 retrained, and neither checkpoint nor pinned descriptions are modified.
@@ -133,14 +135,27 @@ bundle; Barbell loads standing v2 independently. All three policies must have th
 same control period, robot coordinate mapping, and compatible IMU frame.
 
 Export the motion bundle using its checkpoint's original checkout. The bundled
-clip must include its free-body coordinate maps, positive bar mass, and passed
-reference screen; Rust checks them against the bundled physics model. Generated
-bundles and pose documents stay outside Git. The reviewed receiving-pose document
+clip must include its free-body coordinate maps, positive bar mass, and scalar
+reference screen result; Rust checks the mappings and mass against the bundled
+physics model. A passed reference screen is required by default.
+`barbell.allow_unscreened_reference: true` explicitly permits a failed reference
+screen and logs a warning at startup and preflight. This deployment setting is
+independent of the training override; it does not rewrite `screen_passed`, certify
+the trained policy, or relax mass, coordinate, gain, target, feedback, or handoff
+checks. The reference screen evaluates the authored trajectory, not a rollout of
+the trained policy.
+
+Generated bundles and pose documents stay outside Git. The reviewed receiving-pose document
 has `coordinates`, `normal`, `unloaded_forward`, and `loaded_forward` arrays in
-full motor order. Normal held coordinates must match the primary policy; loaded
-held coordinates must match standing v2's trained preload. All poses are validated
-against policy and hardware bounds. Do not substitute the loaded target for the
-unloaded receiving pose.
+full motor order. Normal held coordinates must match the primary policy.
+Standing v2 must accept `arm_target` observations: the configured unloaded and
+loaded poses are supplied to both the actor's conditioning input and the held
+motor targets. Loaded held coordinates must match the checkpoint's trained preload.
+All poses are validated against policy and hardware bounds. Evaluate a changed
+receiving pose through the full loaded sequence before deployment; arm conditioning
+alone does not establish stability at a new pose. Do not substitute the loaded
+target for the unloaded receiving pose. Updating the lifting bundle does not update
+these separate handoff targets.
 
 ```bash
 # Read-only hardware preflight; does not acquire hand or body leases.
