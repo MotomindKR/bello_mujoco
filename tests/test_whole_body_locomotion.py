@@ -64,7 +64,22 @@ def test_ablation_profiles_have_equal_budgets_and_intentional_differences():
         for name in ("baseline", "tracking", "gait", "whole_body")
     ]
     original = locomotion_training_profile("bello_mini_locomotion")
-    assert baseline.reward_config == original.reward_config
+    assert baseline.reward_config == replace(
+        original.reward_config,
+        weights=replace(
+            original.reward_config.weights,
+            flat_orientation=-5.0,
+            track_torso_orientation=0.0,
+        ),
+        limits_pose=replace(
+            original.reward_config.limits_pose,
+            joint_pose_weights=tuple(
+                (name, 2.0 if name.startswith("waist_") else weight)
+                for name, weight in original.reward_config.limits_pose.joint_pose_weights
+            ),
+        ),
+    )
+    assert not baseline.command_config.torso.enabled
     for profile in (tracking, gait, whole):
         assert profile.config == baseline.config
         assert profile.command_config == baseline.command_config
@@ -86,8 +101,11 @@ def test_ablation_profiles_have_equal_budgets_and_intentional_differences():
     )
 
 
-def test_whole_body_native_observation_action_and_reward_contract():
-    profile = locomotion_training_profile("bello_mini_ablation_whole_body")
+@pytest.mark.parametrize(
+    "name", ["bello_mini_ablation_whole_body", "bello_mini_contact_pilot"]
+)
+def test_native_observation_action_and_reward_contract_without_torso_commands(name):
+    profile = locomotion_training_profile(name)
     env = BelloLocomotionEnv.load(
         profile.asset_config,
         env_config=profile.env_config,
@@ -110,8 +128,14 @@ def test_whole_body_native_observation_action_and_reward_contract():
         episode_track_lin_vel_xy=jnp.asarray(0.0),
         episode_length=jnp.asarray(1),
     )
-    assert env.action_size == env.model.mj_model.nu
+    if name == "bello_mini_ablation_whole_body":
+        assert env.action_size == env.model.mj_model.nu
+    else:
+        assert env.action_size == 14
+        assert env.observation_layout.size == 57
     components = dict(env.observation_layout.components)
+    assert "torso_command" not in components
+    assert "torso_command" not in dict(env.critic_observation_layout.components)
     assert components["joint_position"] == env.action_size
     assert components["joint_velocity"] == env.action_size
     assert components["last_action"] == env.action_size

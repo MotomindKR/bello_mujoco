@@ -97,6 +97,12 @@ Mini training profile. Full-size Bello retains its active standing-specific term
 
 ### Torso orientation commands
 
+The locomotion ablations and contact pilot set `command_config.torso.enabled:
+false`: torso targets are not sampled or included in actor/critic observations.
+Disabling requires zero angle ranges and zero `track_torso_orientation` weight.
+These experiments use velocity commands only; whole-body actions do not require
+torso commands. Other torso-conditioned recipes retain `enabled: true`.
+
 `command_config.torso` owns roll/pitch/yaw ranges (radians), per-axis slew rates
 (radians/second), the neutral-command probability, and the tracked body name.
 Mini's locomotion/standing recipes enable these commands. They are sampled

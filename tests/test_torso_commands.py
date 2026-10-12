@@ -146,3 +146,31 @@ def test_torso_observation_is_clean_even_with_feedback_latency_and_noise():
     )
     np.testing.assert_array_equal(observation[12:15], target)
     np.testing.assert_array_equal(observation[15:18], jnp.zeros(3))
+
+
+def test_disabled_torso_commands_omit_inputs_and_reject_tracking():
+    torso = TorsoCommandConfig(enabled=False)
+    np.testing.assert_array_equal(
+        jax.jit(lambda key: torso.sample(key, (8,)))(jax.random.PRNGKey(0)),
+        np.zeros((8, 3)),
+    )
+    with pytest.raises(ValueError, match="zero angle ranges"):
+        TorsoCommandConfig(enabled=False, roll=(-0.2, 0.2))
+    with pytest.raises(ValueError, match="disabled torso tracking"):
+        validate_locomotion_config(
+            BelloEnvConfig(),
+            RewardConfig(weights=RewardWeights(track_torso_orientation=5.0)),
+            CommandConfig(torso=torso),
+            DoneConfig(),
+            physics_dt=0.005,
+        )
+    with pytest.raises(ValueError, match="trained ranges"):
+        torso.validate_target((0.1, 0.0, 0.0))
+    terms = tuple(jnp.zeros(n) for n in (3, 3, 3, 3, 1, 3, 2, 2, 2, 2))
+    gait = jnp.asarray([1.0, 2.0, 3.0])
+    config = ObservationConfig(noise=ObservationNoiseConfig(enabled=False))
+    observation = jax.jit(
+        lambda: build_observation(terms, gait, config, None, torso_command=None)
+    )()
+    assert observation.shape == (21,)
+    np.testing.assert_array_equal(observation[12:15], gait)

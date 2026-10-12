@@ -115,13 +115,10 @@ def build_observation(
         (gravity, "projected_gravity", 2, feedback_noise),
     ]
     if gait_features is not None:
-        components.extend(
-            [
-                (command, "command", 3, 1.0),
-                (torso_command, "command", 3, 0.0),
-                (gait_features, "gait_phase", 4, 1.0),
-            ]
-        )
+        components.append((command, "command", 3, 1.0))
+        if torso_command is not None:
+            components.append((torso_command, "command", 3, 0.0))
+        components.append((gait_features, "gait_phase", 4, 1.0))
     components.extend(
         [
             (position, "joint_pos", 5, 0.0 if filtered else 1.0),

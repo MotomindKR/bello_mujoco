@@ -1,4 +1,30 @@
 # Equal transition budget and seed for all four cumulative ablations.
+command_config:
+  torso:
+    enabled: false
+    roll: [0.0, 0.0]
+    pitch: [0.0, 0.0]
+    yaw: [0.0, 0.0]
+reward_config:
+  weights:
+    flat_orientation: -5.0
+    track_torso_orientation: 0.0
+  limits_pose:
+    joint_pose_weights:
+      - [left_hip_pitch_joint, 0.05]
+      - [right_hip_pitch_joint, 0.05]
+      - [left_hip_roll_joint, 1.0]
+      - [right_hip_roll_joint, 1.0]
+      - [left_hip_yaw_joint, 1.0]
+      - [right_hip_yaw_joint, 1.0]
+      - [left_knee_joint, 0.05]
+      - [right_knee_joint, 0.05]
+      - [left_ankle_pitch_joint, 0.1]
+      - [right_ankle_pitch_joint, 0.1]
+      - [left_ankle_roll_joint, 0.1]
+      - [right_ankle_roll_joint, 0.1]
+      - [waist_yaw_joint, 2.0]
+      - [waist_roll_joint, 2.0]
 config:
   seed: 0
   total_timesteps: 1000038400

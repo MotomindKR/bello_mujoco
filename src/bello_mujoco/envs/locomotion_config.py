@@ -296,6 +296,8 @@ def validate_locomotion_config(
                 f"numerical_safety.{name} must be positive and finite, got {value}"
             )
     validate_reward_config(reward)
+    if not command.torso.enabled and reward.enabled("track_torso_orientation"):
+        raise ValueError("disabled torso commands require disabled torso tracking")
     if command.torso.variable:
         if not command.enabled or reward.weights.track_torso_orientation <= 0:
             raise ValueError(

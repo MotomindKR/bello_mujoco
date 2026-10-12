@@ -14,6 +14,7 @@ import jax.numpy as jnp
 class TorsoCommandConfig:
     """Level-ground lean and pelvis-heading-relative twist, in radians."""
 
+    enabled: bool = True
     body_name: str = "torso_link"
     roll: tuple[float, float] = (0.0, 0.0)
     pitch: tuple[float, float] = (0.0, 0.0)
@@ -35,6 +36,8 @@ class TorsoCommandConfig:
             raise ValueError("torso.slew_rate requires three positive finite rates")
         if not 0 <= self.neutral_probability <= 1:
             raise ValueError("torso.neutral_probability must be in [0, 1]")
+        if not self.enabled and self.variable:
+            raise ValueError("disabled torso commands require zero angle ranges")
 
     @property
     def ranges(self) -> tuple[tuple[float, float], ...]:
@@ -45,6 +48,8 @@ class TorsoCommandConfig:
         return any(low != high for low, high in self.ranges)
 
     def sample(self, rng: jax.Array, shape: tuple[int, ...] = ()) -> jax.Array:
+        if not self.enabled:
+            return jnp.zeros(shape + (3,), dtype=jnp.float32)
         angle_key, neutral_key = jax.random.split(rng)
         bounds = jnp.asarray(self.ranges, dtype=jnp.float32)
         angles = jax.random.uniform(

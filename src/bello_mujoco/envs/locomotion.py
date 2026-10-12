@@ -335,7 +335,8 @@ class BelloLocomotionEnv:
         ]
         if self.command_config.enabled:
             components.append(("command", 3))
-            components.append(("torso_command", 3))
+            if self.command_config.torso.enabled:
+                components.append(("torso_command", 3))
             components.append(("gait_phase", 3))
         components.extend(
             (
@@ -850,7 +851,9 @@ class BelloLocomotionEnv:
             observation,
             rng,
             _feedback,
-            torso_command=state.torso_command,
+            torso_command=(
+                state.torso_command if self.command_config.torso.enabled else None
+            ),
             noise_before_filter=filtering.noise_before_filter,
             residual_noise_scale=filtering.residual_noise_scale,
         )

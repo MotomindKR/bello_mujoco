@@ -3,11 +3,14 @@
 These experimental recipes inherit `bello_mini_locomotion`. They use the same
 PPO settings, seed 0, 2,048 environments, command distribution, randomization,
 and 1,000,038,400 transitions (24,415 updates). They train from scratch. The
-baseline is the current recipe, not the historical update-106496 checkpoint.
+baseline restores the deployed update-106496 posture objective: fixed upright
+penalty -5 and waist joint-posture weights 2. Torso commands are disabled, omitted
+from actor/critic observations, and have no tracking reward. The contact decoder
+remains corrected. These are fresh runs, not continuations of deployed weights.
 
 | Experiment suffix (`bello_mini_ablation_...`) | Cumulative change |
 | --- | --- |
-| `baseline` | Current rewards and leg/waist action space |
+| `baseline` | Velocity-only commands, deployed posture objective, leg/waist action space |
 | `tracking` | Narrower tracking kernels, stronger linear/yaw rewards and Huber error penalties, preserve small nonzero command components |
 | `gait` | Two-sided swing-height target, command-aware transverse swing-speed cost, non-saturating impact costs, continuous substep peak-load cost, torso damping and roll/pitch centroidal momentum cost |
 | `whole_body` | All actuators policy-controlled, with corresponding joint observations and separate arm posture weights |
@@ -85,11 +88,13 @@ non-foot contact and self-collision costs. Native evaluation already used
 `mj_contactForce`. The decoder now agrees with that API for pyramidal and
 elliptic cones; motion contact classification uses the same correction.
 
-`bello_mini_contact_pilot` keeps the tracking variant's rewards, 14-action policy,
-seed and command distribution, changes contact decoding, and trains from scratch
-for 100,024,320 transitions. This is a diagnostic pilot, not a deployment recipe.
-It records forward walking every 1,024 updates and at completion, without the
-expensive push suite. Failed pilots must not be promoted to longer runs. A passing
+`bello_mini_contact_pilot` uses the velocity-only tracking variant's rewards,
+14-action policy, seed and velocity command distribution, with corrected contact
+decoding. It trains from scratch for 500,039,680 transitions and records forward
+walking every 2,048 updates and at completion, without the expensive push suite.
+The previous torso-conditioned 100M pilot and its continuations are superseded;
+their 600-input actor checkpoints cannot resume this 570-input actor task.
+This is a diagnostic run, not a deployment recipe. A passing
 forward rollout still requires standing, lateral, turning, transition and
 multiple-seed evaluation before selecting a controller.
 
