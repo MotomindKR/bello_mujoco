@@ -170,3 +170,12 @@ contact above 1 N, independently of the ordinary tracking/fall conditions. PPO
 logs `mean_barbell/*` and `max_barbell/*` for grip errors, constraint forces,
 transverse moments, and unintended contact force. These measure numerical ideal
 attachments, not finger strength or slip.
+
+### Peak torque penalty
+
+`env_config.reward.torque_peak_weight` penalizes squared normalized servo torque
+requests above each actuator's peak force, before actuator force clipping. It
+uses the applied control after command delay and control limits, actuator-space
+length/velocity (including differential transmissions), and each world's
+randomized gains. `torque_l1_weight` continues to penalize applied torque.
+This peak-request penalty does not model continuous thermal or stall limits.

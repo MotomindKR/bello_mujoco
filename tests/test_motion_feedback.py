@@ -289,6 +289,8 @@ def test_native_contact_view_pads_without_changing_active_contacts(env):
                 "cvel",
                 "subtree_com",
                 "actuator_force",
+                "actuator_length",
+                "actuator_velocity",
             )
         },
         ncon=3,

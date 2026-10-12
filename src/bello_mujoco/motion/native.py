@@ -15,6 +15,7 @@ class NativeContactData:
     contact__worldid: jax.Array
     contact__efc_address: jax.Array
     efc__force: jax.Array
+    actuator_velocity: jax.Array
     nefc: jax.Array | None = None
     efc__id: jax.Array | None = None
     efc__type: jax.Array | None = None
@@ -31,4 +32,5 @@ class NativeMotionData:
     cvel: jax.Array
     subtree_com: jax.Array
     actuator_force: jax.Array
+    actuator_length: jax.Array
     _impl: NativeContactData

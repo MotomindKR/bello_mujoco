@@ -963,7 +963,7 @@ class BelloMotionTrackingEnv:
         linear_velocity_error = body_velocity[:, 3:6] - reference.body_lin_vel
         angular_velocity_error = body_velocity[:, :3] - reference.body_ang_vel
         cfg = self.config.reward
-        torque_l1, torque_peak = self._torque_costs(state)
+        torque_l1, torque_peak = self._torque_costs(state, world_id)
         components = {
             "reward/global_anchor_position": cfg.root_position_weight
             * squared_norm_gaussian_reward(
@@ -1608,14 +1608,41 @@ class BelloMotionTrackingEnv:
             + jax.nn.relu(positions - midpoint - half_range)
         )
 
-    def _torque_costs(self, state: MotionTrackingState) -> tuple[jax.Array, jax.Array]:
+    def _torque_costs(
+        self, state: MotionTrackingState, world_id: jax.Array | int = 0
+    ) -> tuple[jax.Array, jax.Array]:
         policy = jnp.asarray(self.model.policy_ctrl_indices)
-        torque = jnp.abs(state.data.actuator_force[policy])
         peak_torque = jnp.asarray(self.model.actuator_peak_force)[policy]
-        normalized_torque = torque / peak_torque
+        applied = jnp.abs(state.data.actuator_force[policy]) / peak_torque
+        model = self.model.mjx_model
+        if model is None:
+            model = self.model.mj_model
+        gain = jnp.asarray(model.actuator_gainprm)
+        bias = jnp.asarray(model.actuator_biasprm)
+        if gain.ndim == 3:
+            gain = gain[world_id]
+        if bias.ndim == 3:
+            bias = bias[world_id]
+        ctrl = jnp.where(
+            jnp.asarray(model.actuator_ctrllimited),
+            jnp.clip(
+                state.data.ctrl,
+                jnp.asarray(model.actuator_ctrlrange)[:, 0],
+                jnp.asarray(model.actuator_ctrlrange)[:, 1],
+            ),
+            state.data.ctrl,
+        )
+        # Reconstruct servo effort before force clipping masks an overload request.
+        requested = (
+            gain[:, 0] * ctrl
+            + bias[:, 0]
+            + bias[:, 1] * state.data.actuator_length
+            + bias[:, 2] * state.data._impl.actuator_velocity
+        )
+        normalized_request = jnp.abs(requested[policy]) / peak_torque
         return (
-            jnp.mean(normalized_torque),
-            jnp.mean(jax.nn.relu(normalized_torque - 1.0) ** 2),
+            jnp.mean(applied),
+            jnp.mean(jax.nn.relu(normalized_request - 1.0) ** 2),
         )
 
     def _body_world_velocity(

@@ -626,11 +626,19 @@ def test_tracking_torque_costs_are_normalized_by_peak_torque(
     )
     state, _ = env.reset(reference_time=jnp.asarray(0.1))
     peak = jnp.asarray(env.model.actuator_peak_force)
-    state = state.replace(data=state.data.replace(actuator_force=peak * 1.5))
+    model = env.model.mj_model
+    bias = jnp.asarray(model.actuator_biasprm)
+    ctrl = (
+        peak * 1.5
+        - bias[:, 0]
+        - bias[:, 1] * state.data.actuator_length
+        - bias[:, 2] * state.data._impl.actuator_velocity
+    ) / jnp.asarray(model.actuator_gainprm[:, 0])
+    state = state.replace(data=state.data.replace(ctrl=ctrl, actuator_force=peak))
 
     torque_l1, torque_peak = env._torque_costs(state)
 
-    assert float(torque_l1) == pytest.approx(1.5)
+    assert float(torque_l1) == pytest.approx(1.0)
     assert float(torque_peak) == pytest.approx(0.25)
 
 
