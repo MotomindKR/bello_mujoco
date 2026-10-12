@@ -38,9 +38,11 @@ export function OperatorCard({ state, children }) {
     MODE_MOTION: "Motion",
     MODE_TRACKING: "Tracking",
     MODE_SIT: "Sit",
+    MODE_BARBELL: "Barbell",
   }[operator.mode];
   const progressing =
     operator.mode === "MODE_MOTION" ||
+    operator.mode === "MODE_BARBELL" ||
     (operator.mode === "MODE_SIT" &&
       !["awaiting support", "lowering onto back"].includes(operator.phase)) ||
     (operator.mode === "MODE_HOLD" &&
@@ -92,9 +94,11 @@ export function OperatorCard({ state, children }) {
               <div className="stat-pair">
                 <span>
                   {operator.activeMotion ||
-                    (operator.mode === "MODE_SIT"
-                      ? "Sit sequence"
-                      : "Hold pose")}
+                    (operator.mode === "MODE_BARBELL"
+                      ? "Barbell sequence"
+                      : operator.mode === "MODE_SIT"
+                        ? "Sit sequence"
+                        : "Hold pose")}
                 </span>
                 <strong>
                   {operator.phase} · {number(progress)}%{!live && " · Stale"}
@@ -183,6 +187,57 @@ export function OperatorCard({ state, children }) {
                 <span>Buffer {number(operator.sonicBufferedMs)} ms</span>
                 <span>Delay {number(operator.sonicDelayMs)} ms</span>
               </span>
+            </div>
+          )}
+          {!startup && operator.selected === "Barbell" && (
+            <div
+              className="barbell-status"
+              role="status"
+              aria-label="Barbell handoff"
+            >
+              <strong>
+                {operator.mode === "MODE_BARBELL"
+                  ? operator.phase.replaceAll("_", " ")
+                  : "Standing v2 / receive / lift / return"}
+              </strong>
+              {operator.barbell && (
+                <>
+                  <span>
+                    {!live
+                      ? "Stale"
+                      : operator.barbell.handsOwned
+                        ? "Both hands owned"
+                        : "Waiting for hands"}{" "}
+                    · Preload {number(100 * operator.barbell.loadFraction)}% ·
+                    Motion {number(100 * operator.barbell.motionWeight)}%
+                  </span>
+                  <span title="Requested hand closure, not measured grip force">
+                    Grip {number(100 * operator.barbell.gripClosure)}% ·{" "}
+                    {operator.barbell.gripAdjustable
+                      ? "Adjustable"
+                      : operator.barbell.gripClosure > 0
+                        ? "Held through motion and return"
+                        : "Open"}
+                  </span>
+                  {operator.barbell.gripAdjustable && (
+                    <span>
+                      <Key name="LeftStickUp" sample={sample} /> Tighten{" "}
+                      <Key name="LeftStickDown" sample={sample} /> Loosen ·
+                      Center to hold
+                    </span>
+                  )}
+                  <span>{operator.barbell.message}</span>
+                  <span>
+                    <Key
+                      name="Y"
+                      sample={sample}
+                      progress={sample.y && live ? operator.confirmProgress : 0}
+                    />{" "}
+                    Hold 1 s to cancel motion and request handoff
+                  </span>
+                </>
+              )}
+              <span>Grip and holder support require your confirmation.</span>
             </div>
           )}
           {!startup && operator.selected === "Motion" && (

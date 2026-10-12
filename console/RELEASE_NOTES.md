@@ -1,3 +1,10 @@
+## Bello Mini Console 0.3.5
+
+- Add the configured Barbell mode: standing v2, arm reach, grab, load transfer, motion playback, supported handoff, and arm retraction.
+- Adjust both hands with left stick up/down at the grab step. Center holds the selected grip; confirming the grasp retains it throughout motion and return. Show grip percentage, hand ownership, preload, and motion progress in the console.
+- Require fresh one-second A holds for each handoff confirmation. Hold Y for one second to cancel and request handoff; cancellation and controller loss retain grip until support is confirmed.
+- Requires the matching runner with input protocol 4 and the leased hand service. Update both with the console. Configure the policy bundles and arm poses before using Barbell mode; the release does not include trained policies.
+
 ## Bello Mini Console 0.3.4
 
 - Fix the macOS Settings smoke test so the Linux Switch Pro trigger fix can be published. The console behavior is unchanged from the tagged 0.3.3 build; that build was not published after its macOS test failed.

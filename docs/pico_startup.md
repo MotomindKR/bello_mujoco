@@ -101,7 +101,13 @@ that the supplied endpoint values have actually been checked. The hand process
 does not configure the CAN bus. It is independent of hardwared and policy
 arming; stop it separately with Ctrl-C.
 
-All six axes now follow partial bends proportionally. Defaults are 5 Hz control,
+The armed server starts with writes suspended and listens on `127.0.0.1:50057`.
+Acquire each hand and select `TRACKING` or `APPLICATION` using the
+[hand control API](hand_control.md); renew the lease while controlling it.
+Tracking is no longer selected automatically at startup. Application control
+works without the bridge. A service restart requires fresh leases and commands.
+
+In `TRACKING`, all six axes follow partial bends proportionally. Defaults are 5 Hz control,
 100 ms smoothing, and a 510 raw-units/second slew limit. Tracking loss suspends
 position writes; recovery reads physical positions before resuming bounded
 movement. This does not imply that stopping opens the hand.

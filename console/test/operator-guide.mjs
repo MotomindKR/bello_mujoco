@@ -139,3 +139,57 @@ test("blocked startup does not offer an arming action", () => {
     { title: "Startup blocked" },
   );
 });
+
+test("Barbell handoff prompts require fresh hand feedback and operator neutrality", () => {
+  const operator = {
+    mode: "MODE_BARBELL",
+    barbell: { awaiting: "bar_supported", confirmationReady: true },
+  };
+  assert.match(operatorGuide(state(operator)).title, /holder supports/);
+  assert.deepEqual(operatorGuide(state(operator)).keys, ["A"]);
+  assert.equal(
+    operatorGuide(
+      state({
+        ...operator,
+        barbell: { ...operator.barbell, confirmationReady: false },
+      }),
+    ).keys,
+    undefined,
+  );
+  assert.equal(
+    operatorGuide(state({ ...operator, neutralRequired: true })).keys,
+    undefined,
+  );
+  assert.equal(
+    operatorGuide(state(operator, { fresh: false })).keys,
+    undefined,
+  );
+});
+
+test("Barbell offers joystick grip adjustment before grasp confirmation", () => {
+  const operator = {
+    mode: "MODE_BARBELL",
+    barbell: {
+      awaiting: "grasp_secured",
+      gripAdjustable: true,
+      gripClosure: 0,
+      confirmationReady: false,
+    },
+  };
+  const guide = operatorGuide(state(operator));
+  assert.match(guide.title, /left stick/);
+  assert.equal(guide.keys, undefined);
+  assert.deepEqual(
+    operatorGuide(
+      state({
+        ...operator,
+        barbell: {
+          ...operator.barbell,
+          gripClosure: 0.6,
+          confirmationReady: true,
+        },
+      }),
+    ).keys,
+    ["A"],
+  );
+});

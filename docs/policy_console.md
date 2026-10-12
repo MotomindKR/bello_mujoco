@@ -168,7 +168,7 @@ when no gamepad is connected. Closing the stream releases the lease; 250 ms
 without samples expires it. A rejected console cannot change the current
 owner's commands or neutral gate. The console retries once per second and a
 new owner must release all controls before operating.
-This console requires runner input protocol version 3. Until the runner reports
+This console requires runner input protocol version 4. Until the runner reports
 that version, the console sends neutral samples and marks Runner unavailable;
 install the matching runner before using controller input.
 The updated runner rejects older console samples before accepting control.
@@ -180,7 +180,7 @@ and neutral state, and held semantic requests such as `request_hold`,
 are semantic one-shot actions. The runner does not receive button names. It
 validates transitions and choices, measures the two-second Hold and one-second
 confirmation/abort durations, bounds movement, and expires the stream after
-250 ms. A binding change only changes console mapping; protocol version 3
+250 ms. A binding change only changes console mapping; protocol version 4
 requires a matching runner and console installation.
 
 ## Controller sequence
@@ -605,3 +605,11 @@ waiting for the initial support confirmation, the standing policy continues.
 Hardware/estimator display streams do not control this behavior. Policy logs
 include Sit phase, progress, targets and gains, followed by `sit_completed` only
 after successful Idle cleanup.
+
+Configured **Barbell** mode combines standing v2, arm reach, hand ownership,
+manual handoff confirmations, and motion playback. See [Barbell mode](barbell_mode.md)
+for runner settings and the A/Y controls. At the grab step, left stick up/down
+increases/decreases both hands' grip; center holds it. Confirming the grasp locks
+that grip through motion and return until the supported handoff. The console
+shows requested grip percentage and whether adjustment is available. The runner
+owns all phase transitions.

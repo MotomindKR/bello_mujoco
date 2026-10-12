@@ -10,7 +10,8 @@ The YAML files linked below are the authoritative field/default reference.
 | `bello-eval` | [eval.yaml](../configs/commands/eval.yaml) | Linux CPU evaluation |
 | `bello-export-policy` | [export.yaml](../configs/commands/export.yaml) | ONNX/reference deployment bundle |
 | `bello-vast-train` | [vast_train.yaml](../configs/commands/vast_train.yaml) | Bounded remote training |
-| `bello-run-hands` | [hands.yaml](../configs/commands/hands.yaml) | Native XRoboToolkit driven Linker hand control |
+| `bello-run-hands` | [hands.yaml](../configs/commands/hands.yaml) | Leased Linker hand control with application and XRoboToolkit sources |
+| `bello-eval-barbell` | [barbell_eval.yaml](../configs/commands/barbell_eval.yaml) | Confirmation-gated barbell cycle in simulation |
 | `bello-run-reference` | [reference.yaml](../configs/commands/reference.yaml) | Direct XRoboToolkit/GMR joint-reference producer |
 
 ## Training and evaluation
@@ -99,6 +100,14 @@ The hand command selects its buses with `left_can_interface` (default `can2`)
 and `right_can_interface` (default `can3`). Set both to the same interface for
 shared-bus wiring. These fields replace the single `can_interface` setting;
 the transport probes both enabled hands before accepting position writes.
+
+With `arm=true calibration_confirmed=true`, the hand control gRPC service listens
+at `listen=127.0.0.1:50057`. Both hands start in `HOLD` (no position writes).
+Each hand needs an exclusive lease and an explicit source selection. Clients
+renew within `lease_timeout_seconds` (default 1 second), including when selecting
+tracking. Applications can request calibrated open/close or six normalized
+positions, and lower the configured software slew limit per command. See the
+[hand control API](hand_control.md) for the contract and client example.
 
 ## Remote jobs
 

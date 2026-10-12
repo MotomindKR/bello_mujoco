@@ -158,7 +158,28 @@ function createOperatorMapper() {
       modeStep,
       motionStep,
       navigating: left || right || up || down,
-      toggleTracking,
+      toggleTracking: mode !== "MODE_BARBELL" && toggleTracking,
+      barbellConfirmHeld: !abort && confirm && mode === "MODE_BARBELL",
+      confirmBarbell:
+        !abort &&
+        confirm &&
+        mode === "MODE_BARBELL" &&
+        status.barbell?.confirmationReady
+          ? status.barbell.awaiting || ""
+          : "",
+      barbellPhaseId: status?.barbell?.phaseId || "0",
+      requestBarbellStop:
+        !abort &&
+        mode === "MODE_BARBELL" &&
+        tracking &&
+        axisNeutral &&
+        !sample.a &&
+        !sample.back &&
+        !sample.start &&
+        !sample.l1 &&
+        !sample.r1 &&
+        !sample.l2 &&
+        !sample.r2,
     };
   };
 }

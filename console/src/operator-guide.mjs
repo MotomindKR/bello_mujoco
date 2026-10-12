@@ -48,6 +48,12 @@ export function operatorGuide(state) {
         ? { title: "Holding", keys: ["A"], duration: "1 s · Stand" }
         : { title: "Ramping to Hold" };
     case "MODE_STAND":
+      if (operator.selected === "Barbell")
+        return {
+          title: "Hands empty; ready to receive bar",
+          keys: ["A"],
+          duration: "1 s · Barbell",
+        };
       if (operator.selected === "Tracking" && !operator.sonicReady)
         return { title: operator.sonicStatus || "Waiting for reference" };
       return {
@@ -110,6 +116,29 @@ export function operatorGuide(state) {
         keys: ["A"],
         duration: "1 s · Stand",
       };
+    case "MODE_BARBELL": {
+      const handoff = operator.barbell;
+      const prompts = {
+        bar_ready: "Bar positioned in both hands",
+        grasp_secured: "Confirm secure grip; prepare load transfer",
+        bar_supported: "Confirm holder supports the bar",
+        hands_open: "Confirm both hands are open",
+        bar_clear: "Confirm bar is clear of both hands",
+      };
+      if (handoff?.gripAdjustable && !handoff.confirmationReady)
+        return { title: "Set grip with left stick; center to confirm" };
+      if (handoff?.awaiting && handoff.confirmationReady)
+        return {
+          title: prompts[handoff.awaiting] || "Waiting for handoff",
+          keys: ["A"],
+          duration: "1 s · Confirm",
+        };
+      return {
+        title: handoff?.awaiting
+          ? "Waiting for fresh hand feedback"
+          : "Barbell sequence",
+      };
+    }
     case "MODE_MOTION":
       return { title: operator.activeMotion || "Motion" };
     default:

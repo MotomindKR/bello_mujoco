@@ -29,7 +29,8 @@ fields belong in [docs/commands.md](docs/commands.md); training settings belong
 in [docs/training_configuration.md](docs/training_configuration.md).
 
 The private pose Python module comes from the pinned stack pose API. Operator
-bindings come from `rust/bello-policy/proto/operator.proto`. Regenerate bindings
+bindings come from `rust/bello-policy/proto/operator.proto`; hand service bindings
+come from `src/bello_mujoco/hardware/hand.proto`. Regenerate bindings
 when either authoritative schema changes:
 
 ```bash

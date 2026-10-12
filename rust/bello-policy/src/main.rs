@@ -105,13 +105,25 @@ async fn main() -> Result<()> {
             "hardware operator control requires a standing/locomotion --policy; configure named motions in hardware YAML"
         );
         let mut runtime = Locomotion::new(policy)?;
+        let mut barbell = if let Some(settings) = config.barbell.take() {
+            Some(bello_policy::barbell::Runtime::load(settings, &runtime).await?)
+        } else {
+            None
+        };
         let configured_motions = std::mem::take(&mut config.motions);
         let mut motions = BTreeMap::new();
         for bundle in configured_motions {
             anyhow::ensure!(
                 !bundle.name.trim().is_empty()
-                    && !["Stand", "Locomotion", "Motion", "Tracking"]
-                        .contains(&bundle.name.as_str())
+                    && ![
+                        "Stand",
+                        "Locomotion",
+                        "Motion",
+                        "Tracking",
+                        "Barbell",
+                        "Sit"
+                    ]
+                    .contains(&bundle.name.as_str())
                     && !motions.contains_key(&bundle.name),
                 "invalid or duplicate motion name"
             );
@@ -146,6 +158,9 @@ async fn main() -> Result<()> {
         for motion in motions.values_mut() {
             motion.configure_hardware(&hardware)?;
         }
+        if let Some(runtime) = &mut barbell {
+            runtime.configure_hardware(&hardware)?;
+        }
         if args.arm {
             return bello_policy::control::run(
                 hardware,
@@ -153,6 +168,7 @@ async fn main() -> Result<()> {
                 control
                     .ok_or_else(|| anyhow::anyhow!("armed execution requires control settings"))?,
                 motions,
+                barbell,
             )
             .await;
         }
@@ -184,6 +200,9 @@ async fn main() -> Result<()> {
         )?;
         for motion in motions.values() {
             motion.check_feedback(&sample)?;
+        }
+        if let Some(runtime) = &barbell {
+            runtime.check_feedback(&sample)?;
         }
         let preview = runtime.step(&sample)?;
         println!(

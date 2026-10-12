@@ -36,6 +36,12 @@ pub struct Config {
 pub struct Interrupt(Arc<AtomicU8>);
 
 impl Interrupt {
+    pub(crate) fn arm(&self) {
+        self.0.store(1, Ordering::SeqCst);
+    }
+    pub(crate) fn returning(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == 2
+    }
     pub fn request_return(&self) -> bool {
         self.0
             .compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst)
@@ -205,6 +211,65 @@ impl Live {
             transition_limits,
             failure: None,
             interrupt: Interrupt::default(),
+        })
+    }
+
+    /// Barbell owns time and confirmation gates; both actors see live feedback.
+    pub fn coordinated_step(
+        &mut self,
+        standing: &mut Locomotion,
+        feedback: &HardwareFeedback,
+        time: f64,
+        weight: f64,
+        initialize: bool,
+        standing_tilt: f64,
+    ) -> Result<Output> {
+        ensure!(
+            time.is_finite()
+                && time >= 0.
+                && time <= self.duration()
+                && (0. ..=1.).contains(&weight),
+            "invalid coordinated motion sample"
+        );
+        Envelope::new(DQuat::IDENTITY, standing_tilt)
+            .blend(self.reference_tilt(time), weight)
+            .check(DQuat::from_array(feedback.orientation_xyzw))?;
+        let base = standing.step(feedback)?;
+        let mut sample = self.feedback(feedback)?;
+        sample.reference_time = time;
+        sample.initialize = initialize;
+        let motion = self.motion.step(&sample, feedback)?;
+        if let Some(limit) = self.config.max_raw_action_abs {
+            ensure!(
+                motion.raw_action.iter().all(|a| a.abs() <= limit),
+                "barbell motion raw action exceeds bound"
+            );
+        }
+        let w = weight as f32;
+        let metadata = &self.motion.policy().metadata;
+        Ok(Output {
+            target: base
+                .motor_target
+                .iter()
+                .zip(&motion.motor_target)
+                .map(|(a, b)| a * (1. - w) + b * w)
+                .collect(),
+            motor_gains: standing
+                .policy
+                .metadata
+                .kp
+                .iter()
+                .zip(&standing.policy.metadata.kd)
+                .enumerate()
+                .map(|(i, (&kp, &kd))| {
+                    [
+                        kp * (1. - w) + metadata.kp[i] * w,
+                        kd * (1. - w) + metadata.kd[i] * w,
+                    ]
+                })
+                .collect(),
+            log: json!({"standing":base,"motion":motion.log,"weight":weight,"reference_time":time}),
+            period: Duration::from_secs_f64(self.motion_period()),
         })
     }
 

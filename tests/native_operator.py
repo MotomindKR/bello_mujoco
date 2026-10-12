@@ -149,8 +149,18 @@ class OperatorClient:
                     buttons[name]
                     for name in ("dpad_up", "dpad_down", "dpad_left", "dpad_right")
                 ),
-                toggle_tracking=toggle_tracking,
-                input_protocol_version=3,
+                toggle_tracking=toggle_tracking and mode != pb.MODE_BARBELL,
+                barbell_confirm_held=confirm and mode == pb.MODE_BARBELL,
+                confirm_barbell=self.status.barbell.awaiting
+                if confirm
+                and mode == pb.MODE_BARBELL
+                and self.status.barbell.confirmation_ready
+                else "",
+                barbell_phase_id=self.status.barbell.phase_id if self.status else 0,
+                request_barbell_stop=buttons["y"]
+                and not abort
+                and mode == pb.MODE_BARBELL,
+                input_protocol_version=4,
             )
             self.closed.wait(0.02)
 

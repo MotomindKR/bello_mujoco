@@ -80,7 +80,11 @@ impl Backend {
         match self {
             Self::Mimic(m) => {
                 let sample = m.clip.sample(time);
-                super::super::rotation::from_wxyz(sample.qpos[3..7].try_into().unwrap())
+                super::super::rotation::from_wxyz(
+                    sample.qpos[m.settings.root_qpos_adr + 3..m.settings.root_qpos_adr + 7]
+                        .try_into()
+                        .unwrap(),
+                )
             }
             Self::Sonic(t) => t.reference_orientation(),
         }

@@ -10,6 +10,12 @@ use super::rotation::{checked_quaternion, from_wxyz, to_wxyz};
 pub struct Clip {
     pub joint_names: Vec<String>,
     pub body_names: Vec<String>,
+    pub nq: usize,
+    pub nv: usize,
+    pub object_mass_kg: Option<f64>,
+    pub free_qpos: Vec<usize>,
+    pub joint_qpos_indices: Vec<usize>,
+    pub joint_qvel_indices: Vec<usize>,
     fps: f64,
     frames: usize,
     qpos: Vec<f64>,
@@ -90,18 +96,74 @@ impl Clip {
         );
         let joints = joint_names.len() as u64;
         let bodies = body_names.len() as u64;
-        let mut qpos = floats(&mut archive, "qpos", &[frames, 7 + joints])?;
-        let qvel = floats(&mut archive, "qvel", &[frames, 6 + joints])?;
+        let mapped = archive
+            .file_names()
+            .any(|name| name == "free_joint_qpos.npy");
+        let mut indices = |name: &str| -> Result<Vec<usize>> {
+            let (shape, values) = array::<i64>(&mut archive, name)?;
+            ensure!(
+                shape == [values.len() as u64] && values.iter().all(|&v| v >= 0),
+                "invalid coordinate mapping"
+            );
+            Ok(values.into_iter().map(|v| v as usize).collect())
+        };
+        let free_qpos = if mapped {
+            indices("free_joint_qpos")?
+        } else {
+            vec![0]
+        };
+        let joint_qpos_indices = if mapped {
+            indices("joint_qpos_indices")?
+        } else {
+            Vec::new()
+        };
+        let joint_qvel_indices = if mapped {
+            indices("joint_qvel_indices")?
+        } else {
+            Vec::new()
+        };
+        let object_mass_kg = if free_qpos.len() > 1 {
+            let (shape, mass) = array::<f64>(&mut archive, "bar_mass_kg")?;
+            let (passed_shape, passed) = array::<bool>(&mut archive, "screen_passed")?;
+            ensure!(
+                shape.is_empty()
+                    && mass.len() == 1
+                    && mass[0].is_finite()
+                    && mass[0] > 0.
+                    && passed_shape.is_empty()
+                    && passed == [true],
+                "barbell motion requires a passed positive-mass reference screen"
+            );
+            Some(mass[0])
+        } else {
+            None
+        };
+        let nq = joints as usize + 7 * free_qpos.len();
+        let nv = joints as usize + 6 * free_qpos.len();
+        ensure!(
+            !free_qpos.is_empty() && free_qpos.iter().all(|&q| q + 7 <= nq),
+            "invalid free-body coordinates"
+        );
+        let mut qpos = floats(&mut archive, "qpos", &[frames, nq as u64])?;
+        let qvel = floats(&mut archive, "qvel", &[frames, nv as u64])?;
         let body_pos = floats(&mut archive, "body_pos", &[frames, bodies, 3])?;
         let body_quat = floats(&mut archive, "body_quat_wxyz", &[frames, bodies, 4])?
             .chunks_exact(4)
             .map(|q| checked_quaternion(from_wxyz(q.try_into().unwrap())))
             .collect::<Result<Vec<_>>>()?;
-        for row in qpos.chunks_exact_mut(7 + joints as usize) {
-            let quat = checked_quaternion(from_wxyz(row[3..7].try_into()?))?;
-            row[3..7].copy_from_slice(&to_wxyz(quat));
+        for row in qpos.chunks_exact_mut(nq) {
+            for &q in &free_qpos {
+                let quat = checked_quaternion(from_wxyz(row[q + 3..q + 7].try_into()?))?;
+                row[q + 3..q + 7].copy_from_slice(&to_wxyz(quat));
+            }
         }
         Ok(Self {
+            nq,
+            nv,
+            object_mass_kg,
+            free_qpos,
+            joint_qpos_indices,
+            joint_qvel_indices,
             joint_names,
             body_names,
             fps: fps[0],
@@ -137,19 +199,21 @@ impl Clip {
                 })
                 .collect()
         };
-        let nq = 7 + self.joint_names.len();
+        let nq = self.nq;
         let mut qpos = lerp(&self.qpos, nq);
-        let a = from_wxyz(
-            self.qpos[lower * nq + 3..lower * nq + 7]
-                .try_into()
-                .unwrap(),
-        );
-        let b = from_wxyz(
-            self.qpos[upper * nq + 3..upper * nq + 7]
-                .try_into()
-                .unwrap(),
-        );
-        qpos[3..7].copy_from_slice(&to_wxyz(a.slerp(b, alpha).normalize()));
+        for &q in &self.free_qpos {
+            let a = from_wxyz(
+                self.qpos[lower * nq + q + 3..lower * nq + q + 7]
+                    .try_into()
+                    .unwrap(),
+            );
+            let b = from_wxyz(
+                self.qpos[upper * nq + q + 3..upper * nq + q + 7]
+                    .try_into()
+                    .unwrap(),
+            );
+            qpos[q + 3..q + 7].copy_from_slice(&to_wxyz(a.slerp(b, alpha).normalize()));
+        }
         let bodies = self.body_names.len();
         let body_quat = (0..bodies)
             .map(|i| {
@@ -160,7 +224,7 @@ impl Clip {
             .collect();
         Sample {
             qpos,
-            qvel: lerp(&self.qvel, nq - 1),
+            qvel: lerp(&self.qvel, self.nv),
             body_pos: lerp(&self.body_pos, bodies * 3)
                 .chunks_exact(3)
                 .map(DVec3::from_slice)

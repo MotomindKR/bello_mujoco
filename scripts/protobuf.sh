@@ -14,6 +14,9 @@ readonly generated_pose_path="$source_root/bello_mujoco/hardware/_pose_pb2.py"
 readonly generated_operator_path="$source_root/bello_mujoco/hardware/_operator_pb2.py"
 readonly generated_smplx_path="$source_root/bello_mujoco/hardware/_smplx_pb2.py"
 readonly generated_reference_path="$source_root/bello_mujoco/hardware/reference_pb2.py"
+readonly canonical_hand_proto="$source_root/bello_mujoco/hardware/hand.proto"
+readonly logical_hand_proto="bello_mujoco/hardware/hand.proto"
+readonly generated_hand_path="$source_root/bello_mujoco/hardware/hand_pb2.py"
 readonly action="${1:---check}"
 
 generate_into() {
@@ -60,7 +63,7 @@ case "$action" in
     ;;
 esac
 
-for canonical_proto in "$canonical_pose_proto" "$canonical_operator_proto" "$canonical_smplx_proto" "$canonical_reference_proto"; do
+for canonical_proto in "$canonical_pose_proto" "$canonical_operator_proto" "$canonical_smplx_proto" "$canonical_reference_proto" "$canonical_hand_proto"; do
   if [[ ! -f "$canonical_proto" ]]; then
     echo "Canonical protobuf is missing: $canonical_proto" >&2
     echo "Initialize the pinned deps/bello-stack and deps/pico-smplx-bridge submodules" >&2
@@ -78,6 +81,9 @@ generate_into "$canonical_smplx_proto" "$logical_smplx_proto" \
   "$temporary_root/output" "$temporary_root/proto"
 generate_into "$canonical_reference_proto" "reference.proto" \
   "$temporary_root/output" "$temporary_root/proto"
+generate_into "$canonical_hand_proto" "$logical_hand_proto" \
+  "$temporary_root/output" "$temporary_root/proto"
+candidate_hand=$(candidate_for "$temporary_root/output" "$logical_hand_proto")
 candidate_pose=$(candidate_for "$temporary_root/output" "$logical_pose_proto")
 candidate_operator=$(candidate_for "$temporary_root/output" "$logical_operator_proto")
 candidate_smplx=$(candidate_for "$temporary_root/output" "$logical_smplx_proto")
@@ -85,12 +91,14 @@ candidate_smplx=$(candidate_for "$temporary_root/output" "$logical_smplx_proto")
 case "$action" in
   generate)
     cp "$candidate_pose" "$generated_pose_path"
+    cp "$candidate_hand" "$generated_hand_path"
     cp "$candidate_operator" "$generated_operator_path"
     cp "$candidate_smplx" "$generated_smplx_path"
     cp "$temporary_root/output/reference_pb2.py" "$generated_reference_path"
     ;;
   --check)
     check_binding "$generated_pose_path" "$candidate_pose"
+    check_binding "$generated_hand_path" "$candidate_hand"
     check_binding "$generated_operator_path" "$candidate_operator"
     check_binding "$generated_smplx_path" "$candidate_smplx"
     check_binding "$generated_reference_path" "$temporary_root/output/reference_pb2.py"

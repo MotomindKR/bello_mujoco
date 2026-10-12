@@ -6,7 +6,7 @@ use glam::{DQuat, DVec3};
 use super::rotation::checked_quaternion;
 
 #[derive(Clone, Copy)]
-pub(super) struct Envelope {
+pub(crate) struct Envelope {
     pub gravity: DVec3,
     pub max_error: f64,
 }

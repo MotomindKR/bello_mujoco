@@ -1,0 +1,54 @@
+syntax = "proto3";
+package bello.hand.v1;
+
+// All mutating requests address one enabled hand. Ownership expires unless
+// renewed by SetCommand or KeepAlive. Release/expiry suspend position writes.
+service HandControl {
+  rpc Acquire(Hand) returns (Lease);
+  rpc SetCommand(Command) returns (Status);
+  rpc KeepAlive(Lease) returns (Status);
+  rpc Release(Lease) returns (Status);
+  rpc GetStatus(Empty) returns (Status);
+}
+message Empty {}
+enum Side { SIDE_UNSPECIFIED = 0; LEFT = 1; RIGHT = 2; }
+enum Source { SOURCE_UNSPECIFIED = 0; HOLD = 1; TRACKING = 2; APPLICATION = 3; }
+message Hand { Side side = 1; }
+message Lease { Side side = 1; string token = 2; }
+message Positions { repeated double values = 1; }
+message Command {
+  Side side = 1;
+  string token = 2;
+  Source source = 3;
+  // APPLICATION requires exactly one target. Zero means calibrated open,
+  // one means calibrated closed, independently for each of the six axes.
+  oneof target {
+    Positions positions = 4;
+    bool open = 5;
+    bool close = 6;
+  }
+  // Software slew limit, in raw position bytes/second; capped by server config.
+  optional double max_raw_rate_per_second = 7;
+}
+message HandStatus {
+  Side side = 1;
+  Source source = 2;
+  bool owned = 3;
+  double lease_remaining_seconds = 4;
+  repeated double target = 5;
+  repeated uint32 commanded_positions = 6;
+  repeated uint32 measured_positions = 7;
+  double feedback_age_seconds = 8;
+  bool feedback_fresh = 9;
+  bool tracking_fresh = 10;
+  string suspension_reason = 11;
+  string transport_fault = 12;
+  double max_raw_rate_per_second = 13;
+}
+message Status {
+  repeated HandStatus hands = 1;
+  repeated string position_order = 2;
+  double lease_timeout_seconds = 3;
+  bool grasp_feedback_supported = 4;
+  bool force_control_supported = 5;
+}

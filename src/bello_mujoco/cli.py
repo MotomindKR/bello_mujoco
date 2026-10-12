@@ -95,6 +95,8 @@ class VastTrainCommandConfig:
 
 @dataclass(frozen=True)
 class HandsCommandConfig:
+    listen: str
+    lease_timeout_seconds: float
     protocol: Literal["linker_o6", "linker_l6"]
     left_can_interface: str
     right_can_interface: str
@@ -506,6 +508,7 @@ def _hands_hydra(config: DictConfig) -> None:
         LinkerHandsCanConfig,
         LinkerHandsCanTransport,
     )
+    from bello_mujoco.hardware.hand_server import HandServerConfig, run_hand_server
     from bello_mujoco.hardware.xrobot_hands import (
         HandGeometryConfig,
         HandRawCalibration,
@@ -554,7 +557,14 @@ def _hands_hydra(config: DictConfig) -> None:
     def transport_factory(_config: XRobotHandsConfig) -> LinkerHandsCanTransport:
         return LinkerHandsCanTransport(can_config)
 
-    run_xrobot_hands(hands_config, transport_factory)
+    server_config = HandServerConfig(
+        listen=command.listen,
+        lease_timeout_seconds=command.lease_timeout_seconds,
+    )
+    if command.arm:
+        run_hand_server(hands_config, server_config, transport_factory)
+    else:
+        run_xrobot_hands(hands_config, transport_factory)
     if not command.arm:
         print(
             "XRoboToolkit hand preflight passed; SocketCAN was not opened and no hand "
@@ -649,3 +659,21 @@ def _expand_path_overrides(prefixes: tuple[str, ...]) -> None:
                 break
         expanded.append(argument)
     sys.argv[1:] = expanded
+
+
+def barbell_eval_entrypoint() -> None:
+    os.environ["JAX_PLATFORMS"] = "cpu"
+    _barbell_eval_hydra()
+
+
+@hydra.main(
+    version_base=None, config_path=config_path("commands"), config_name="barbell_eval"
+)
+def _barbell_eval_hydra(config: DictConfig) -> None:
+    from bello_mujoco.evaluation.barbell import (
+        BarbellEvaluationConfig,
+        run_barbell_evaluation,
+    )
+
+    result = run_barbell_evaluation(command_config(BarbellEvaluationConfig, config))
+    print(json.dumps(result, indent=2))

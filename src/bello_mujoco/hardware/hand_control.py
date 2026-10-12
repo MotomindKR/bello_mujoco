@@ -1,4 +1,4 @@
-"""Standalone Linker Hand transport for XRoboToolkit-driven hand control."""
+"""Standalone Linker Hand transport for application and tracking control."""
 
 from __future__ import annotations
 
@@ -178,6 +178,25 @@ class LinkerHandsCanTransport:
         self._last_query[side] = now
         self._last_tx = now
         return response.positions
+
+    def poll_feedback(self, side: HandSide) -> None:
+        """Poll even suspended hands without writing an actuator target."""
+        if not self._entered:
+            raise RuntimeError("hand CAN transport is not running")
+        endpoint = self._endpoints[side]
+        now = self._clock()
+        self._drain_positions(side, endpoint, now)
+        if now - self._last_query[side] >= self.config.feedback_poll_interval_seconds:
+            self._stagger()
+            endpoint.query_positions()
+            self._last_query[side] = self._clock()
+            self._last_tx = self._last_query[side]
+
+    def feedback(self, side: HandSide) -> tuple[tuple[int, ...], float]:
+        """Return cached measured positions and their local receipt time."""
+        if not self._entered:
+            raise RuntimeError("hand CAN transport is not running")
+        return self._positions[side], self._last_feedback[side]
 
     def _configured_sides(self) -> tuple[HandSide, ...]:
         sides: list[HandSide] = []

@@ -447,7 +447,7 @@ function startOperator() {
       snapshot.operator = status;
       mark(
         "runner",
-        status.inputProtocolVersion === 3
+        status.inputProtocolVersion === 4
           ? ""
           : "Runner update required for semantic operator actions.",
       );
@@ -833,7 +833,7 @@ app.whenReady().then(() => {
       sequence: sample.sequence,
       sampleMonotonicNs: sample.sampleMonotonicNs,
       ...mapOperatorInput(sample, snapshot.operator, Boolean(heldAbort)),
-      inputProtocolVersion: 3,
+      inputProtocolVersion: 4,
     };
     if (pendingClear && !pendingClear.sequence) {
       input.clearFault = true;
@@ -857,7 +857,7 @@ app.whenReady().then(() => {
     if (operatorCall && !operatorCall.destroyed) {
       snapshot.lastSentSequence = input.sequence;
       const outgoing =
-        snapshot.operator?.inputProtocolVersion === 3
+        snapshot.operator?.inputProtocolVersion === 4
           ? input
           : {
               sequence: input.sequence,
@@ -865,7 +865,7 @@ app.whenReady().then(() => {
               connected: false,
               controlsNeutral: true,
               abortOtherControlsNeutral: true,
-              inputProtocolVersion: 3,
+              inputProtocolVersion: 4,
             };
       if (!operatorCall.write(outgoing)) operatorCall.cancel();
     }

@@ -32,6 +32,9 @@ pub enum RequestMode {
     Tracking,
     Sit,
     ConfirmSit,
+    Barbell,
+    ConfirmBarbell { event: String, phase_id: u64 },
+    StopBarbell,
     Abort,
     SetTracking(bool),
 }
@@ -51,6 +54,8 @@ struct State {
     neutral_required: bool,
     hold_since: Option<Instant>,
     confirm_since: Option<Instant>,
+    confirming: Option<RequestMode>,
+    barbell_action_held: bool,
     abort_since: Option<Instant>,
     stop_consumed: bool,
     previous_toggle_tracking: bool,
@@ -69,7 +74,8 @@ impl State {
                 && name != "Locomotion"
                 && name != "Motion"
                 && name != "Tracking"
-                && name != "Sit")
+                && name != "Sit"
+                && name != "Barbell")
                 && motions
                     .iter()
                     .collect::<std::collections::BTreeSet<_>>()
@@ -106,7 +112,7 @@ impl State {
                 tracking_available: false,
                 tracking_enabled: false,
                 tracking_live: false,
-                input_protocol_version: 3,
+                input_protocol_version: 4,
                 ..OperatorStatus::default()
             },
             last_sequence: None,
@@ -115,6 +121,8 @@ impl State {
             neutral_required: true,
             hold_since: None,
             confirm_since: None,
+            confirming: None,
+            barbell_action_held: false,
             abort_since: None,
             stop_consumed: false,
             previous_toggle_tracking: false,
@@ -155,8 +163,8 @@ impl State {
 
     fn receive(&mut self, sample: OperatorInput, now: Instant) -> Result<()> {
         ensure!(
-            sample.input_protocol_version == 3,
-            "console input protocol version 3 required"
+            sample.input_protocol_version == 4,
+            "console input protocol version 4 required"
         );
         let axes = [sample.forward, sample.lateral, sample.yaw];
         ensure!(
@@ -175,6 +183,8 @@ impl State {
                 sample.confirm_fault_recovery,
                 !sample.request_mode.is_empty(),
                 sample.confirm_sit,
+                sample.barbell_confirm_held || !sample.confirm_barbell.is_empty(),
+                sample.request_barbell_stop,
                 sample.abort,
             ]
             .into_iter()
@@ -195,6 +205,10 @@ impl State {
         {
             self.disconnect();
         }
+        self.barbell_action_held = sample.barbell_confirm_held
+            || !sample.confirm_barbell.is_empty()
+            || sample.request_barbell_stop
+            || sample.request_mode == "Barbell";
         self.last_sequence = Some((sample.sequence, sample.sample_monotonic_ns));
         self.received = Some(now);
         self.status.controller_connected = sample.connected;
@@ -441,6 +455,19 @@ impl State {
         } else if sample.confirm_sit {
             (self.status.mode == Mode::Sit as i32 && self.status.startup_ready)
                 .then_some(RequestMode::ConfirmSit)
+        } else if !sample.confirm_barbell.is_empty() {
+            (self.status.mode == Mode::Barbell as i32
+                && self.status.barbell.as_ref().is_some_and(|s| {
+                    s.confirmation_ready
+                        && s.phase_id == sample.barbell_phase_id
+                        && s.awaiting == sample.confirm_barbell
+                }))
+            .then(|| RequestMode::ConfirmBarbell {
+                event: sample.confirm_barbell.clone(),
+                phase_id: sample.barbell_phase_id,
+            })
+        } else if sample.request_barbell_stop {
+            (self.status.mode == Mode::Barbell as i32).then_some(RequestMode::StopBarbell)
         } else if !sample.request_mode.is_empty() {
             match Mode::try_from(self.status.mode) {
                 Ok(Mode::Stand) if self.status.selected == sample.request_mode => {
@@ -449,6 +476,9 @@ impl State {
                         "Motion" => Some(RequestMode::Motion(self.status.selected_motion.clone())),
                         "Tracking" if self.status.sonic_ready => Some(RequestMode::Tracking),
                         "Sit" => Some(RequestMode::Sit),
+                        "Barbell" if self.status.modes.iter().any(|s| s == "Barbell") => {
+                            Some(RequestMode::Barbell)
+                        }
                         _ => None,
                     }
                 }
@@ -463,6 +493,10 @@ impl State {
         if !confirm_requested(&sample) {
             self.confirm_consumed = false;
         }
+        if self.confirming != requested {
+            self.confirm_since = None;
+        }
+        self.confirming = requested.clone();
         self.confirm_since = if requested.is_some()
             && !self.confirm_consumed
             && axes.iter().all(|v| v.abs() <= NEUTRAL)
@@ -494,6 +528,9 @@ impl State {
 fn confirm_requested(sample: &OperatorInput) -> bool {
     sample.confirm_startup
         || sample.confirm_sit
+        || sample.barbell_confirm_held
+        || !sample.confirm_barbell.is_empty()
+        || sample.request_barbell_stop
         || sample.confirm_fault_recovery
         || !sample.request_mode.is_empty()
 }
@@ -505,6 +542,9 @@ fn neutral_except_confirm(sample: &OperatorInput) -> bool {
         && !sample.request_hold
         && !sample.confirm_startup
         && !sample.confirm_sit
+        && !sample.barbell_confirm_held
+        && sample.confirm_barbell.is_empty()
+        && !sample.request_barbell_stop
         && sample.request_mode.is_empty()
         && !sample.abort
         && !sample.toggle_tracking
@@ -628,10 +668,40 @@ impl Source {
         if mode != Mode::Locomotion {
             state.status.velocity_command = None;
         }
+        if mode != Mode::Barbell {
+            state.status.barbell = None;
+        }
         state.status.mode = mode as i32;
         state.status.phase = phase.into();
         state.status.active_motion = active_motion.into();
         state.status.progress = progress.clamp(0., 1.);
+    }
+
+    pub fn enable_barbell(&self) {
+        self.state
+            .lock()
+            .unwrap()
+            .status
+            .modes
+            .push("Barbell".into());
+    }
+
+    pub fn set_barbell(&self, phase: &str, progress: f64, status: proto::BarbellStatus) {
+        let mut state = self.state.lock().unwrap();
+        if state.confirming != Some(RequestMode::StopBarbell)
+            && state.status.barbell.as_ref().is_none_or(|s| {
+                s.phase_id != status.phase_id || s.confirmation_ready != status.confirmation_ready
+            })
+        {
+            state.confirm_since = None;
+            state.status.confirm_progress = 0.;
+            state.confirm_consumed = state.barbell_action_held;
+            state.pending = None;
+        }
+        state.status.mode = Mode::Barbell as i32;
+        state.status.phase = phase.into();
+        state.status.progress = progress.clamp(0., 1.);
+        state.status.barbell = Some(status);
     }
 
     pub fn set_startups(&self, lying: bool) {
@@ -710,6 +780,7 @@ impl Source {
         state.disconnect();
         state.status.velocity_command = None;
         state.status.startup_ready = false;
+        state.status.barbell = None;
         state.status.mode = Mode::Fault as i32;
         state.status.phase = "fault".into();
         state.status.fault = message.into();
@@ -986,7 +1057,7 @@ mod tests {
                 sample.sequence = self.sequence;
                 sample.sample_monotonic_ns = self.sequence;
                 sample.connected = true;
-                sample.input_protocol_version = 3;
+                sample.input_protocol_version = 4;
                 let input = self.map(sample, &state.status);
                 state.receive(input, self.now).unwrap();
             }
@@ -1014,7 +1085,7 @@ mod tests {
                             controls_neutral: !abort,
                             abort_other_controls_neutral: true,
                             abort,
-                            input_protocol_version: 3,
+                            input_protocol_version: 4,
                             ..Default::default()
                         },
                         started + Duration::from_millis(sequence * 20),
@@ -1465,7 +1536,7 @@ mod tests {
                 sequence: 2,
                 sample_monotonic_ns: 2,
                 connected: false,
-                input_protocol_version: 3,
+                input_protocol_version: 4,
                 selection: Some(proto::Selection {
                     choice: Some(proto::selection::Choice::Mode("Locomotion".into())),
                 }),
@@ -1658,7 +1729,7 @@ mod tests {
                         sample_monotonic_ns: controller.sequence,
                         connected: true,
                         toggle_tracking: true,
-                        input_protocol_version: 3,
+                        input_protocol_version: 4,
                         ..Default::default()
                     },
                     controller.now,
@@ -1739,7 +1810,7 @@ mod tests {
                         sample_monotonic_ns: sequence,
                         abort: true,
                         connected: false,
-                        input_protocol_version: 3,
+                        input_protocol_version: 4,
                         forward: 0.5,
                         ..Default::default()
                     },
@@ -1983,7 +2054,7 @@ mod tests {
     #[test]
     fn held_bumpers_do_not_abort() {
         let (mut state, mut controller) = fixture();
-        assert_eq!(state.status.input_protocol_version, 3);
+        assert_eq!(state.status.input_protocol_version, 4);
         controller.send(
             &mut state,
             GamepadSample {
@@ -2012,7 +2083,7 @@ mod tests {
                 .receive(sample, Instant::now())
                 .unwrap_err()
                 .to_string()
-                .contains("input protocol version 3 required")
+                .contains("input protocol version 4 required")
         );
         assert!(!state.aborted);
         assert!(state.received.is_none());
@@ -2104,7 +2175,7 @@ mod tests {
             sequence: controller.sequence,
             sample_monotonic_ns: controller.sequence,
             connected: false,
-            input_protocol_version: 3,
+            input_protocol_version: 4,
             ..Default::default()
         };
         assert!(state.receive(invalid, controller.now).is_err());
@@ -2130,7 +2201,7 @@ mod tests {
                 sequence,
                 sample_monotonic_ns: sequence,
                 connected: false,
-                input_protocol_version: 3,
+                input_protocol_version: 4,
                 ..Default::default()
             })
             .await
@@ -2211,5 +2282,104 @@ mod tests {
             .unwrap()
             .into_inner();
         assert!(third.message().await.unwrap().unwrap().neutral_required);
+    }
+    #[test]
+    fn barbell_confirmation_requires_current_generation_and_fresh_full_hold() {
+        let mut state = State::new(vec![]).unwrap();
+        state.status.mode = Mode::Barbell as i32;
+        state.status.barbell = Some(proto::BarbellStatus {
+            phase_id: 7,
+            awaiting: "bar_supported".into(),
+            confirmation_ready: true,
+            ..Default::default()
+        });
+        let mut now = Instant::now();
+        let mut sequence = 0;
+        let mut send = |state: &mut State, event: &str, phase_id: u64, stop: bool, count: usize| {
+            for _ in 0..count {
+                sequence += 1;
+                now += Duration::from_millis(20);
+                state
+                    .receive(
+                        OperatorInput {
+                            sequence,
+                            sample_monotonic_ns: sequence,
+                            connected: true,
+                            controls_neutral: event.is_empty() && !stop,
+                            confirm_barbell: event.into(),
+                            barbell_phase_id: phase_id,
+                            request_barbell_stop: stop,
+                            input_protocol_version: 4,
+                            ..Default::default()
+                        },
+                        now,
+                    )
+                    .unwrap();
+            }
+        };
+        send(&mut state, "", 0, false, 1);
+        send(&mut state, "bar_supported", 6, false, 60);
+        assert!(state.pending.is_none());
+        send(&mut state, "bar_supported", 7, false, 30);
+        assert!(state.pending.is_none());
+        // Switching A to Y cannot inherit the first button's half-second hold.
+        send(&mut state, "", 7, true, 30);
+        assert!(state.pending.is_none());
+        send(&mut state, "", 7, true, 30);
+        assert_eq!(state.pending.take(), Some(RequestMode::StopBarbell));
+        send(&mut state, "", 0, false, 1);
+        send(&mut state, "bar_supported", 7, false, 60);
+        assert_eq!(
+            state.pending.take(),
+            Some(RequestMode::ConfirmBarbell {
+                event: "bar_supported".into(),
+                phase_id: 7
+            })
+        );
+    }
+    #[test]
+    fn hand_readiness_accepts_a_new_press_without_requiring_an_extra_neutral_sample() {
+        let state = Arc::new(Mutex::new(State::new(vec![]).unwrap()));
+        let (shutdown, _) = watch::channel(false);
+        let source = Source {
+            state: state.clone(),
+            shutdown,
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+        };
+        let status = proto::BarbellStatus {
+            phase_id: 6,
+            awaiting: "hands_open".into(),
+            confirmation_ready: true,
+            ..Default::default()
+        };
+        source.set_barbell("open_hands", 0., status.clone());
+        assert!(!state.lock().unwrap().confirm_consumed);
+        state.lock().unwrap().barbell_action_held = true;
+        source.set_barbell(
+            "open_hands",
+            0.,
+            proto::BarbellStatus {
+                confirmation_ready: false,
+                ..status.clone()
+            },
+        );
+        source.set_barbell("open_hands", 0., status);
+        assert!(state.lock().unwrap().confirm_consumed);
+        let started = Instant::now();
+        {
+            let mut state = state.lock().unwrap();
+            state.confirming = Some(RequestMode::StopBarbell);
+            state.confirm_since = Some(started);
+            state.confirm_consumed = false;
+        }
+        source.set_barbell(
+            "await_bar_clear",
+            0.,
+            proto::BarbellStatus {
+                phase_id: 7,
+                ..Default::default()
+            },
+        );
+        assert_eq!(state.lock().unwrap().confirm_since, Some(started));
     }
 }

@@ -1,4 +1,6 @@
 protocol: linker_o6
+listen: 127.0.0.1:50057
+lease_timeout_seconds: 1.0
 left_can_interface: can2
 right_can_interface: can3
 left_hand_enabled: true

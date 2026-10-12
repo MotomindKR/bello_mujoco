@@ -1,3 +1,4 @@
+pub mod barbell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read;

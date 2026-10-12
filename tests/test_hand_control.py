@@ -199,3 +199,23 @@ def test_transport_refresh_returns_new_physical_position() -> None:
 def test_transport_config_rejects_unsafe_values(changes) -> None:
     with pytest.raises(ValueError):
         replace(LinkerHandsCanConfig(), **changes)
+
+
+def test_suspended_hands_poll_and_report_feedback_without_position_writes():
+    clock = FakeClock()
+    transport, endpoints = make_transport(LinkerHandsCanConfig(), clock)
+    with transport:
+        initial, initial_at = transport.feedback("left")
+        clock.now += 0.3
+        transport.poll_feedback("left")
+        assert endpoints["left"].queries == 1
+        assert transport.feedback("left") == (initial, initial_at)
+        endpoints["left"].responses.append(
+            LinkerHandPositionResponse(0x28, (10, 20, 30, 40, 50, 60))
+        )
+        transport.poll_feedback("left")
+        measured, stamp = transport.feedback("left")
+        assert measured == (10, 20, 30, 40, 50, 60)
+        assert stamp == clock()
+        assert endpoints["left"].writes == []
+        assert endpoints["right"].writes == []

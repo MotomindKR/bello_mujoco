@@ -164,7 +164,7 @@ def test_hands_command_wires_xrobot_mapping_and_l6_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import bello_mujoco.cli as cli
-    from bello_mujoco.hardware import hand_control, xrobot_hands
+    from bello_mujoco.hardware import hand_control, hand_server, xrobot_hands
 
     captured: dict[str, object] = {}
 
@@ -172,12 +172,15 @@ def test_hands_command_wires_xrobot_mapping_and_l6_transport(
         def __init__(self, config: object) -> None:
             captured["can"] = config
 
-    def fake_run(config: object, transport_factory: object) -> None:
+    def fake_run(
+        config: object, server_config: object, transport_factory: object
+    ) -> None:
         captured["xrobot"] = config
+        captured["server"] = server_config
         captured["transport"] = transport_factory(config)  # type: ignore[operator]
 
     monkeypatch.setattr(hand_control, "LinkerHandsCanTransport", FakeTransport)
-    monkeypatch.setattr(xrobot_hands, "run_xrobot_hands", fake_run)
+    monkeypatch.setattr(hand_server, "run_hand_server", fake_run)
     with initialize_config_dir(
         version_base=None,
         config_dir=str(CONFIG_ROOT / "commands"),
@@ -186,6 +189,8 @@ def test_hands_command_wires_xrobot_mapping_and_l6_transport(
             config_name="hands",
             overrides=(
                 "protocol=linker_l6",
+                "listen=127.0.0.1:50157",
+                "lease_timeout_seconds=2.0",
                 "xrobot.endpoint=127.0.0.1:50052",
                 "right_hand_enabled=false",
                 "arm=true",
@@ -199,6 +204,10 @@ def test_hands_command_wires_xrobot_mapping_and_l6_transport(
         )
 
     cli._hands_hydra.__wrapped__(config)
+
+    assert captured["server"] == hand_server.HandServerConfig(
+        listen="127.0.0.1:50157", lease_timeout_seconds=2.0
+    )
 
     can = captured["can"]
     assert isinstance(can, hand_control.LinkerHandsCanConfig)

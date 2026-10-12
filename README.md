@@ -32,15 +32,17 @@ workflow; see [SONIC transfer](docs/sonic_transfer.md). Values live in YAML, not
 Checkpoints require their exact clean root Git commit and pinned dependencies.
 Historical policies run from historical checkouts, without compatibility fallbacks.
 
-Policy control uses `rust/bello-policy`; there is no Python policy runner or
+Hardware policy control uses `rust/bello-policy`; there is no Python hardware policy runner or
 Python hardware-client dependency. Live retargeting dependencies remain in the
 default `retargeting` dependency group.
 Physical deployment remains gated on [trained-policy commissioning](docs/hardware.md).
 
 Live PICO body following uses direct XRoboToolkit poses through the updated
 tracking bridge: `bello-run-reference asset=bello_mini xrobot.endpoint=HOST:50052`.
-Body and hand commands both use `xrobot.*` and typed native tracking data.
-Neither needs a neutral SMPL-X model or bridge T-pose calibration. Install the
+Body following and the hand server's tracking source use `xrobot.*` and typed
+native tracking data. Application hand targets use the [leased hand API](docs/hand_control.md)
+independently of tracking. Neither tracking consumer needs a neutral SMPL-X model
+or bridge T-pose calibration. Install the
 receiver and bridge with `scripts/install_systemd.py tracking`; the viewer is
 not installed. Update the bridge before its consumers; see [PICO startup](docs/pico_startup.md).
 
@@ -50,6 +52,7 @@ not installed. Update the bridge before its consumers; see [PICO startup](docs/p
 - [Training, evaluation, and checkpoints](docs/training_and_evaluation.md)
 - [Robot descriptions](docs/robot_assets.md) and [motion tracking](docs/motion_tracking.md)
 - [Bello Mini policy console](docs/policy_console.md)
+- [Barbell mode](docs/barbell_mode.md)
 - [Hardware](docs/hardware.md), [emulator](docs/emulator.md), and [Lima](docs/macos_vcan.md)
 - [Systemd daemon startup and operations](docs/systemd.md)
 - [Vast.ai](docs/vast_ai.md)

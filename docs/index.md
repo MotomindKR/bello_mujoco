@@ -9,6 +9,8 @@
 - [SONIC LoRA transfer](sonic_transfer.md)
 - [Hardware](hardware.md), [emulator](emulator.md), and [Lima](macos_vcan.md)
 - [PICO tracking and hand-control startup](pico_startup.md)
+- [Hand control API and ownership](hand_control.md)
+- [Barbell mode and handoff gates](barbell_mode.md)
 - [Robot and tracking systemd workflow](systemd.md)
 - [Vast.ai](vast_ai.md)
 

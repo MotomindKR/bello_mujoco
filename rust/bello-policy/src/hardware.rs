@@ -18,6 +18,7 @@ pub struct Config {
     #[serde(default)]
     pub motions: Vec<MotionBundle>,
     pub tracking: Option<crate::tracking::Config>,
+    pub barbell: Option<crate::barbell::Config>,
     pub endpoint: String,
     pub groups: Vec<String>,
     pub imu_name: String,
@@ -404,6 +405,7 @@ mod tests {
         let config = Config {
             control: None,
             tracking: None,
+            barbell: None,
             motions: Vec::new(),
             endpoint: "http://localhost:1".into(),
             groups: vec!["limb".into()],

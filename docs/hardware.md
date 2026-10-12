@@ -204,6 +204,13 @@ hardwared motor targets. It defaults to read-only validation; see
 [hands.yaml](../configs/commands/hands.yaml). Hand arming is separate from policy
 arming and requires its own bus, device, calibration, and safety review.
 
+Armed operation exposes the [hand control API](hand_control.md) at
+`127.0.0.1:50057`. Hands start suspended. Each hand has an exclusive renewable
+lease selecting application targets, XRoboToolkit tracking, or suspended writes.
+Tracking cannot overwrite application targets. Lease expiry never opens the
+hand or switches back to tracking. Position feedback is available; contact,
+grasp confirmation, and force control are not exposed by this service.
+
 All six hand axes use proportional targets between their calibrated open and
 closed positions: a half-flexed finger requests the midpoint. The
 `smoothing_time_constant_ms` low-pass filter and `max_raw_rate_per_second` slew
@@ -211,3 +218,7 @@ limit apply to finger flexion and thumb abduction alike. After tracking loss,
 control reseeds from measured hand positions and limits the first recovered
 command to one control period of movement. `control_rate_hz` sets the command
 rate (5 Hz by default).
+
+The optional runner `barbell` configuration exposes the dedicated console mode;
+see [Barbell mode](barbell_mode.md) for policy sources, arm poses, hand leases,
+confirmation gates, and cancellation behavior.

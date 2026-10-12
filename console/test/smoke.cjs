@@ -55,7 +55,7 @@ let recoveryFails = false;
 let runnerBusy = true;
 let operatorSessions = 0;
 const runnerStatus = {
-  inputProtocolVersion: 3,
+  inputProtocolVersion: 4,
   mode: "MODE_STAND",
   selected: "Motion",
   selectedMotion: "Wave",
@@ -311,7 +311,7 @@ async function serve(service, implementation) {
     Exchange(call) {
       call.on("data", (sample) => replacementSamples.push(sample));
       repeating(call, () => ({
-        inputProtocolVersion: 3,
+        inputProtocolVersion: 4,
         mode: "MODE_DISARMED",
         phase: "new robot",
         neutralRequired: true,
@@ -416,7 +416,7 @@ async function serve(service, implementation) {
       samples.slice(incompatibleSamples).every((sample) => !sample.connected),
       "An older runner must receive only neutral controller samples",
     );
-    runnerStatus.inputProtocolVersion = 3;
+    runnerStatus.inputProtocolVersion = 4;
     await page.waitForFunction(
       () => document.querySelectorAll(".topbar .service.online").length === 4,
     );
@@ -1771,6 +1771,63 @@ async function serve(service, implementation) {
     await capture(page, {
       path: path.join(root, "console/out/console-services-mobile-dark.png"),
     });
+    const beforeBarbell = structuredClone(runnerStatus);
+    Object.assign(runnerStatus, {
+      mode: "MODE_BARBELL",
+      selected: "Barbell",
+      phase: "await_support",
+      modes: [...runnerStatus.modes, "Barbell"],
+      barbell: {
+        phaseId: "9",
+        awaiting: "bar_supported",
+        confirmationReady: true,
+        handsOwned: true,
+        loadFraction: 1,
+        motionWeight: 0,
+        gripClosure: 0.6,
+        gripAdjustable: false,
+        message: "Both hand leases active; handoff confirmations are manual",
+      },
+    });
+    await page.getByRole("tab", { name: "Overview", exact: true }).click();
+    await page
+      .getByRole("status", { name: "Barbell handoff" })
+      .getByText(/Both hands owned/)
+      .waitFor();
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Barbell", exact: true })
+        .getAttribute("aria-current"),
+      "true",
+    );
+    await capture(page, {
+      path: path.join(root, "console/out/console-barbell.png"),
+      fullPage: true,
+    });
+    await page.getByText("Grip 60% · Held through motion and return").waitFor();
+    runnerStatus.phase = "close_hands";
+    Object.assign(runnerStatus.barbell, {
+      awaiting: "grasp_secured",
+      loadFraction: 0,
+      gripAdjustable: true,
+      message:
+        "Set grip with left stick; center stick before confirming secure grasp",
+    });
+    await page.getByText("Grip 60% · Adjustable").waitFor();
+    await page.getByText(/Tighten.*Loosen/).waitFor();
+    assert(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      "Barbell grip controls must fit mobile width",
+    );
+    await capture(page, {
+      path: path.join(root, "console/out/console-barbell-grip.png"),
+      fullPage: true,
+    });
+    Object.assign(runnerStatus, beforeBarbell);
+    delete runnerStatus.barbell;
+
     await page.getByRole("tab", { name: "Overview", exact: true }).click();
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page

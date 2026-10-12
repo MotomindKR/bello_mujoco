@@ -13,6 +13,8 @@ message OperatorInput {
   string name = 4;
   // Normalized movement intent in [-1, 1]: forward, right, counterclockwise yaw.
   // The runner projects this into the bundle command frame and enforces limits.
+  // During Barbell's grab step, forward adjusts grip (positive tightens);
+  // other axes and all axes after grasp confirmation do not change the grip.
   double forward = 5;
   double lateral = 6;
   double yaw = 7;
@@ -40,6 +42,12 @@ message OperatorInput {
   bool confirm_fault_recovery = 21;
   // True while a mode or motion selection control is held.
   bool navigating = 22;
+  // Confirmation is bound to the runner's current handoff generation.
+  string confirm_barbell = 23;
+  uint64 barbell_phase_id = 24;
+  bool request_barbell_stop = 25;
+  // Physical A hold remains asserted even when no handoff prompt is available.
+  bool barbell_confirm_held = 26;
 }
 
 message Selection {
@@ -61,6 +69,7 @@ enum Mode {
   MODE_FAULT = 5;
   MODE_TRACKING = 6;
   MODE_SIT = 7;
+  MODE_BARBELL = 8;
 }
 
 message OperatorStatus {
@@ -100,10 +109,24 @@ message OperatorStatus {
   bool startup_ready = 30;
   // Console must check this before sending operator input.
   uint32 input_protocol_version = 31;
+  BarbellStatus barbell = 32;
 }
 
 message VelocityCommand {
   double forward_mps = 1;
   double right_mps = 2;
   double yaw_rps = 3; // Positive counterclockwise.
+}
+
+message BarbellStatus {
+  uint64 phase_id = 1;
+  string awaiting = 2;
+  bool confirmation_ready = 3;
+  bool hands_owned = 4;
+  double load_fraction = 5;
+  double motion_weight = 6;
+  string message = 7;
+  // Requested normalized hand closure, not measured force.
+  double grip_closure = 8;
+  bool grip_adjustable = 9;
 }

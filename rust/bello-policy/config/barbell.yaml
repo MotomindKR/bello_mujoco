@@ -1,0 +1,72 @@
+# Configure bundle/source paths and reviewed arm poses before commissioning.
+endpoint: http://127.0.0.1:50051
+groups: [lower_body, upper_body]
+imu_name: imu
+connection_timeout_seconds: 3.0
+telemetry_timeout_seconds: 2.0
+max_motor_age_ms: 100.0
+max_imu_age_ms: 100.0
+max_group_age_ms: 100.0
+max_state_sample_span_ms: 40.0
+startup_feedback_margin_radians: 0.0
+max_tilt_radians: 0.70
+max_angular_velocity: 20.0
+max_linear_acceleration: 100.0
+motions: []
+tracking: null
+barbell:
+  standing:
+    policy: outputs/policies/standing-v2.zip
+    source: outputs/policy-sources/standing-v2
+  motion:
+    policy: outputs/policies/barbell.zip
+    source: outputs/policy-sources/barbell
+  # JSON: coordinates, normal, unloaded_forward, loaded_forward (full motor arrays).
+  arm_poses: outputs/policies/barbell-arm-poses.json
+  # Left stick at full deflection changes normalized grip by 25 percentage points/s.
+  grip_adjustment_per_second: 0.25
+  motion_settings:
+    pose: null
+    start_time_seconds: 0.0
+    transition_seconds: 4.0
+    max_tilt_error_radians: 0.70
+    max_raw_action_abs: 5.0
+  timing:
+    initial_stand_seconds: 4.0
+    reach_seconds: 4.0
+    load_transfer_seconds: 2.0
+    policy_blend_seconds: 4.0
+    motion_seconds: 20.2
+    retract_seconds: 4.0
+    final_stand_seconds: 6.0
+  hands:
+    endpoint: http://127.0.0.1:50057
+    rpc_timeout_seconds: 0.05
+    update_seconds: 0.10
+    stale_seconds: 0.30
+    acquisition_timeout_seconds: 3.0
+    max_raw_rate_per_second: 100.0
+control:
+  following:
+    enabled: false
+    endpoint: http://127.0.0.1:50056
+    rpc_timeout_seconds: 0.1
+    poll_period_seconds: 0.02
+    max_reference_age_ms: 1000.0
+    max_reference_joint_speed_rps: 25.0
+    min_live_joint_limit_margin_radians: 0.001
+    max_target_speed_rps: 9.42477796076938
+    connection_transition_duration_seconds: 1.0
+  client_name: bello-policy
+  operator_listen: 0.0.0.0:50055
+  command_validity_seconds: 0.08
+  acknowledgement_timeout_seconds: 0.5
+  rpc_timeout_seconds: 2.0
+  ramp_seconds: 10.0
+  # Set bent angles/speed to offer Back-down startup and Sit; see the console guide.
+  lying_start: null
+  gain_scale: 1.0
+  joystick_command_scale: 1.0
+  torso_command: [0.0, 0.0, 0.0]
+  max_loop_lag_seconds: 0.10
+  policy_log_path: null

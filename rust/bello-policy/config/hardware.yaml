@@ -13,6 +13,7 @@ max_angular_velocity: 20.0
 max_linear_acceleration: 100.0
 motions: []
 tracking: null
+barbell: null
 control:
   following:
     enabled: false

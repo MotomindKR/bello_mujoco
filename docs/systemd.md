@@ -13,7 +13,9 @@ a separate tracking PC remains an explicit deployment option.
 | `nvidia@192.168.0.229` | `bello-robot.target` | `bello-hardwared`, `bello-state-estimatord`, `bello-reference`, **`bello-hands`**, `bello-policy` |
 
 Starting the robot target starts **armed hand control**, independently of the
-body policy, including after reboot. Keep hands clear of people and objects
+body policy, including after reboot, with hand position writes suspended until
+a client acquires a lease and selects a source through the
+[hand control API](hand_control.md). Keep hands clear of people and objects
 before powering on or rebooting. Hardwared starts body
 groups IDLE; the policy service acquires no motor lease until Back+Start is held
 for two seconds. Stopping hands suspends CAN
@@ -62,6 +64,7 @@ before starting; user services never reconfigure buses or require root.
 | Jetson `:50051` | Hardwared (external TCP clients) |
 | Jetson `:50053` | State estimator |
 | Jetson `127.0.0.1:50056` | GMR joint references (`bello-reference`) |
+| Jetson `127.0.0.1:50057` | Leased hand control (`bello-hands`) |
 | Jetson `:50055` | Runner operator stream |
 
 Installed units and their referenced configs are authoritative. Keep these
@@ -178,8 +181,11 @@ reboot; save needed diagnostics before rebooting.
 
 The estimator stays alive without hardwared, suppresses stale poses, and
 reconnects. GMR and hands tolerate missing tracking: body following returns
-toward nominal in the policy; hands suspend writes, re-read physical positions,
-then resume bounded movement on fresh tracking. Missing tracking is not proof
+toward nominal in the policy; tracking-controlled hands with live leases suspend
+writes, re-read physical positions, then resume bounded movement on fresh
+tracking. Application-controlled hands do not depend on tracking. Lease expiry
+suspends writes and requires a fresh acquisition; it never restores tracking.
+Missing tracking is not proof
 that a process is unhealthy.
 
 Daemon crashes restart automatically, subject to a restart-rate limit,

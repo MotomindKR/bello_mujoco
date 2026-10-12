@@ -206,6 +206,7 @@ pub async fn run(
     mut policy: Locomotion,
     config: Config,
     mut motions: BTreeMap<String, crate::motion::live::Live>,
+    mut barbell: Option<crate::barbell::Runtime>,
 ) -> Result<()> {
     config.validate()?;
     policy.controller_command([0.; 3], config.joystick_command_scale)?;
@@ -242,6 +243,9 @@ pub async fn run(
             .collect(),
     )?;
     operator.set_startups(lying_pose.is_some());
+    if barbell.is_some() {
+        operator.enable_barbell();
+    }
     operator.set_tracking(config.following.enabled, false, false);
     if let Some(status) = motions.get("Tracking").and_then(|m| m.tracking_status()) {
         operator.set_sonic(status);
@@ -484,8 +488,32 @@ pub async fn run(
                     mode = Mode::Stand;
                     operator.set_mode(mode, "standing", "", 0.);
                 }
+                if input.lost && mode == Mode::Barbell {
+                    barbell
+                        .as_mut()
+                        .unwrap()
+                        .stop("Controller disconnected; secure and support the bar");
+                }
                 let mut start_motion = false;
                 match input.request {
+                    Some(RequestMode::Barbell) if mode == Mode::Stand && barbell.is_some() => {
+                        let runtime = barbell.as_mut().unwrap();
+                        runtime.start()?;
+                        *motion_interrupt.lock().unwrap() = Some(runtime.interrupt.clone());
+                        mode = Mode::Barbell;
+                        operator.set_mode(mode, runtime.phase(), "", 0.);
+                    }
+                    Some(RequestMode::ConfirmBarbell { event, phase_id })
+                        if mode == Mode::Barbell =>
+                    {
+                        barbell.as_mut().unwrap().confirm(&event, phase_id)?;
+                    }
+                    Some(RequestMode::StopBarbell) if mode == Mode::Barbell => {
+                        barbell
+                            .as_mut()
+                            .unwrap()
+                            .stop("Operator cancelled; secure and support the bar");
+                    }
                     Some(RequestMode::Sit) if mode == Mode::Stand && lying_pose.is_some() => {
                         mode = Mode::Sit;
                         operator.set_mode(mode, "awaiting support", "", 0.);
@@ -557,7 +585,9 @@ pub async fn run(
                     tracking_enabled = false;
                     operator.set_tracking(following.is_some(), false, false);
                 }
-                let max_tilt = if let Some(sequence) = &sit {
+                let max_tilt = if mode == Mode::Barbell {
+                    None
+                } else if let Some(sequence) = &sit {
                     sequence
                         .requires_upright()
                         .then_some(hardware.config.max_tilt_radians)
@@ -657,6 +687,40 @@ pub async fn run(
                         sit = None;
                         mode = Mode::Stand;
                         policy.reset();
+                        operator.set_mode(mode, "standing", "", 0.);
+                    }
+                    pace(&mut deadline, period, lag).await?;
+                    continue;
+                }
+                if mode == Mode::Barbell {
+                    let runtime = barbell.as_mut().expect("Barbell configured");
+                    let step = runtime.step(
+                        &mut policy,
+                        &sample,
+                        hardware.config.max_tilt_radians,
+                        input.axes[0],
+                    )?;
+                    let target: Vec<f64> = step.target.iter().map(|&v| f64::from(v)).collect();
+                    let command = send(
+                        &mut controls,
+                        &target,
+                        &step.motor_gains,
+                        &config,
+                        &mut targets,
+                        runtime.limits(),
+                        &mut log,
+                    )
+                    .await?;
+                    operator.set_barbell(runtime.phase(), runtime.progress(), runtime.status()?);
+                    if let Some(log) = &mut log {
+                        log.record(&serde_json::json!({"elapsed_seconds":started.elapsed().as_secs_f64(),"feedback":sample,"barbell":step.log,"command":command}))?;
+                    }
+                    if runtime.complete()
+                        && limits.validate(&targets.previous).is_ok()
+                        && runtime.release_complete().await?
+                    {
+                        *motion_interrupt.lock().unwrap() = None;
+                        mode = Mode::Stand;
                         operator.set_mode(mode, "standing", "", 0.);
                     }
                     pace(&mut deadline, period, lag).await?;
@@ -816,6 +880,11 @@ pub async fn run(
             {
                 cleanup_errors.push(format!("damping release: {error:#}"));
             }
+        }
+        if let Some(runtime) = &mut barbell
+            && let Err(error) = runtime.close().await
+        {
+            cleanup_errors.push(format!("barbell hands: {error:#}"));
         }
         if !cleanup_errors.is_empty() {
             operator.fault(&format!(

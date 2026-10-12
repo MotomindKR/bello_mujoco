@@ -1,0 +1,28 @@
+motion_source: ???
+motion_checkpoint: ???
+standing_source: ???
+standing_policy: ???
+native_binary: ???
+onnxruntime_library: ???
+neutral_pose_path: ???
+output_path: outputs/barbell-mode
+bar_mass_kg: 15.0
+holder_move_seconds: 2.0
+receive_wait_seconds: 4.0
+support_wait_seconds: 3.0
+hand_wait_seconds: 0.8
+maximum_seconds: 90.0
+worker_timeout_seconds: 180.0
+mode:
+  initial_stand_seconds: 4.0
+  reach_seconds: 4.0
+  load_transfer_seconds: 2.0
+  policy_blend_seconds: 4.0
+  motion_seconds: 20.2
+  retract_seconds: 4.0
+  final_stand_seconds: 6.0
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/barbell_eval/${now:%Y-%m-%d}/${now:%H-%M-%S}

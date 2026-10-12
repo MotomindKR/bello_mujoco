@@ -1869,3 +1869,11 @@ kbd.pressed {
   gap: 8px;
   min-width: 0;
 }
+
+.barbell-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  font-size: 12px;
+}

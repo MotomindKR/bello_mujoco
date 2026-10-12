@@ -174,3 +174,34 @@ test("bumper presses cycle tabs once per click", () => {
   assert.equal(navigate(sample(false, false, false)), 0);
   assert.equal(navigate(sample(true, false)), -1);
 });
+
+test("Barbell maps confirmations to the current generation and Y to cancellation", () => {
+  const map = createOperatorMapper();
+  const sample = { ...sampleController(null, 0.12), connected: true, a: true };
+  const status = {
+    mode: "MODE_BARBELL",
+    barbell: {
+      awaiting: "bar_supported",
+      phaseId: "12",
+      confirmationReady: true,
+    },
+  };
+  const input = map(sample, status);
+  assert.equal(input.confirmBarbell, "bar_supported");
+  assert.equal(input.barbellPhaseId, "12");
+  assert.equal(input.requestMode, "");
+  assert.equal(
+    map(sample, {
+      ...status,
+      barbell: { ...status.barbell, confirmationReady: false },
+    }).confirmBarbell,
+    "",
+  );
+  const cancel = map({ ...sample, a: false, y: true }, status);
+  assert.equal(cancel.requestBarbellStop, true);
+  assert.equal(cancel.toggleTracking, false);
+  assert.equal(
+    map({ ...sample, l2: true, r2: true }, status).confirmBarbell,
+    "",
+  );
+});
