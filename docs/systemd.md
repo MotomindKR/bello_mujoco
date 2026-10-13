@@ -165,6 +165,19 @@ Stopping a target stops all members; listing them explicitly also waits for
 their shutdown jobs to finish. This is not an emergency-stop system.
 Do not stop/restart hardwared or the robot target under an armed policy.
 
+The enabled Mini AGX power board uses hardwared's `emergency_stop: damping`
+mode. After fresh released IWC status, hardwared requests category 1 and keeps
+the physical cutoff path bypassed with a 10 Hz heartbeat. Pressing the physical
+button revokes all body-group leases and requests damping; releasing it requires
+new leases and an explicit start. Missing or stale emergency status also blocks
+control and requests damping. Independently owned hands are outside this path.
+Orderly hardwared shutdown requests category 0 and firmware latching before
+closing its UART. A crash relies on the board's host-valid timeout (up to five
+seconds); that restores the button's cutoff path, not unconditional power-off.
+The protocol does not acknowledge mode changes, so verify the handoff on the
+installed board before physical use. See the pinned stack's
+[power-board guide](../deps/bello-stack/docs/power_board.md#physical-emergency-button-and-damping).
+
 ```bash
 systemctl --user status bello-hands --no-pager
 journalctl _UID="$(id -u)" _SYSTEMD_USER_UNIT=bello-hands.service -n 80 --no-pager
