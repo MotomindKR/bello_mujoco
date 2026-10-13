@@ -22,7 +22,7 @@ from bello_mujoco.hardware.hand_server import (
 from bello_mujoco.hardware.xrobot_hands import XRobotHandsConfig
 from bello_mujoco.hardware.pico_grpc import PicoGrpcConfig
 from native_operator import OperatorClient
-from test_native_control import bundle, start_services
+from test_native_control import assert_motor_rail_log, bundle, start_services
 from test_native_control import hardware_proto as hardware_proto
 from test_native_motion_control import MotionHardware, motion_bundle, control_settings
 
@@ -306,6 +306,15 @@ def test_console_barbell_cycle_and_ownership(
             }
             assert {"reach", "close", "unload", "retract", "finish"} <= phases
             assert ("motion" in phases) == (failure is None)
+            for phase in phases:
+                assert_motor_rail_log(
+                    [
+                        row
+                        for row in rows
+                        if row.get("barbell", {}).get("sequence", {}).get("phase")
+                        == phase
+                    ]
+                )
             for row in rows:
                 command = row.get("barbell", {}).get("sequence")
                 if command and command["phase"] in {
