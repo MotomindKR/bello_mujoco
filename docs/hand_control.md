@@ -2,7 +2,8 @@
 
 `bello-run-hands arm=true calibration_confirmed=true` runs
 `bello.hand.v1.HandControl` on `listen=127.0.0.1:50057`. It probes the enabled
-Linker O6/L6 hands, then starts in `HOLD`. Startup no longer follows tracking
+Linker O6/L6 hands, then starts in `HOLD`. Missing CAN interfaces or hand replies
+are retried while the API remains available. Startup no longer follows tracking
 automatically. `arm=false` remains tracking preflight: no server and no CAN.
 
 The body runner can own these leases automatically. Set `control.hand_tracking`
@@ -73,8 +74,18 @@ of allowed movement. Ordinary target changes retain the filter state.
 Lease expiry, release, `HOLD`, and process shutdown stop further position writes.
 They do not open the hand, disable motor torque, or cancel a target already sent
 to the device. The device may continue moving toward its last target. There is
-no automatic return to tracking. A transport error latches the affected hand
-in `HOLD`; inspect status and explicitly select a source again to retry.
+no automatic return to tracking after lease expiry or release.
+
+Temporary CAN I/O failures and missing feedback suspend only the affected hand.
+Failed sockets are closed and rebound to the configured interface, with retries
+paced by `can_feedback_poll_interval_seconds`. No CAN links are reconfigured;
+the arms sharing these buses remain under hardwared's control. Fresh feedback
+clears the transport fault, including while in `HOLD`. A still-owned source
+resumes after a measured-position probe and filter reseed; tracking additionally
+requires a new optical sample after that probe. Outage time never accumulates
+extra allowed movement. Lease expiry during an outage leaves the hand in `HOLD`;
+recovery does not reacquire ownership or replay expired targets. Malformed
+responses still latch the source in `HOLD` and require explicit source selection.
 
 Tracking loss suspends only hands currently using `TRACKING`. Recovery requires
 a position probe followed by a fresh tracking sample. The server and application

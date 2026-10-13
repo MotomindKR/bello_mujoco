@@ -232,6 +232,14 @@ class HandController:
                 try:
                     self.transport.poll_feedback(side)
                     state.measured, state.feedback_at = self.transport.feedback(side)
+                    if not state.measured or (
+                        self.clock() - state.feedback_at
+                        > self.transport.config.feedback_timeout_seconds
+                    ):
+                        raise TimeoutError(f"{side} CAN feedback unavailable or stale")
+                    if state.fault:
+                        state.fault = ""
+                        self._suspend(state, "CAN recovered; awaiting position reseed")
                     if state.source == pb.HOLD:
                         continue
                     target = (
@@ -280,7 +288,10 @@ class HandController:
                     state.commanded = positions
                     state.suspension = ""
                     state.fault = ""
-                except (OSError, TimeoutError, ValueError) as error:
+                except OSError as error:
+                    state.fault = str(error)
+                    self._suspend(state, "CAN unavailable; waiting for fresh feedback")
+                except ValueError as error:
                     state.fault = str(error)
                     state.source = pb.HOLD
                     state.target = ()
@@ -310,8 +321,9 @@ class HandController:
                     commanded_positions=state.commanded,
                     measured_positions=state.measured,
                     feedback_age_seconds=age,
-                    feedback_fresh=age
-                    <= self.transport.config.feedback_timeout_seconds,
+                    feedback_fresh=bool(state.measured)
+                    and not state.fault
+                    and age <= self.transport.config.feedback_timeout_seconds,
                     tracking_fresh=self._tracking_target(side_id) is not None,
                     suspension_reason=state.suspension,
                     transport_fault=state.fault,

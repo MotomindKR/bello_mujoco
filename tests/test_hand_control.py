@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import errno
 
 import pytest
 
@@ -219,3 +220,101 @@ def test_suspended_hands_poll_and_report_feedback_without_position_writes():
         assert stamp == clock()
         assert endpoints["left"].writes == []
         assert endpoints["right"].writes == []
+
+
+@pytest.mark.parametrize(
+    "operation", ("query_positions", "receive_positions", "write_positions")
+)
+def test_cutoff_closes_socket_and_rebinds_before_any_new_write(operation):
+    clock = FakeClock()
+    transport, endpoints = make_transport(LinkerHandsCanConfig(), clock)
+    with transport:
+        old = endpoints["left"]
+
+        def disconnected(*_):
+            raise OSError(errno.ENODEV, "CAN adapter removed")
+
+        setattr(old, operation, disconnected)
+        clock.now += 0.3
+        with pytest.raises(OSError, match="adapter removed"):
+            transport.set_positions("left", (1,) * 6)
+        assert old.closed
+        assert transport.feedback("left") == ((), 0.0)
+        transport.poll_feedback("right")
+        for _ in range(3):
+            clock.now += 0.04
+            with pytest.raises(ConnectionError, match="reconnect pending"):
+                transport.poll_feedback("left")
+            assert endpoints["left"] is old
+        clock.now += 0.1
+        transport.poll_feedback("left")
+        new = endpoints["left"]
+        assert new is not old and new.queries == 1 and new.writes == []
+        with pytest.raises(TimeoutError, match="reseed"):
+            transport.set_positions("left", (1,) * 6)
+        assert new.writes == []
+        clock.now += 0.3
+        assert transport.refresh_positions("left") == (250, 200, 240, 230, 220, 210)
+        transport.set_positions("left", (1,) * 6)
+        assert endpoints["left"].writes == [(1,) * 6]
+
+
+@pytest.mark.parametrize("failure", ("bind", "probe"))
+def test_server_transport_starts_with_missing_hand_and_polls_until_recovery(failure):
+    clock = FakeClock()
+    endpoints = {}
+    missing = True
+
+    def factory(interface, address):
+        if address.side == "left" and missing and failure == "bind":
+            raise OSError(errno.ENODEV, "CAN adapter absent")
+        endpoint = FakeEndpoint(interface, address)
+        endpoints[address.side] = endpoint
+        if address.side == "left" and missing:
+
+            def timeout(**_):
+                raise TimeoutError("hand unplugged")
+
+            endpoint.probe_positions = timeout
+        return endpoint
+
+    transport = LinkerHandsCanTransport(
+        LinkerHandsCanConfig(),
+        endpoint_factory=factory,
+        clock=clock,
+        sleep=clock.sleep,
+        require_initial_feedback=False,
+    )
+    with transport:
+        assert transport.feedback("left") == ((), 0.0)
+        assert len(transport.feedback("right")[0]) == 6
+        missing = False
+        clock.now += 0.3
+        transport.poll_feedback("left")
+        endpoint = endpoints["left"]
+        endpoint.responses.append(LinkerHandPositionResponse(0x28, (90,) * 6))
+        transport.poll_feedback("left")
+        assert transport.feedback("left")[0] == (90,) * 6
+        assert all(not endpoint.writes for endpoint in endpoints.values())
+
+
+def test_strict_transport_still_rejects_missing_hand_and_cleans_up():
+    clock = FakeClock()
+    endpoint = FakeEndpoint("can2", None)
+
+    def factory(interface, address):
+        if address.side == "right":
+            raise OSError("right adapter absent")
+        endpoint.address = address
+        return endpoint
+
+    transport = LinkerHandsCanTransport(
+        LinkerHandsCanConfig(),
+        endpoint_factory=factory,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+    with pytest.raises(OSError, match="adapter absent"):
+        with transport:
+            pass
+    assert endpoint.closed

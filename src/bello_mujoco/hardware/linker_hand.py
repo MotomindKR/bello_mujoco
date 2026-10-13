@@ -297,6 +297,9 @@ class LinkerHandCanEndpoint:
             if not frame.data:
                 raise ValueError("Linker Hand response has an empty payload")
             if frame.data[0] == POSITION_OPCODE:
+                if len(frame.data) == 1:
+                    # Other local clients can query the same shared hand ID.
+                    continue
                 return parse_position_response(self.address, frame)
         return None
 

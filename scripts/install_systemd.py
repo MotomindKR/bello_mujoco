@@ -475,7 +475,6 @@ def main() -> None:
                 "calibration_confirmed=true",
             ],
             restart=False,
-            preflight=can_check,
         )
         policy_source = args.policy_source.resolve(strict=True)
         if not policy_source.is_dir():

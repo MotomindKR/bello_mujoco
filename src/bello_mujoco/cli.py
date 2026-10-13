@@ -555,7 +555,7 @@ def _hands_hydra(config: DictConfig) -> None:
     )
 
     def transport_factory(_config: XRobotHandsConfig) -> LinkerHandsCanTransport:
-        return LinkerHandsCanTransport(can_config)
+        return LinkerHandsCanTransport(can_config, require_initial_feedback=False)
 
     server_config = HandServerConfig(
         listen=command.listen,

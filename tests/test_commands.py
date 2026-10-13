@@ -169,8 +169,9 @@ def test_hands_command_wires_xrobot_mapping_and_l6_transport(
     captured: dict[str, object] = {}
 
     class FakeTransport:
-        def __init__(self, config: object) -> None:
+        def __init__(self, config: object, *, require_initial_feedback: bool) -> None:
             captured["can"] = config
+            assert not require_initial_feedback
 
     def fake_run(
         config: object, server_config: object, transport_factory: object

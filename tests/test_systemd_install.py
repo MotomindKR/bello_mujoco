@@ -227,6 +227,8 @@ def test_policy_unit_uses_explicit_bundle_and_orders_cleanup(
     hands = (units / "bello-hands.service").read_text()
     assert '"left_can_interface=can2"' in hands
     assert '"right_can_interface=can3"' in hands
+    assert "ExecStartPre=" not in hands
+    assert "Restart=no" in hands
     assert "bello-policy.service" in target
     assert "PartOf=bello-robot.target\n" in policy
     for prefix in ("After=", "Wants="):

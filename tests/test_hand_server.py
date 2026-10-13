@@ -39,6 +39,7 @@ class Transport:
         self.measured = {"left": (200,) * 6, "right": (150,) * 6}
         self.stamps = {side: clock() for side in self.measured}
         self.fault_side = None
+        self.stale_side = None
         self.probe_delay = 0
 
     def feedback(self, side):
@@ -47,7 +48,8 @@ class Transport:
     def poll_feedback(self, side):
         if side == self.fault_side:
             raise OSError("CAN failure")
-        self.stamps[side] = self.clock()
+        if side != self.stale_side:
+            self.stamps[side] = self.clock()
 
     def refresh_positions(self, side):
         self.probes.append(side)
@@ -245,8 +247,8 @@ def test_expiry_during_probe_prevents_write():
     assert controller.status().hands[0].source == pb.HOLD
 
 
-def test_transport_fault_is_latched_to_hold_and_other_hand_continues():
-    controller, transport, _ = setup_controller()
+def test_can_cutoff_recovers_with_reseed_and_other_hand_continues():
+    controller, transport, clock = setup_controller()
     left = controller.acquire(pb.Hand(side=pb.LEFT))
     right = controller.acquire(pb.Hand(side=pb.RIGHT))
     controller.command(command(left, close=True))
@@ -255,13 +257,100 @@ def test_transport_fault_is_latched_to_hold_and_other_hand_continues():
     controller.tick()
     assert transport.writes == [("right", (170,) * 6)]
     assert controller.status().hands[0].transport_fault == "CAN failure"
+    assert not controller.status().hands[0].feedback_fresh
+    assert controller.status().hands[0].source == pb.APPLICATION
+    transport.fault_side = None
+    transport.measured["left"] = (80,) * 6
+    clock.now += 0.2
+    controller.tick()
+    assert ("left", (60,) * 6) in transport.writes
+    assert not controller.status().hands[0].transport_fault
+    assert transport.probes.count("left") == 1
+
+
+def test_can_recovery_after_lease_expiry_only_clears_diagnostics():
+    controller, transport, clock = setup_controller()
+    lease = controller.acquire(pb.Hand(side=pb.LEFT))
+    controller.command(command(lease, close=True))
+    transport.fault_side = "left"
+    controller.tick()
+    clock.now += 1.1
     transport.fault_side = None
     controller.tick()
-    assert all(side == "right" for side, _ in transport.writes)
-    controller.command(command(left, close=True))
-    controller.tick()
-    assert ("left", (180,) * 6) in transport.writes
+    assert not transport.writes
     assert not controller.status().hands[0].transport_fault
+    assert controller.status().hands[0].source == pb.HOLD
+    assert not controller.status().hands[0].owned
+
+
+def test_tracking_can_recovery_requires_observation_after_reseed():
+    controller, transport, clock = setup_controller()
+    lease = controller.acquire(pb.Hand(side=pb.LEFT))
+    controller.command(command(lease, pb.TRACKING))
+    controller.publish_tracking(frame(clock, left=1))
+    controller.tick()
+    clock.now += 0.1
+    controller.publish_tracking(frame(clock, left=1))
+    controller.tick()
+    assert len(transport.writes) == 1
+    transport.fault_side = "left"
+    clock.now += 0.1
+    controller.tick()
+    transport.fault_side = None
+    transport.measured["left"] = (80,) * 6
+    clock.now += 0.1
+    controller.publish_tracking(frame(clock, left=1))
+    controller.tick()
+    assert len(transport.writes) == 1
+    clock.now += 0.1
+    controller.publish_tracking(frame(clock, left=1))
+    controller.tick()
+    assert transport.writes[-1] == ("left", (60,) * 6)
+    assert transport.probes == ["left", "left"]
+
+
+def test_missing_replies_suspend_then_reseed_without_accumulating_slew():
+    controller, transport, clock = setup_controller()
+    lease = controller.acquire(pb.Hand(side=pb.LEFT))
+    controller.command(command(lease, close=True))
+    controller.tick()
+    transport.stale_side = "left"
+    clock.now += 0.6
+    controller.keep_alive(lease)
+    controller.tick()
+    assert len(transport.writes) == 1
+    assert not controller.status().hands[0].feedback_fresh
+    assert controller.status().hands[0].source == pb.APPLICATION
+    transport.stale_side = None
+    transport.measured["left"] = (80,) * 6
+    clock.now += 0.1
+    controller.tick()
+    assert transport.writes[-1] == ("left", (60,) * 6)
+    assert transport.probes == ["left", "left"]
+
+
+def test_protocol_error_still_requires_explicit_source_selection():
+    controller, transport, _ = setup_controller()
+    lease = controller.acquire(pb.Hand(side=pb.LEFT))
+    controller.command(command(lease, close=True))
+    original = transport.poll_feedback
+
+    def malformed(side):
+        if side == "left":
+            raise ValueError("malformed response")
+        original(side)
+
+    transport.poll_feedback = malformed
+    controller.tick()
+    assert controller.status().hands[0].source == pb.HOLD
+    assert controller.status().hands[0].transport_fault
+    transport.poll_feedback = original
+    controller.tick()
+    assert not transport.writes
+    assert not controller.status().hands[0].transport_fault
+    controller.command(command(lease, close=True))
+    controller.tick()
+    assert len(transport.writes) == 1
 
 
 def test_switching_from_application_to_tracking_cannot_use_old_target():

@@ -54,8 +54,10 @@ systemctl --user --failed
 means startup was requested, not that every daemon is healthy or tracking is
 valid. Check each service and fresh telemetry before entering Hold. The
 root-owned `onboard-can.service` calls the pinned bello-stack
-`scripts/setup-can.sh` at boot. Hardwared and hands use its read-only `--check`
-before starting; user services never reconfigure buses or require root.
+`scripts/setup-can.sh` at boot. Hardwared uses its read-only `--check`
+before starting. Hands start with writes suspended even if a CAN interface is
+missing, and retry their own sockets. User services never reconfigure buses or
+require root.
 
 | Endpoint | Owner |
 | --- | --- |
@@ -223,8 +225,9 @@ it uses `sudo` for system files and the system manager:
   script, not a second local implementation.
 - `user-can-ordering.conf`: orders the installing operator's user manager after
   CAN setup.
-  CAN failure does not prevent login for repairs; hardwared/hand startup checks
-  reject interfaces that fail the canonical read-only check. The estimator
+  CAN failure does not prevent login for repairs; hardwared startup checks
+  reject interfaces that fail the canonical read-only check. Hands keep their
+  API available while retrying missing interfaces and feedback. The estimator
   remains independent and can reconnect when hardwared becomes available.
 
 The installer writes `/etc/modules-load.d/bello-can.conf`,

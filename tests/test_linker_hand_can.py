@@ -78,6 +78,18 @@ class FakeRawCanSocket:
         self.close_count += 1
 
 
+def test_position_queries_on_shared_id_are_not_malformed_feedback():
+    address = LinkerHandAddress("O6", "left")
+    fake = FakeRawCanSocket(
+        received=[
+            build_position_query(address).pack(),
+            build_position_write(address, (1, 2, 3, 4, 5, 6)).pack(),
+        ]
+    )
+    with LinkerHandCanEndpoint("can2", address, can_socket=fake) as endpoint:
+        assert endpoint.receive_positions().positions == (1, 2, 3, 4, 5, 6)
+
+
 @pytest.mark.parametrize(
     ("model", "side", "command_id", "response_ids"),
     [
