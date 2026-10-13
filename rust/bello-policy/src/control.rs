@@ -731,7 +731,11 @@ pub async fn run(
                     .await?;
                     operator.set_barbell(runtime.phase(), runtime.progress(), runtime.status()?);
                     if let Some(log) = &mut log {
-                        log.record(&serde_json::json!({"elapsed_seconds":started.elapsed().as_secs_f64(),"feedback":sample,"barbell":step.log,"command":command}))?;
+                        log.record(&serde_json::json!({
+                            "elapsed_seconds": started.elapsed().as_secs_f64(),
+                            "feedback": sample, "barbell": step.log, "command": command,
+                            "motor_rails": power.as_ref().map(crate::power::Source::snapshot)
+                        }))?;
                     }
                     if runtime.complete()
                         && limits.validate(&targets.previous).is_ok()

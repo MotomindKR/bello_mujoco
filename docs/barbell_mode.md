@@ -225,6 +225,12 @@ call, `stale_seconds` bounds the last successful hand state, and
 `acquisition_timeout_seconds` bounds startup. The server's lease timeout must
 exceed stale + update + two RPC timeouts. Fresh hand feedback is not force or grasp sensing.
 
+When policy logging is enabled, every Barbell tick includes `motor_rails`, using
+the same asynchronous power-board subscription as standing and other motion
+modes. Each available reading includes voltage, signed current, sample age,
+stale status, sequence, and connection generation. Missing readings remain null;
+they do not mean zero power consumption.
+
 Validation uses synthetic body devices and the real hand gRPC controller on
 loopback, covering the full cycle, held-button rejection, cancellation,
 controller loss, hand faults, and ownership conflicts. This does not replace the
