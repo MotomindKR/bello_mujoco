@@ -281,6 +281,19 @@ video_config:
   action_seed: 0
   log_wandb: true
   wandb_name: train/rollout
+  walking_acceptance:
+    enabled: false
+    warmup_seconds: 2.0
+    minimum_window_seconds: 6.0
+    velocity_rmse_max: 0.1
+    yaw_rate_rmse_max: 0.2
+    stance_slip_max: 0.05
+    lateral_tilt_rms_max: 0.17453292519943295
+    lateral_tilt_peak_max: 0.3490658503988659
+    single_support_min: 0.2
+    each_side_support_min: 0.05
+    minimum_support_alternations: 4
+    contact_debounce_seconds: 0.04
   camera_config:
     mode: follow
     distance: 3.0

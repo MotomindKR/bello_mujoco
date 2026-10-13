@@ -15,6 +15,8 @@ class WalkingAcceptanceConfig:
     velocity_rmse_max: float = 0.1
     yaw_rate_rmse_max: float = 0.2
     stance_slip_max: float = 0.05
+    lateral_tilt_rms_max: float = math.radians(10.0)
+    lateral_tilt_peak_max: float = math.radians(20.0)
     single_support_min: float = 0.2
     each_side_support_min: float = 0.05
     minimum_support_alternations: int = 4
@@ -27,6 +29,8 @@ class WalkingAcceptanceConfig:
             "velocity_rmse_max",
             "yaw_rate_rmse_max",
             "stance_slip_max",
+            "lateral_tilt_rms_max",
+            "lateral_tilt_peak_max",
             "contact_debounce_seconds",
         ):
             value = getattr(self, name)
@@ -84,6 +88,9 @@ class WalkingDiagnostics:
 
         velocity_rmse = math.sqrt(mean("velocity_error_sq"))
         yaw_rmse = math.sqrt(mean("yaw_rate_error_sq"))
+        tilt = np.array([s["orientation_lateral_tilt"] for s in samples])
+        tilt_rms = float(np.sqrt(np.mean(tilt**2)))
+        tilt_peak = float(np.max(np.abs(tilt)))
         loaded = [s for s in samples if s["left_contact"] or s["right_contact"]]
         slip = (
             float(np.mean([s["stance_slip_speed"] for s in loaded])) if loaded else 0.0
@@ -107,6 +114,8 @@ class WalkingDiagnostics:
             "velocity": velocity_rmse <= cfg.velocity_rmse_max,
             "yaw_rate": yaw_rmse <= cfg.yaw_rate_rmse_max,
             "stance_slip": bool(loaded) and slip <= cfg.stance_slip_max,
+            "lateral_tilt_rms": tilt_rms <= cfg.lateral_tilt_rms_max,
+            "lateral_tilt_peak": tilt_peak <= cfg.lateral_tilt_peak_max,
             "single_support": left + right >= cfg.single_support_min,
             "both_sides": min(left, right) >= cfg.each_side_support_min,
             "alternation": alternations >= cfg.minimum_support_alternations,
@@ -120,6 +129,9 @@ class WalkingDiagnostics:
                 "walking/velocity_rmse": velocity_rmse,
                 "walking/yaw_rate_rmse": yaw_rmse,
                 "walking/stance_slip_speed": slip,
+                "walking/lateral_tilt_rms": tilt_rms,
+                "walking/lateral_tilt_peak": tilt_peak,
+                "walking/lateral_tilt_peak_to_peak": float(np.ptp(tilt)),
                 "walking/single_support": left + right,
                 "walking/left_only_support": left,
                 "walking/right_only_support": right,
@@ -129,6 +141,13 @@ class WalkingDiagnostics:
         return result
 
 
+def _lateral_tilt(up, yaw, forward_axis):
+    """Signed tilt toward the command frame's left axis, in radians."""
+    heading = yaw + math.atan2(forward_axis[1], forward_axis[0])
+    lateral = np.array([-math.sin(heading), math.cos(heading), 0.0])
+    return math.atan2(float(np.dot(up, lateral)), float(up[2]))
+
+
 def native_walking_sample(env, data, command, terminal):
     from bello_mujoco.evaluation.render import mujoco_foot_contact_and_normal_force
 
@@ -136,6 +155,8 @@ def native_walking_sample(env, data, command, terminal):
     frame = model.body(env._reward_frame_link("track_lin_vel_xy")).id
     rotation = data.xmat[frame].reshape(3, 3)
     yaw = math.atan2(rotation[1, 0], rotation[0, 0])
+    orientation_body = model.body(env._reward_link("flat_orientation")).id
+    orientation_up = data.xmat[orientation_body].reshape(3, 3)[:, 2]
     velocity = np.zeros(6)
     mujoco.mj_objectVelocity(
         model,
@@ -193,6 +214,9 @@ def native_walking_sample(env, data, command, terminal):
         "x": data.xpos[frame, 0],
         "y": data.xpos[frame, 1],
         "yaw": yaw,
+        "orientation_lateral_tilt": _lateral_tilt(
+            orientation_up, yaw, env.model.robot.locomotion_forward_axis
+        ),
         "vx": vx,
         "vy": vy,
         "yaw_rate": angular[2],

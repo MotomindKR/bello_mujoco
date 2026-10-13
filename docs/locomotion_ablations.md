@@ -120,6 +120,23 @@ This is a diagnostic run, not a deployment recipe. A passing
 forward rollout still requires standing, lateral, turning, transition and
 multiple-seed evaluation before selecting a controller.
 
+The subsequent direction-tracking run `1a3aqjdw` completed 500M transitions.
+Its final +0.5 m/s rollout survived 10 seconds, with mean forward speed 0.315 m/s,
+velocity RMSE 0.241 m/s and contact slip 0.045 m/s. After the 2-second warmup,
+torso lateral tilt was 15.8 degrees RMS and 47.9 degrees peak-to-peak; waist
+roll moved through 44.5 degrees. The original acceptance gate did not measure
+this sway.
+
+The current pilot (`mini_torso_stability_seed0`) strengthens existing soft
+posture costs: waist-roll joint-pose weight 2 -> 10, torso `flat_orientation`
+-5 -> -10, and torso `ang_vel_xy` -0.15 -> -0.5. Waist yaw and leg posture
+weights retain their previous values. Linear velocity and yaw-rate tracking
+measure the pelvis, with planar velocity expressed in the pelvis yaw frame;
+uprightness and roll/pitch angular-velocity costs measure the torso. Foot-heading
+costs measure the feet. The strict velocity objective, gait conditioning and
+disabled torso commands remain in place. These are trial gains for fresh
+training, not a demonstrated improvement or hard joint limits.
+
 ```bash
 uv run --group training bello-train experiment=bello_mini_contact_pilot
 ```
@@ -134,10 +151,19 @@ window, each leg must have >= 5%, and there must be >= 4 support alternations.
 Contact debounce is 0.04 seconds. These are explicit screening thresholds, not
 proof of hardware safety or general locomotion quality.
 
+The gate also requires lateral tilt RMS <= 10 degrees and peak absolute tilt
+<= 20 degrees after warmup. `lateral_tilt_rms_max` and `lateral_tilt_peak_max`
+are configured in radians. Tilt uses the uprightness reward's configured body
+(torso in these recipes), projected onto the physical lateral axis of the
+velocity-command yaw frame. This respects each robot's forward-axis convention
+and permits moderate balancing motion. It reports RMS, peak absolute tilt and
+peak-to-peak excursion as `walking/lateral_tilt_*`, all in radians.
+
 Acceptance requires a translating command of at least 0.2 m/s and first-failure
 stopping. `walking/accepted` and individual `walking/pass_*` checks are logged
 with the video phase. The adjacent `.walking.jsonl` is uploaded to W&B and stores
 commands, measured velocities, body XY/yaw, sole XYZ, support, forces and slip.
+It also records `orientation_lateral_tilt` in radians.
 The training logger also preserves the `tracking/*` velocity-error diagnostics;
 previous ablations computed these but accidentally dropped them during reduction.
 
