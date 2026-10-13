@@ -102,8 +102,18 @@ motion are also penalized. The pilot retains the velocity-only tracking
 variant's 14-action policy, gait clock, strict tracking objective, seed and
 velocity command distribution; it has no torso commands. These changes target
 sliding and weak support timing and require fresh behavioral evaluation.
+The contact-slip run `cyjap1pn` reduced slip to 0.049 m/s at 252M transitions,
+but retained a backward bias and fell at 7.34 seconds under a +0.5 m/s command.
+Native replay of forward, backward, standing and lateral commands found no
+velocity-frame sign discrepancy (maximum reward/evaluation difference below
+5e-7 m/s). The next pilot triples `moving_lin_vel_xy_error` to -12 and doubles
+`moving_ang_vel_z_error` to -4, retaining the narrow tracking kernels and contact
+costs. This tests whether a stronger error cost overcomes the backward bias;
+it is not a verified gait fix. It starts fresh because rewards changed.
 It trains from scratch for 500,039,680 transitions and records forward
 walking every 2,048 updates and at completion, without the expensive push suite.
+Checkpoints are saved every 512 updates (about 21M transitions). Vast's advance
+stop request also saves a final checkpoint before budget teardown.
 The previous torso-conditioned 100M pilot and its continuations are superseded;
 their 600-input actor checkpoints cannot resume this 570-input actor task.
 This is a diagnostic run, not a deployment recipe. A passing

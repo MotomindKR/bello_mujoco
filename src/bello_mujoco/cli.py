@@ -87,6 +87,7 @@ class VastTrainCommandConfig:
     branch: str | None
     run_name: str | None
     duration_hours: float
+    shutdown_grace_seconds: int
     ssh_timeout_seconds: int
     skip_confirmation: bool
     dry_run: bool
@@ -460,6 +461,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
         preferred_countries=tuple(command.preferred_countries),
         ssh_timeout_seconds=command.ssh_timeout_seconds,
         job_timeout_seconds=round(command.duration_hours * 3600),
+        shutdown_grace_seconds=command.shutdown_grace_seconds,
         progress_timeout_seconds=min(
             1800, max(60, round(command.duration_hours * 3600))
         ),

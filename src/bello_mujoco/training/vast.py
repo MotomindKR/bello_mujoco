@@ -83,6 +83,7 @@ class VastTrainConfig:
     ssh_timeout_seconds: int = 900
     preferred_countries: tuple[str, ...] = ("KR", "JP", "TW", "HK", "SG")
     job_timeout_seconds: int = 43_200
+    shutdown_grace_seconds: int = 0
     progress_timeout_seconds: int = 1_800
     reconcile_retries: int = 3
     offer: VastOfferConfig = field(default_factory=VastOfferConfig)
@@ -199,6 +200,10 @@ def validate_config(config: VastTrainConfig) -> None:
         raise ValueError("readiness timeouts must be positive")
     if config.job_timeout_seconds <= 0 or config.progress_timeout_seconds <= 0:
         raise ValueError("job and progress timeouts must be positive")
+    if not 0 <= config.shutdown_grace_seconds < config.job_timeout_seconds:
+        raise ValueError(
+            "shutdown_grace_seconds must be nonnegative and less than job timeout"
+        )
     if config.progress_timeout_seconds > config.job_timeout_seconds:
         raise ValueError("progress-timeout-seconds must not exceed job-timeout-seconds")
     if config.reconcile_retries <= 0:

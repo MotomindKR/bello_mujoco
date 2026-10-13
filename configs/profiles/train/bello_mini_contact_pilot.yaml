@@ -6,22 +6,24 @@ reward_config:
     stance_slip_speed_scale: 0.1
     swing_clearance_overshoot_weight: 0.5
   weights:
+    moving_lin_vel_xy_error: -12.0
+    moving_ang_vel_z_error: -4.0
     gait_contact: -8.0
     gait_stance_slip: -1.0
     foot_slip: -2.0
     gait_swing_clearance: -2.0
     swing_lateral_velocity: -0.25
 checkpoint_config:
-  every_updates: 2048
-  name: mini_contact_slip_seed0
-  wandb_artifact_name: mini_contact_slip_seed0
+  every_updates: 512
+  name: mini_direction_tracking_seed0
+  wandb_artifact_name: mini_direction_tracking_seed0
 wandb_config:
-  group: mini-contact-slip-20261013
-  run_name: mini_contact_slip_seed0
-  tags: [locomotion, contact-point-slip, velocity-only, strict-tracking, seed0]
+  group: mini-direction-tracking-20261013
+  run_name: mini_direction_tracking_seed0
+  tags: [locomotion, contact-point-slip, velocity-only, direction-tracking, seed0]
 video_config:
   every_updates: 2048
-  filename_prefix: mini_contact_slip_seed0
+  filename_prefix: mini_direction_tracking_seed0
   standing_push_enabled: false
   standing_suite_enabled: false
   walking_acceptance:

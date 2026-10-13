@@ -93,7 +93,13 @@ def test_start_rechecks_uploaded_digest_and_passes_remote_not_local_path(job):
     assert args[-5] == str(job / "motion.npz")
     assert "/local/clip.npz" not in command
     payload = json.dumps(
-        dict(environment={}, script="exit 0", timeout_seconds=5, motion_sha256="0" * 64)
+        dict(
+            environment={},
+            script="exit 0",
+            timeout_seconds=5,
+            shutdown_grace_seconds=0,
+            motion_sha256="0" * 64,
+        )
     )
     result = subprocess.run(args, input=payload, text=True, capture_output=True)
     assert result.returncode != 0
@@ -161,6 +167,7 @@ def test_uploaded_motion_reaches_detached_job_outside_checkout(job, experiment):
             environment={},
             script='cat "$6"',
             timeout_seconds=5,
+            shutdown_grace_seconds=0,
             motion_sha256=hashlib.sha256(content).hexdigest(),
         )
     )

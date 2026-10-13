@@ -32,6 +32,15 @@ the versioned W&B corpus artifact and the exact Hugging Face checkpoint revision
   automatic destruction.
 - `duration_hours` bounds the detached job, including setup and preflight.
   The host enforces it even without the local monitor.
+- `shutdown_grace_seconds` (default 1200) reserves time before that deadline
+  for a clean stop. The host writes `stop_requested` in `BELLO_JOB_DIR`; PPO
+  finishes its current update, skips new evaluation videos, saves the final
+  checkpoint and finishes W&B uploads. W&B records `training/stop_reason` as
+  `budget_deadline`. Zero disables the advance request. The grace must be less
+  than the job duration; the hard timeout still applies if an update, video,
+  save or upload stalls. Choose a grace longer than the slowest update/video
+  plus checkpoint upload time. A budget stop does not imply the target number
+  of transitions was reached.
 - An absolute host deadline also covers readiness, SSH, job time, and teardown
   grace, including a launch that never reaches the job-start step.
 - Deletion uses Vast's instance-scoped credentials and retries until confirmed.

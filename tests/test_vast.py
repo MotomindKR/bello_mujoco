@@ -640,6 +640,7 @@ def test_remote_start_command_detaches_and_records_status(
             "environment": {"DETACHED_TEST_VALUE": "available"},
             "script": script,
             "timeout_seconds": timeout,
+            "shutdown_grace_seconds": 0,
         }
     )
 
@@ -944,3 +945,41 @@ def test_motion_dry_run_never_reads_credentials_or_rents(
     assert str(clip) in output
     assert "no instance was rented" in output
     assert not (tmp_path / ".vast").exists()
+
+
+def test_remote_budget_stop_allows_checkpoint_before_hard_timeout(tmp_path):
+    import os
+
+    (tmp_path / "armed").write_text("100")
+    (tmp_path / "supervisor_pid").write_text(str(os.getpid()))
+    job = tmp_path / "job"
+    command = vast_remote.remote_start_command(
+        str(job), selection(), valid_config(), "test-run"
+    )
+    script = """while [ ! -f "$BELLO_JOB_DIR/stop_requested" ]; do sleep 0.05; done
+printf 'latest valid update' > "$BELLO_JOB_DIR/checkpoint"
+"""
+    payload = json.dumps(
+        dict(environment={}, script=script, timeout_seconds=4, shutdown_grace_seconds=3)
+    )
+    subprocess.run(
+        shlex.split(command), input=payload, text=True, check=True, capture_output=True
+    )
+    deadline = time.monotonic() + 5
+    while not (job / "status").exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert (job / "checkpoint").read_text() == "latest valid update"
+    assert (job / "status").read_text() == "0\n"
+    assert (tmp_path / "status").read_text() == "0\n"
+
+
+@pytest.mark.parametrize("grace", [-1, 60, 61])
+def test_shutdown_grace_must_fit_job_duration(grace):
+    with pytest.raises(ValueError, match="shutdown_grace_seconds"):
+        validate_config(
+            valid_config(
+                job_timeout_seconds=60,
+                progress_timeout_seconds=30,
+                shutdown_grace_seconds=grace,
+            )
+        )

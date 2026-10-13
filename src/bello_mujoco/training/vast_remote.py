@@ -538,10 +538,10 @@ def run_remote_training(
                 "motion_dataset_artifact": config.motion_dataset_artifact or "",
                 "pretrained_revision": config.pretrained_revision or "",
                 "evaluation_clips": json.dumps(config.evaluation_clips),
-                "job_dir": f"/workspace/.bello-vast/{run_name}",
             },
             "script": REMOTE_TRAIN_SCRIPT,
             "timeout_seconds": config.job_timeout_seconds,
+            "shutdown_grace_seconds": config.shutdown_grace_seconds,
             "motion_sha256": digest,
         }
     )
@@ -762,10 +762,10 @@ env.update({
     "MOTION_DATASET_ARTIFACT": str(sonic_transfer.get("motion_dataset_artifact", "")),
     "PRETRAINED_REVISION": str(sonic_transfer.get("pretrained_revision", "")),
     "EVALUATION_CLIPS": str(sonic_transfer.get("evaluation_clips", "[]")),
-    "BELLO_JOB_DIR": str(sonic_transfer.get("job_dir", "")),
 })
 script = payload["script"]
 job_dir = pathlib.Path(sys.argv[1])
+env["BELLO_JOB_DIR"] = str(job_dir)
 supervisor_root = job_dir.parent
 if not (supervisor_root / "armed").is_file():
     raise RuntimeError("Vast host teardown supervisor is not armed")
@@ -801,7 +801,16 @@ script_path="$1"
 status_path="$2"
 supervisor_root="$3"
 timeout_seconds="$4"
-shift 4
+shutdown_grace_seconds="$5"
+shift 5
+if [ "$shutdown_grace_seconds" -gt 0 ]; then
+  (
+    sleep "$((timeout_seconds - shutdown_grace_seconds))"
+    touch "$BELLO_JOB_DIR/stop_requested"
+  ) &
+  stop_timer_pid=$!
+  trap 'kill "$stop_timer_pid" 2>/dev/null || true' EXIT
+fi
 timeout --signal=TERM --kill-after=30s "$timeout_seconds" bash "$script_path" "$@"
 status=$?
 status_tmp="$status_path.$$"
@@ -813,7 +822,7 @@ exit "$status"
 '''
 with log_path.open("ab", buffering=0) as log:
     process = subprocess.Popen(
-        ["bash", "-c", wrapper, "bello-vast-job", str(script_path), str(status_path), str(supervisor_root), str(payload["timeout_seconds"]), *sys.argv[2:]],
+        ["bash", "-c", wrapper, "bello-vast-job", str(script_path), str(status_path), str(supervisor_root), str(payload["timeout_seconds"]), str(payload["shutdown_grace_seconds"]), *sys.argv[2:]],
         stdin=subprocess.DEVNULL,
         stdout=log,
         stderr=subprocess.STDOUT,

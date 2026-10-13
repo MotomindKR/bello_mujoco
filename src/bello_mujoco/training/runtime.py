@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from typing import Protocol, TypeAlias
+import os
+from pathlib import Path
 
 import equinox as eqx
 import jax
@@ -27,6 +29,12 @@ class VideoSchedule(Protocol):
     enabled: bool
     every_updates: int
     render_final: bool
+
+
+def training_stop_requested() -> bool:
+    """The Vast supervisor requests a checkpoint before its hard deadline."""
+    directory = os.environ.get("BELLO_JOB_DIR")
+    return bool(directory) and (Path(directory) / "stop_requested").is_file()
 
 
 def training_updates(
@@ -74,6 +82,15 @@ def training_updates(
             context={"phase": "train"},
         )
         yield runner_state, metrics, env_steps
+        if training_stop_requested():
+            if run is not None:
+                run.summary["training/stop_reason"] = "budget_deadline"
+                run.summary["training/completed_target"] = update >= config.num_updates
+            print(
+                f"Graceful training stop after update {update}; saving final checkpoint.",
+                flush=True,
+            )
+            return
 
 
 def should_render_training_video(
@@ -81,7 +98,7 @@ def should_render_training_video(
     num_updates: int,
     config: VideoSchedule,
 ) -> bool:
-    if not config.enabled or update <= 0:
+    if not config.enabled or update <= 0 or training_stop_requested():
         return False
     if config.render_final and update == num_updates:
         return True
