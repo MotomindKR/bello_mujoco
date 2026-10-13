@@ -88,9 +88,21 @@ non-foot contact and self-collision costs. Native evaluation already used
 `mj_contactForce`. The decoder now agrees with that API for pyramidal and
 elliptic cones; motion contact classification uses the same correction.
 
-`bello_mini_contact_pilot` uses the velocity-only tracking variant's rewards,
-14-action policy, seed and velocity command distribution, with corrected contact
-decoding. It trains from scratch for 500,039,680 transitions and records forward
+The velocity-only 500M run `kd985miw` survived its final forward evaluation and
+alternated support, but failed tracking and slip gates: planar velocity RMSE
+0.203 m/s, yaw-rate RMSE 0.319 rad/s, and contact-point slip 0.341 m/s.
+Its generic slip reward measured foot-body origin velocity, and phase-specific
+stance-slip shaping was disabled.
+
+`bello_mini_contact_pilot` now uses loaded contact-point slip for both slip costs.
+The phase-specific cost applies a Huber loss with a 0.10 m/s speed scale during
+desired stance, with weight -1.0. Generic squared slip has weight -2.0; contact
+timing is -8.0 and swing clearance is -2.0. Clearance overshoot and lateral swing
+motion are also penalized. The pilot retains the velocity-only tracking
+variant's 14-action policy, gait clock, strict tracking objective, seed and
+velocity command distribution; it has no torso commands. These changes target
+sliding and weak support timing and require fresh behavioral evaluation.
+It trains from scratch for 500,039,680 transitions and records forward
 walking every 2,048 updates and at completion, without the expensive push suite.
 The previous torso-conditioned 100M pilot and its continuations are superseded;
 their 600-input actor checkpoints cannot resume this 570-input actor task.

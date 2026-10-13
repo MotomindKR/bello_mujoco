@@ -168,3 +168,12 @@ The diagnostic `bello_mini_contact_pilot` profile and
 The optional walking gate logs pass/fail checks and uploads contact-point slip
 and trajectory traces alongside training videos. It does not automatically
 extend a pilot or select a deployable policy.
+
+`reward_config.weights.foot_slip` penalizes squared per-foot tangential speed at
+loaded foot-terrain contact points, weighted within each foot by normal load.
+Rolling without contact-point sliding and airborne feet produce zero slip.
+`gait_stance_slip` applies a Huber cost to the same speeds during desired stance,
+normalized by positive `reward_config.gait.stance_slip_speed_scale` (m/s).
+This replaces `stance_slip_angular_speed_scale`; angular motion contributes
+through the physical contact-point velocity. Native evaluation and MJX-Warp
+training use the same reward calculation.

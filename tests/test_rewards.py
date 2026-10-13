@@ -299,12 +299,13 @@ def test_shared_heading_and_contact_slip_ignore_gait_and_support_gates(moving):
         desired_foot_contact=jnp.asarray([False, True]),
         foot_heading_error=jnp.asarray([0.3, -0.3]),
         foot_linear_velocity=jnp.asarray([[0.2, 0.0, 3.0], [2.0, 0.0, 0.0]]),
+        foot_contact_slip_speed=jnp.asarray([0.2, 0.0]),
     )
     compute = jax.jit(lambda x: compute_locomotion_reward(config, x)[1])
     terms = compute(inputs)
     assert float(terms["reward/foot_heading"]) == pytest.approx(-0.0018)
     assert float(terms["reward/foot_slip"]) == pytest.approx(-0.0004)
-    airborne = compute(inputs.replace(foot_contact=jnp.zeros(2, dtype=bool)))
+    airborne = compute(inputs.replace(foot_contact_slip_speed=jnp.zeros(2)))
     assert float(airborne["reward/foot_slip"]) == 0
     assert airborne["reward/foot_heading"] == terms["reward/foot_heading"]
 
@@ -436,6 +437,7 @@ def reward_config(
 
 def reward_inputs(**updates) -> RewardInputs:
     inputs = RewardInputs(
+        foot_contact_slip_speed=jnp.zeros(2),
         swing_lateral_velocity=jnp.asarray([0.2, -0.1]),
         normalized_centroidal_momentum=jnp.asarray([0.1, -0.2, 0.3]),
         torso_orientation_error=jnp.asarray(0.0),
@@ -1100,6 +1102,7 @@ def test_stance_slip_and_swing_clearance_follow_desired_foot_phase() -> None:
         gait_active=jnp.asarray(True),
         desired_foot_contact=jnp.asarray([1.0, 0.0]),
         foot_linear_velocity=jnp.asarray([[0.2, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+        foot_contact_slip_speed=jnp.asarray([0.2, 1.0]),
         foot_height=jnp.asarray([0.0, 0.04]),
     )
 
@@ -1109,7 +1112,7 @@ def test_stance_slip_and_swing_clearance_follow_desired_foot_phase() -> None:
         inputs.replace(command=jnp.zeros(3), gait_active=jnp.asarray(False)),
     )
 
-    assert terms["reward/gait_stance_slip"] == pytest.approx(-0.004)
+    assert terms["reward/gait_stance_slip"] == pytest.approx(-0.03)
     assert terms["reward/gait_swing_clearance"] == pytest.approx(-0.0025)
     assert standing["reward/gait_stance_slip"] == pytest.approx(0.0)
     assert standing["reward/gait_swing_clearance"] == pytest.approx(0.0)
@@ -1322,6 +1325,7 @@ def test_full_reward_is_jittable_finite_and_uniformly_timestep_scaled() -> None:
         desired_foot_contact=jnp.asarray([0.0, 1.0]),
         foot_height=jnp.asarray([0.0, 0.0]),
         foot_linear_velocity=jnp.asarray([[0.3, 0.1, 0.2], [0.2, 0.4, 0.1]]),
+        foot_contact_slip_speed=jnp.asarray([0.3, 0.2]),
         foot_angular_speed=jnp.asarray([1.0, 1.0]),
         done=jnp.asarray(True),
     )
@@ -1459,8 +1463,8 @@ def test_reward_validation_rejects_invalid_safety_ranges() -> None:
         RewardConfig(gait=GaitRewardConfig(touchdown_vertical_speed_scale=0.0))
     with pytest.raises(ValueError, match="swing_clearance_target"):
         RewardConfig(gait=GaitRewardConfig(swing_clearance_target=0.0))
-    with pytest.raises(ValueError, match="stance_slip_angular_speed_scale"):
-        RewardConfig(gait=GaitRewardConfig(stance_slip_angular_speed_scale=-1.0))
+    with pytest.raises(ValueError, match="stance_slip_speed_scale"):
+        RewardConfig(gait=GaitRewardConfig(stance_slip_speed_scale=0.0))
 
 
 def test_command_validation_requires_a_separate_moving_range() -> None:

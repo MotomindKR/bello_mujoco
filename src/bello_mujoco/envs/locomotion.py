@@ -28,7 +28,11 @@ from bello_mujoco.envs.geometry import (
     yaw_quat,
     projected_gravity_tilt_angle,
 )
-from bello_mujoco.envs.contacts import contact_forces, debounce_contact
+from bello_mujoco.envs.contacts import (
+    contact_forces,
+    debounce_contact,
+    foot_contact_slip,
+)
 from bello_mujoco.envs.randomization import randomize_spawn, apply_push_batch
 from bello_mujoco.envs.actions import (
     bounded_motor_target,
@@ -1510,6 +1514,14 @@ class BelloLocomotionEnv:
                 ang_vel_xy=ang_vel_xy,
                 projected_gravity=projected_gravity,
                 torso_orientation_error=self._torso_orientation_error(next_state),
+                foot_contact_slip_speed=(
+                    foot_contact_slip(
+                        self.model, self.config.contact, next_state.data, world_id
+                    )
+                    if self.reward_config.enabled("foot_slip")
+                    or self.reward_config.enabled("gait_stance_slip")
+                    else None
+                ),
                 normalized_centroidal_momentum=(
                     self._normalized_centroidal_momentum(next_state)
                     if self.reward_config.enabled("centroidal_momentum_xy")

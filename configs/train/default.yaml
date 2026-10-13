@@ -200,7 +200,7 @@ reward_config:
     foot_heading_deadband: 0.0872664626
     foot_heading_scale: 0.2617993878
   gait:
-    stance_slip_angular_speed_scale: 0.0
+    stance_slip_speed_scale: 0.1
     unbounded_touchdown: false
     swing_clearance_overshoot_weight: 0.0
     swing_lateral_speed_scale: 0.5

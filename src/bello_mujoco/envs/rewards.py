@@ -337,7 +337,7 @@ class GaitRewardConfig:
     unbounded_touchdown: bool = False
     swing_clearance_overshoot_weight: float = 0.0
     swing_lateral_speed_scale: float = 0.5
-    stance_slip_angular_speed_scale: float = 0.0
+    stance_slip_speed_scale: float = 0.1
     swing_clearance_target: float = 0.08
     joint_force_soft_limit_body_weights: float = 0.8
     joint_force_top_k: int = 2
@@ -508,6 +508,7 @@ class RewardInputs:
     motor_continuous_torque: jax.Array | None = None
     swing_lateral_velocity: jax.Array | None = None
     normalized_centroidal_momentum: jax.Array | None = None
+    foot_contact_slip_speed: jax.Array | None = None
 
 
 def positive_huber(value: jax.Array) -> jax.Array:
@@ -748,15 +749,19 @@ def compute_locomotion_reward(
     desired_contact = inputs.desired_foot_contact.astype(jnp.float32)
     gait_contact = gait_active * jnp.mean(jnp.abs(actual_contact - desired_contact))
     foot_speed = jnp.linalg.norm(inputs.foot_linear_velocity[:, :2], axis=1)
-    foot_slip = jnp.sum(actual_contact * foot_speed**2)
-    foot_heading = jnp.mean(inputs.foot_heading_error**2)
-    gait_stance_slip = gait_active * jnp.sum(
-        desired_contact
-        * (
-            foot_speed
-            + config.gait.stance_slip_angular_speed_scale * inputs.foot_angular_speed
+    foot_slip = jnp.asarray(0.0)
+    gait_stance_slip = jnp.asarray(0.0)
+    if config.enabled("foot_slip") or config.enabled("gait_stance_slip"):
+        if inputs.foot_contact_slip_speed is None:
+            raise ValueError("slip rewards require ground-contact point speeds")
+        foot_slip = jnp.sum(inputs.foot_contact_slip_speed**2)
+        gait_stance_slip = gait_active * jnp.sum(
+            desired_contact
+            * positive_huber(
+                inputs.foot_contact_slip_speed / config.gait.stance_slip_speed_scale
+            )
         )
-    )
+    foot_heading = jnp.mean(inputs.foot_heading_error**2)
     desired_swing = 1.0 - desired_contact
     normalized_clearance_shortfall = (
         jnp.maximum(
@@ -941,6 +946,7 @@ def validate_reward_config(config: RewardConfig) -> None:
         "gait.stumble_load_body_weights": config.gait.stumble_load_body_weights,
         "gait.stumble_speed_scale": config.gait.stumble_speed_scale,
         "gait.swing_lateral_speed_scale": config.gait.swing_lateral_speed_scale,
+        "gait.stance_slip_speed_scale": config.gait.stance_slip_speed_scale,
     }.items():
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"{name} must be positive and finite")
@@ -1041,9 +1047,6 @@ def validate_reward_config(config: RewardConfig) -> None:
         )
     nonnegative = {
         "gait.swing_clearance_overshoot_weight": config.gait.swing_clearance_overshoot_weight,
-        "gait.stance_slip_angular_speed_scale": (
-            config.gait.stance_slip_angular_speed_scale
-        ),
         "standing.foot_angular_weight": config.standing.foot_angular_weight,
         "standing.foot_heading_deadband": config.standing.foot_heading_deadband,
         "smoothness.ankle_action_weight": config.smoothness.ankle_action_weight,

@@ -1,17 +1,27 @@
 # Velocity-only tracking with corrected contacts and the deployed posture objective.
 config:
   total_timesteps: 500039680
+reward_config:
+  gait:
+    stance_slip_speed_scale: 0.1
+    swing_clearance_overshoot_weight: 0.5
+  weights:
+    gait_contact: -8.0
+    gait_stance_slip: -1.0
+    foot_slip: -2.0
+    gait_swing_clearance: -2.0
+    swing_lateral_velocity: -0.25
 checkpoint_config:
   every_updates: 2048
-  name: mini_velocity_only_seed0
-  wandb_artifact_name: mini_velocity_only_seed0
+  name: mini_contact_slip_seed0
+  wandb_artifact_name: mini_contact_slip_seed0
 wandb_config:
-  group: mini-velocity-only-20261013
-  run_name: mini_velocity_only_seed0
-  tags: [locomotion, contact-parity, velocity-only, strict-tracking, seed0]
+  group: mini-contact-slip-20261013
+  run_name: mini_contact_slip_seed0
+  tags: [locomotion, contact-point-slip, velocity-only, strict-tracking, seed0]
 video_config:
   every_updates: 2048
-  filename_prefix: mini_velocity_only_seed0
+  filename_prefix: mini_contact_slip_seed0
   standing_push_enabled: false
   standing_suite_enabled: false
   walking_acceptance:

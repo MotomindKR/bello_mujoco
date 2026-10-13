@@ -117,6 +117,39 @@ def contact_forces(model, config, data, world_id: jax.Array | int = 0):
     )
 
 
+def foot_contact_slip(model, config, data, world_id: jax.Array | int = 0):
+    """Per-foot load-weighted tangential speed at loaded ground contacts."""
+    impl = data._impl
+    pairs = jnp.asarray(impl.contact__geom, dtype=jnp.int32)
+    pairs = jnp.clip(pairs, 0, model.mj_model.ngeom - 1)
+    bodies = jnp.asarray(model.geom_body_ids)[pairs]
+    roots = jnp.asarray(model.mj_model.body_rootid)[bodies]
+    twist = data.cvel[bodies]
+    offset = impl.contact__pos[:, None, :] - data.subtree_com[roots]
+    velocity = twist[..., 3:] + jnp.cross(twist[..., :3], offset)
+    relative = velocity[:, 0] - velocity[:, 1]
+    normal = impl.contact__frame[:, 0, :]
+    tangent = relative - jnp.sum(relative * normal, axis=-1)[:, None] * normal
+    speed = jnp.linalg.norm(tangent, axis=-1)
+    force = contact_normal_forces(model.mj_model, impl)
+    active = (
+        (jnp.arange(pairs.shape[0]) < jnp.ravel(impl.nacon)[0])
+        & (impl.contact__worldid == world_id)
+        & (force > config.foot_contact_force_threshold)
+    )
+    membership = foot_terrain_contact_membership(
+        pairs,
+        model.geom_body_ids,
+        model.foot_body_ids,
+        model.foot_geom_ids,
+        model.terrain_geom_ids,
+    )
+    loads = jnp.where(active[:, None] & membership, force[:, None], 0.0)
+    total = jnp.sum(loads, axis=0)
+    weighted = jnp.sum(jnp.where(loads > 0, loads * speed[:, None], 0.0), axis=0)
+    return weighted / jnp.maximum(total, 1e-6)
+
+
 def debounce_contact(
     raw_foot_contact, previous_contact, debounce_time, done, config, timestep
 ):

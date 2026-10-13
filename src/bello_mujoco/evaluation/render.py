@@ -75,6 +75,13 @@ class NativeDataImplementation:
     cfrc_int: jax.Array
     actuator_velocity: jax.Array
     efc__force: jax.Array
+    nacon: jax.Array
+    contact__geom: jax.Array
+    contact__pos: jax.Array
+    contact__frame: jax.Array
+    contact__worldid: jax.Array
+    contact__efc_address: jax.Array
+    contact__dim: jax.Array
 
 
 @dataclass(frozen=True)
@@ -844,6 +851,20 @@ def mujoco_eval_state(
             np.asarray(mj_data.qfrc_constraint, dtype=np.float32).copy()
         ),
         _impl=NativeDataImplementation(
+            nacon=jnp.asarray([mj_data.ncon], dtype=jnp.int32),
+            contact__geom=jnp.asarray(np.asarray(mj_data.contact.geom).copy()),
+            contact__pos=jnp.asarray(
+                np.asarray(mj_data.contact.pos).copy(), dtype=jnp.float32
+            ),
+            contact__frame=jnp.asarray(
+                np.asarray(mj_data.contact.frame).reshape(-1, 3, 3).copy(),
+                dtype=jnp.float32,
+            ),
+            contact__worldid=jnp.zeros(mj_data.ncon, dtype=jnp.int32),
+            contact__efc_address=jnp.asarray(
+                np.asarray(mj_data.contact.efc_address[:, None]).copy()
+            ),
+            contact__dim=jnp.asarray(np.asarray(mj_data.contact.dim).copy()),
             cinert=jnp.asarray(np.asarray(mj_data.cinert, dtype=np.float32).copy()),
             cacc=jnp.asarray(np.asarray(mj_data.cacc, dtype=np.float32).copy()),
             cfrc_int=jnp.asarray(np.asarray(mj_data.cfrc_int, dtype=np.float32).copy()),
