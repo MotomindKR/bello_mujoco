@@ -1,3 +1,8 @@
+## Bello Mini Console 0.3.7
+
+- Use the SDL3 gamepad binding, which preserves SDL's trigger values from 0 released to 1 fully pressed. Remove the controller-specific trigger direction setting introduced in 0.3.6.
+- Keep the runner input protocol at version 4. No runner update is required.
+
 ## Bello Mini Console 0.3.6
 
 - Add an explicit `triggerAxisDirection` setting for controllers whose LT/RT axes decrease when pressed. Set it to `negative` on the Xbox Ally controller to prevent released triggers from starting an operator abort; the default `positive` preserves existing controller behavior.

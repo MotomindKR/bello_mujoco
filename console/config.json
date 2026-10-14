@@ -7,7 +7,6 @@
   "trackedFrame": "pelvis_link",
   "controllerIndex": 0,
   "controllerStyle": "xbox",
-  "triggerAxisDirection": "positive",
   "theme": "system",
   "deadzone": 0.12,
   "freshnessMs": 250

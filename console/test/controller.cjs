@@ -15,7 +15,7 @@ function device() {
     buttons: {
       back: true,
       start: true,
-      a: true,
+      south: true,
       rightShoulder: true,
       dpadUp: true,
       dpadDown: true,
@@ -39,12 +39,12 @@ for (const property of ["axes", "buttons"]) {
       },
     });
     assert.deepEqual(
-      sampleController(active, 0.12, "positive"),
-      sampleController(null, 0.12, "positive"),
+      sampleController(active, 0.12),
+      sampleController(null, 0.12),
     );
     assert.equal(active, null);
     active = device();
-    const reconnected = sampleController(active, 0.12, "positive");
+    const reconnected = sampleController(active, 0.12);
     assert.equal(reconnected.connected, true);
     assert.equal(reconnected.name, "Test controller");
     assert.equal(reconnected.forward, 1);
@@ -61,8 +61,8 @@ test("closed controllers are never polled", () => {
     },
   };
   assert.deepEqual(
-    sampleController(closed, 0.12, "positive"),
-    sampleController(null, 0.12, "positive"),
+    sampleController(closed, 0.12),
+    sampleController(null, 0.12),
   );
 });
 
@@ -74,7 +74,7 @@ test("shoulder buttons are reported independently for tab navigation", () => {
     [true, true],
   ]) {
     controller.buttons = { leftShoulder, rightShoulder };
-    const sample = sampleController(controller, 0.12, "positive");
+    const sample = sampleController(controller, 0.12);
     assert.equal(sample.l1, leftShoulder);
     assert.equal(sample.r1, rightShoulder);
   }
@@ -89,28 +89,26 @@ test("trigger axes are reported independently above half travel", () => {
     [1, 1, true, true],
   ]) {
     controller.axes = { leftTrigger, rightTrigger };
-    const sample = sampleController(controller, 0.12, "positive");
+    const sample = sampleController(controller, 0.12);
     assert.equal(sample.l2, l2);
     assert.equal(sample.r2, r2);
   }
-  assert.equal(sampleController(null, 0.12, "positive").l2, false);
-  assert.equal(sampleController(null, 0.12, "positive").r2, false);
+  assert.equal(sampleController(null, 0.12).l2, false);
+  assert.equal(sampleController(null, 0.12).r2, false);
 });
 
-test("inverted Xbox trigger readings require a physical press to abort", () => {
+test("normalized SDL gamepad triggers abort only when both are pressed", () => {
   const controller = device();
   controller.buttons = {};
-  const released = 0.5000076295109483;
-  const pressed = -0.49999237048905165;
   const map = createOperatorMapper();
   for (const [leftTrigger, rightTrigger, l2, r2, abort] of [
-    [released, released, false, false, false],
-    [pressed, released, true, false, false],
-    [released, pressed, false, true, false],
-    [pressed, pressed, true, true, true],
+    [0, 0, false, false, false],
+    [1, 0, true, false, false],
+    [0, 1, false, true, false],
+    [1, 1, true, true, true],
   ]) {
     controller.axes = { leftTrigger, rightTrigger };
-    const sample = sampleController(controller, 0.12, "negative");
+    const sample = sampleController(controller, 0.12);
     assert.equal(sample.l2, l2);
     assert.equal(sample.r2, r2);
     assert.equal(map(sample, { mode: "MODE_STAND" }).abort, abort);
@@ -125,22 +123,28 @@ test("horizontal D-pad buttons are sampled independently", () => {
     [true, true],
   ]) {
     controller.buttons = { dpadLeft, dpadRight };
-    const sample = sampleController(controller, 0.12, "positive");
+    const sample = sampleController(controller, 0.12);
     assert.equal(sample.dpadLeft, dpadLeft);
     assert.equal(sample.dpadRight, dpadRight);
     assert.equal(sample.dpadUp, false);
     assert.equal(sample.dpadDown, false);
   }
 });
-test("Y is sampled for the console tracking toggle", () => {
+test("SDL gamepad south and north buttons map to A and Y", () => {
   const controller = device();
-  controller.buttons.y = true;
-  assert.equal(sampleController(controller, 0.12, "positive").y, true);
-  assert.equal(sampleController(null, 0.12, "positive").y, false);
+  for (const [south, north] of [
+    [true, false],
+    [false, true],
+  ]) {
+    controller.buttons = { south, north };
+    const sample = sampleController(controller, 0.12);
+    assert.equal(sample.a, south);
+    assert.equal(sample.y, north);
+  }
 });
 test("operator mapping streams movement and semantic holds", () => {
   const map = createOperatorMapper();
-  const raw = sampleController(null, 0.12, "positive");
+  const raw = sampleController(null, 0.12);
   const status = { mode: "MODE_STAND", selected: "Motion" };
   assert.deepEqual(
     {
@@ -164,7 +168,7 @@ test("operator mapping streams movement and semantic holds", () => {
 });
 test("selection edges and held controls remain distinct", () => {
   const map = createOperatorMapper();
-  const raw = { ...sampleController(null, 0.12, "positive"), connected: true };
+  const raw = { ...sampleController(null, 0.12), connected: true };
   const status = { mode: "MODE_STAND", selected: "Locomotion" };
   const first = map({ ...raw, dpadRight: true, a: true }, status);
   assert.equal(first.modeStep, 1);
@@ -198,7 +202,7 @@ test("bumper presses cycle tabs once per click", () => {
 test("Barbell maps confirmations to the current generation and Y to cancellation", () => {
   const map = createOperatorMapper();
   const sample = {
-    ...sampleController(null, 0.12, "positive"),
+    ...sampleController(null, 0.12),
     connected: true,
     a: true,
   };
