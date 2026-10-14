@@ -59,8 +59,8 @@ in `package.json` and `package-lock.json`, update `RELEASE_NOTES.md`, commit the
 release, then tag it:
 
 ```bash
-git tag console-v0.3.5
-git push origin console-v0.3.5
+git tag console-v0.3.6
+git push origin console-v0.3.6
 ```
 
 The tag must exactly match `console-v` plus the package version. After all three

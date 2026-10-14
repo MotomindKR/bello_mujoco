@@ -1,3 +1,8 @@
+## Bello Mini Console 0.3.6
+
+- Add an explicit `triggerAxisDirection` setting for controllers whose LT/RT axes decrease when pressed. Set it to `negative` on the Xbox Ally controller to prevent released triggers from starting an operator abort; the default `positive` preserves existing controller behavior.
+- Keep the runner input protocol at version 4. No runner update is required for this controller fix.
+
 ## Bello Mini Console 0.3.5
 
 - Add the configured Barbell mode: standing v2, arm reach, grab, load transfer, motion playback, supported handoff, and arm retraction.

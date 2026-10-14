@@ -1,4 +1,4 @@
-function sampleController(device, deadzone) {
+function sampleController(device, deadzone, triggerAxisDirection) {
   const disconnected = {
     connected: false,
     name: "",
@@ -32,6 +32,9 @@ function sampleController(device, deadzone) {
       (1 - deadzone)
     );
   };
+  const triggerPressed = (value) =>
+    Number.isFinite(value) &&
+    (triggerAxisDirection === "positive" ? value > 0.5 : value < 0);
   return {
     connected: true,
     name: device.device.name || "Controller",
@@ -44,8 +47,8 @@ function sampleController(device, deadzone) {
     y: Boolean(buttons.y),
     l1: Boolean(buttons.leftShoulder),
     r1: Boolean(buttons.rightShoulder),
-    l2: Number.isFinite(axes.leftTrigger) && axes.leftTrigger > 0.5,
-    r2: Number.isFinite(axes.rightTrigger) && axes.rightTrigger > 0.5,
+    l2: triggerPressed(axes.leftTrigger),
+    r2: triggerPressed(axes.rightTrigger),
     dpadUp: Boolean(buttons.dpadUp),
     dpadDown: Boolean(buttons.dpadDown),
     dpadLeft: Boolean(buttons.dpadLeft),

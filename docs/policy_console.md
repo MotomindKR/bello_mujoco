@@ -156,10 +156,17 @@ is `xbox`. Prompt variants and both 3D views follow the selected appearance.
 The Settings appearance selector saves `theme: light | dark | system` without
 reconnecting services or ending the operator session.
 
-For an explicit configuration file, copy `console/config.json` to a local file and set `BELLO_CONSOLE_CONFIG` to its
-absolute path to change endpoints, controller index, deadzone, pose frames or
-display freshness. This file takes precedence over per-user settings, and UI
-changes are saved to it. Endpoints use `HOST:PORT`, without an HTTP prefix. The runner
+`triggerAxisDirection` controls how LT/RT values are interpreted. The default
+`positive` treats values above 0.5 as pressed. Set it to `negative` on a
+controller whose released triggers report about +0.5 and whose fully pressed
+triggers report about -0.5; values below 0 then count as pressed. This setting
+is independent of `controllerStyle` and is configured in `config.json`.
+
+For an explicit configuration file, copy `console/config.json` to a local file
+and set `BELLO_CONSOLE_CONFIG` to its absolute path to change endpoints,
+controller index, deadzone, pose frames, display freshness, or trigger axis
+direction. This file takes precedence over per-user settings, and UI changes
+are saved to it. Endpoints use `HOST:PORT`, without an HTTP prefix. The runner
 listener uses `control.operator_listen`. Only one operator stream can own the
 session; a second receives `RESOURCE_EXHAUSTED` and shows **In use** in the
 Runner indicator. Hover or focus it for the explanation. The server acquires

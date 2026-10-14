@@ -77,6 +77,7 @@ if (
   !Number.isFinite(config.deadzone) ||
   config.deadzone < 0 ||
   config.deadzone >= 1 ||
+  !["positive", "negative"].includes(config.triggerAxisDirection) ||
   !Number.isFinite(config.freshnessMs) ||
   config.freshnessMs <= 0 ||
   !config.referenceFrame ||
@@ -293,7 +294,11 @@ function startController() {
 }
 function controllerSample() {
   sequence += 1n;
-  const sample = sampleController(controller, config.deadzone);
+  const sample = sampleController(
+    controller,
+    config.deadzone,
+    config.triggerAxisDirection,
+  );
   return {
     sequence: sequence.toString(),
     sampleMonotonicNs: process.hrtime.bigint().toString(),
@@ -818,7 +823,14 @@ app.whenReady().then(() => {
   window.on("blur", cancelAbortHold);
   every(() => {
     const sample = installingUpdate
-      ? { ...controllerSample(), ...sampleController(null, config.deadzone) }
+      ? {
+          ...controllerSample(),
+          ...sampleController(
+            null,
+            config.deadzone,
+            config.triggerAxisDirection,
+          ),
+        }
       : controllerSample();
     const tabDirection = tabNavigation(sample);
     if (tabDirection && window && !window.isDestroyed())
