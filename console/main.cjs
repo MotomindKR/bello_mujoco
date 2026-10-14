@@ -77,7 +77,6 @@ if (
   !Number.isFinite(config.deadzone) ||
   config.deadzone < 0 ||
   config.deadzone >= 1 ||
-  !["positive", "negative"].includes(config.triggerAxisDirection) ||
   !Number.isFinite(config.freshnessMs) ||
   config.freshnessMs <= 0 ||
   !config.referenceFrame ||
@@ -249,9 +248,7 @@ function startController() {
     const scan = () => {
       try {
         if (controller && !controller.closed) return;
-        const device = sdl.controller.devices.filter((item) => item.mapping)[
-          config.controllerIndex
-        ];
+        const device = sdl.gamepad.devices[config.controllerIndex];
         if (!device) {
           controller = null;
           snapshot.controller = {
@@ -261,7 +258,7 @@ function startController() {
           };
           return;
         }
-        const opened = sdl.controller.openDevice(device);
+        const opened = sdl.gamepad.openDevice(device);
         controller = opened;
         snapshot.controller = {
           connected: true,
@@ -294,11 +291,7 @@ function startController() {
 }
 function controllerSample() {
   sequence += 1n;
-  const sample = sampleController(
-    controller,
-    config.deadzone,
-    config.triggerAxisDirection,
-  );
+  const sample = sampleController(controller, config.deadzone);
   return {
     sequence: sequence.toString(),
     sampleMonotonicNs: process.hrtime.bigint().toString(),
@@ -825,11 +818,7 @@ app.whenReady().then(() => {
     const sample = installingUpdate
       ? {
           ...controllerSample(),
-          ...sampleController(
-            null,
-            config.deadzone,
-            config.triggerAxisDirection,
-          ),
+          ...sampleController(null, config.deadzone),
         }
       : controllerSample();
     const tabDirection = tabNavigation(sample);

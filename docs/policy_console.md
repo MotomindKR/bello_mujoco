@@ -153,19 +153,15 @@ locally under CC0. It does not remap SDL input: confirm is Cross on PlayStation
 and A on Xbox/Switch; abort is L2 + R2, LT + RT, or ZL + ZR respectively.
 `controllerStyle` accepts `playstation`, `xbox`, or `switch`; the shipped default
 is `xbox`. Prompt variants and both 3D views follow the selected appearance.
+Electron's main process polls SDL3's mapped gamepad API for input. The console
+treats normalized trigger values above 0.5 as pressed.
 The Settings appearance selector saves `theme: light | dark | system` without
 reconnecting services or ending the operator session.
 
-`triggerAxisDirection` controls how LT/RT values are interpreted. The default
-`positive` treats values above 0.5 as pressed. Set it to `negative` on a
-controller whose released triggers report about +0.5 and whose fully pressed
-triggers report about -0.5; values below 0 then count as pressed. This setting
-is independent of `controllerStyle` and is configured in `config.json`.
-
 For an explicit configuration file, copy `console/config.json` to a local file
 and set `BELLO_CONSOLE_CONFIG` to its absolute path to change endpoints,
-controller index, deadzone, pose frames, display freshness, or trigger axis
-direction. This file takes precedence over per-user settings, and UI changes
+controller index, deadzone, pose frames, or display freshness. This file takes
+precedence over per-user settings, and UI changes
 are saved to it. Endpoints use `HOST:PORT`, without an HTTP prefix. The runner
 listener uses `control.operator_listen`. Only one operator stream can own the
 session; a second receives `RESOURCE_EXHAUSTED` and shows **In use** in the

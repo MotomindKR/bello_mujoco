@@ -16,7 +16,7 @@ npm test
 ## Code organization
 
 - `main.cjs` owns service connections, controller polling, and the validated IPC boundary.
-- `controller.cjs` maps local gamepad bindings into semantic operator actions.
+- `controller.cjs` maps SDL3 gamepad input into semantic operator actions.
   On Linux, Switch controllers use SDL's event-device driver so ZL/ZR report
   press and release reliably.
 - `snapshot.cjs` derives display freshness from immutable copies of received packets.
@@ -59,8 +59,8 @@ in `package.json` and `package-lock.json`, update `RELEASE_NOTES.md`, commit the
 release, then tag it:
 
 ```bash
-git tag console-v0.3.6
-git push origin console-v0.3.6
+git tag console-v0.3.7
+git push origin console-v0.3.7
 ```
 
 The tag must exactly match `console-v` plus the package version. After all three

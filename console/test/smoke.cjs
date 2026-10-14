@@ -1895,8 +1895,8 @@ async function serve(service, implementation) {
         .createRequire(app.getAppPath() + "/main.cjs");
       const sdl = load("@kmamal/sdl");
       return {
-        loaded: Boolean(sdl.controller),
-        devices: sdl.controller.devices.length,
+        loaded: Boolean(sdl.gamepad),
+        devices: sdl.gamepad.devices.length,
       };
     });
     assert.equal(native.loaded, true);
