@@ -5,22 +5,11 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 
-from bello_mujoco.envs.actions import limit_motor_step, project_motor_target
-
-
-def logical_action_scale(model, actuator_config) -> jax.Array:
-    """Reproduce SONIC's 0.25 * effort / stiffness scaling by joint name."""
-
-    configured = actuator_config.by_name
-    scales = []
-    for name in model.actuator_joint_names:
-        joint = configured[name]
-        if joint.effort_limit is None or joint.gains[0] <= 0.0:
-            raise ValueError(
-                f"SONIC action mapping requires effort and stiffness for {name!r}"
-            )
-        scales.append(0.25 * joint.effort_limit / joint.gains[0])
-    return jnp.asarray(scales, dtype=jnp.float32)
+from bello_mujoco.envs.actions import (
+    limit_motor_step,
+    logical_action_scale,
+    project_motor_target,
+)
 
 
 def sonic_action_target(

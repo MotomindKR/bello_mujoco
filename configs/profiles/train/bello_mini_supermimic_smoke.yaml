@@ -1,0 +1,26 @@
+# A short compiled-loop check, not a learning-performance recipe.
+config:
+  total_timesteps: 4096
+  num_envs: 16
+  replay_steps: 128
+  max_replay_bytes: 268435456
+  warmup_steps: 16
+  model_warmup_updates: 5
+  window_length: 4
+  model_batches: 1
+  model_batch_size: 32
+  imagined_batch_size: 16
+  imagination_horizon: 4
+  critic_epochs: 1
+  critic_minibatches: 2
+networks:
+  dynamics_widths: [64, 64]
+  actor_widths: [64, 32]
+  critic_widths: [32, 16]
+  latent_size: 8
+checkpoint_config:
+  name: bello_mini_supermimic_smoke_seed${config.seed}
+  every_updates: null
+wandb_config:
+  group: bello-mini-supermimic-smoke
+  run_name: bello_mini_supermimic_smoke_seed${config.seed}

@@ -638,6 +638,7 @@ def test_remote_start_command_detaches_and_records_status(
     payload = json.dumps(
         {
             "environment": {"DETACHED_TEST_VALUE": "available"},
+            "dataset_training": {},
             "script": script,
             "timeout_seconds": timeout,
         }

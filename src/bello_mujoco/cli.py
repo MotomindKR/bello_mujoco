@@ -20,11 +20,13 @@ from bello_mujoco.configuration import (
     ExperimentName,
     is_motion_experiment,
     is_sonic_transfer_experiment,
+    is_supermimic_experiment,
     command_config,
     config_path,
     locomotion_training_profile,
     motion_training_profile,
     sonic_transfer_training_profile,
+    supermimic_training_profile,
 )
 
 if TYPE_CHECKING:
@@ -56,7 +58,7 @@ class TrainCommandConfig:
 
 @dataclass(frozen=True)
 class EvalCommandConfig:
-    task: Literal["locomotion", "motion", "sonic_transfer"]
+    task: Literal["locomotion", "motion", "sonic_transfer", "supermimic"]
     checkpoint_path: Path | None
     motion_dataset: Path | None
     evaluation_clips: tuple[str, ...]
@@ -141,6 +143,46 @@ def _train_hydra(config: DictConfig) -> None:
         raise ValueError(
             "resume uses the checkpoint's bundled motion; do not set motion_path"
         )
+    if is_supermimic_experiment(command.experiment):
+        _reject_explicit_fields(
+            (
+                "motion_path",
+                "pretrained_checkpoint",
+                "pretrained_revision",
+                "end_effector_payload_mass_kg",
+                "video_enabled",
+            ),
+            context="SuperMimic training",
+        )
+        from bello_mujoco.training.supermimic import run_training
+
+        run_config = supermimic_training_profile(
+            _required_path(command.motion_dataset, "motion_dataset"),
+            name=command.experiment,
+        )
+        learning = _ppo_overrides(run_config.config, command)
+        run_config = replace(
+            run_config,
+            config=learning,
+            dataset=replace(
+                run_config.dataset,
+                artifact=command.motion_dataset_artifact,
+                evaluation_clips=command.evaluation_clips,
+            ),
+            environment=replace(
+                run_config.environment,
+                randomization=replace(
+                    run_config.environment.randomization, seed=learning.seed
+                ),
+            ),
+            warp=_warp_overrides(run_config.warp, command),
+            checkpoint_config=_checkpoint_overrides(
+                run_config.checkpoint_config, command
+            ),
+            wandb_config=_wandb_overrides(run_config.wandb_config, command),
+        )
+        run_training(run_config)
+        return
     if is_sonic_transfer_experiment(command.experiment):
         dataset = _required_path(command.motion_dataset, "motion_dataset")
         pretrained = _required_path(
@@ -297,6 +339,30 @@ def _export_hydra(config: DictConfig) -> None:
 def _eval_hydra(config: DictConfig) -> None:
     command = command_config(EvalCommandConfig, config)
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
+    if command.task == "supermimic":
+        _reject_explicit_fields(
+            (
+                "command",
+                "torso_command",
+                "stochastic_actions",
+                "action_seed",
+                "gamepad_enabled",
+                "end_effector_payload_mass_kg",
+            ),
+            context="task=supermimic",
+        )
+        from bello_mujoco.evaluation.supermimic import render_supermimic_checkpoint
+
+        stats = render_supermimic_checkpoint(
+            checkpoint,
+            _required_path(command.motion_dataset, "motion_dataset"),
+            command.evaluation_clips,
+            command.output_path,
+            steps=command.steps,
+            stop_on_terminal=command.stop_on_done,
+        )
+        print(json.dumps(stats, indent=2, sort_keys=True))
+        return
     if command.task == "sonic_transfer":
         _reject_explicit_fields(
             (
@@ -403,6 +469,13 @@ def _vast_train_hydra(config: DictConfig) -> None:
             raise ValueError(
                 "motion_path must select a local .npz clip for Vast motion training"
             )
+    elif is_supermimic_experiment(command.experiment):
+        if command.motion_dataset_artifact is None:
+            raise ValueError("motion_dataset_artifact is required for Vast SuperMimic")
+        _reject_explicit_fields(
+            ("motion_path", "pretrained_revision", "end_effector_payload_mass_kg"),
+            context="Vast SuperMimic training",
+        )
     elif is_sonic_transfer_experiment(command.experiment):
         if command.motion_dataset_artifact is None:
             raise ValueError(

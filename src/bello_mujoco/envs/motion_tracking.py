@@ -720,6 +720,8 @@ class BelloMotionTrackingEnv:
         state: MotionTrackingState,
         action: jax.Array,
         rng: jax.Array | None = None,
+        *,
+        reset: bool = True,
     ) -> tuple[
         MotionTrackingState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]
     ]:
@@ -780,6 +782,8 @@ class BelloMotionTrackingEnv:
         stepped_obs = self.observation_batch(stepped, obs_rng)
         info = self._info(stepped, stepped_obs, reward_info, done_flags)
         info["push/applied"] = push_applied.astype(jnp.float32)
+        if not reset:
+            return stepped, stepped_obs, reward, done, info
         reset_state, reset_obs = self.reset_batch(
             batch_size, reset_rng, sampling_failure_ema=sampling_failure_ema
         )

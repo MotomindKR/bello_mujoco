@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from native_runtime import floating_joint_physics
 
-from bello_mujoco.deployment import sonic_actor_onnx, sonic_deployment_bundle
+from bello_mujoco.deployment import sonic_actor_onnx, multi_clip_deployment_bundle
 from bello_mujoco.motion.clip import MotionClip, save_motion_clip
 from bello_mujoco.sonic.embodiment import (
     G1_JOINT_NAMES,
@@ -164,7 +164,7 @@ def test_rust_sonic_matches_jax_across_history_reset_and_clip_boundary(
         "dataset_artifact": "entity/project/dataset:v0",
     }
     graph = sonic_actor_onnx(policy, model=model, env=env, metadata=metadata)
-    bundle = sonic_deployment_bundle(
+    bundle = multi_clip_deployment_bundle(
         graph.SerializeToString(),
         # Deliberately differs from policy order: the checkpoint still consumes
         # raw MuJoCo reference coordinates, while feedback uses named joints.

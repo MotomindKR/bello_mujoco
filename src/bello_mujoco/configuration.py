@@ -31,6 +31,8 @@ ExperimentName = Literal[
     "motion",
     "bello_mini_motion",
     "bello_mini_sonic_transfer",
+    "bello_mini_supermimic",
+    "bello_mini_supermimic_smoke",
 ]
 CONFIG_ROOT = project_data_path("configs")
 _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
@@ -41,6 +43,10 @@ _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
     "motion": Path("profiles/train/motion.yaml"),
     "bello_mini_motion": Path("profiles/train/bello_mini_motion.yaml"),
     "bello_mini_sonic_transfer": Path("profiles/train/bello_mini_sonic_transfer.yaml"),
+    "bello_mini_supermimic": Path("profiles/train/bello_mini_supermimic.yaml"),
+    "bello_mini_supermimic_smoke": Path(
+        "profiles/train/bello_mini_supermimic_smoke.yaml"
+    ),
 }
 
 
@@ -50,6 +56,10 @@ def is_motion_experiment(name: ExperimentName) -> bool:
 
 def is_sonic_transfer_experiment(name: ExperimentName) -> bool:
     return name == "bello_mini_sonic_transfer"
+
+
+def is_supermimic_experiment(name: ExperimentName) -> bool:
+    return name in ("bello_mini_supermimic", "bello_mini_supermimic_smoke")
 
 
 def dataclass_from_dict(
@@ -300,6 +310,27 @@ def sonic_transfer_training_profile(
 
 def profile_config_relative_path(name: ExperimentName) -> Path:
     return Path("configs") / _PROFILE_CONFIG_PATHS[name]
+
+
+def supermimic_training_profile(
+    dataset_directory: Path, *, name="bello_mini_supermimic"
+):
+    from bello_mujoco.training.supermimic import SuperMimicTrainingRunConfig
+
+    if not is_supermimic_experiment(name):
+        raise ValueError(f"{name!r} is not a SuperMimic experiment")
+    mini = OmegaConf.load(_config("profiles/train/bello_mini_motion.yaml"))
+    base = OmegaConf.create({"asset_config": mini.asset_config})
+    merged = OmegaConf.merge(
+        base, OmegaConf.load(_config("profiles/train/bello_mini_supermimic.yaml"))
+    )
+    if name == "bello_mini_supermimic_smoke":
+        merged = OmegaConf.merge(
+            merged,
+            OmegaConf.load(_config("profiles/train/bello_mini_supermimic_smoke.yaml")),
+        )
+    merged.dataset.directory = str(dataset_directory.expanduser().resolve())
+    return structured_config(SuperMimicTrainingRunConfig, merged)
 
 
 def _config(relative_path: str) -> Path:

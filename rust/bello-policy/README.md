@@ -24,6 +24,14 @@ For motion bundles, `--check` also loads the clip and initializes the physics
 model without connecting to hardware. Motion observations resolve joints by
 name: policy/actuator order need not match MuJoCo's internal qpos/qvel order.
 On Linux, `nix develop .#rust-runtime` supplies the native libraries.
+
+SuperMimic bundles use `--clip NAME --check` or `--clip NAME --telemetry`.
+The codec consumes named Mini joints, oldest-first proprioceptive history, and
+reference-only future goals. Telemetry additionally requires the previous
+accepted motor target for coupled projection/slew parity and a discrete control
+clock. It converts the bundled IMU transform and uses column-packed 6D rotations.
+`--hardware-config` is rejected for this task pending commissioning.
+See [the telemetry and export contract](../../docs/supermimic.md#evaluate-and-export).
 Outside that shell, set `MUJOCO_DYNAMIC_LINK_DIR` to the directory containing
 the MuJoCo 3.12.0 shared library for the build, and make that library available
 to the platform loader at runtime (`LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`).

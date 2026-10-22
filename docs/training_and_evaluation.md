@@ -16,6 +16,11 @@ Training uses MJX-Warp on CUDA. Run `experiment=smoke` before a long job.
 Recipes own PPO, commands, rewards, randomization, checkpoints, W&B, and videos.
 See [configuration locations](training_configuration.md).
 
+Mini SuperMimic uses a separate model-based trainer, full-state replay
+checkpoints, held-out multi-clip evaluation, and actor-only export. Start with
+`bello_mini_supermimic_smoke`; see [the SuperMimic workflow](supermimic.md).
+The PPO video and single-motion checkpoint rules below apply to the PPO tasks.
+
 Checkpoint metadata records the root Git commit. Training/resume/evaluation
 require that exact clean checkout with pinned dependencies. For an older run,
 create a separate worktree at its recorded commit and install that revision's

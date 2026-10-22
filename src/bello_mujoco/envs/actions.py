@@ -1,7 +1,29 @@
-"""Policy targets in physical actuator coordinates, shared by both tasks."""
+"""Shared logical action scaling, motor projection, and command slew limits."""
+
+import math
 
 import jax
 import jax.numpy as jnp
+
+
+def logical_action_scale(model, actuator_config) -> jax.Array:
+    """Scale logical joint proposals using their configured effort and stiffness."""
+    scales = []
+    for name in model.actuator_joint_names:
+        joint = actuator_config.by_name[name]
+        effort, stiffness = joint.effort_limit, joint.gains[0]
+        if (
+            effort is None
+            or not math.isfinite(effort)
+            or effort <= 0
+            or not math.isfinite(stiffness)
+            or stiffness <= 0
+        ):
+            raise ValueError(
+                f"action mapping requires positive effort and stiffness for {name!r}"
+            )
+        scales.append(0.25 * effort / stiffness)
+    return jnp.asarray(scales, dtype=jnp.float32)
 
 
 def project_motor_target(target, reference, limits):

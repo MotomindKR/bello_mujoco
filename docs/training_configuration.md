@@ -43,7 +43,8 @@ without making that margin a physical stop or a target clamp.
 
 Maintained experiments: `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
 `bello_mini_standing`, `motion`, `bello_mini_motion`, and
-`bello_mini_sonic_transfer`. The CLI accepts its public top-level overrides;
+`bello_mini_sonic_transfer`, `bello_mini_supermimic`, and
+`bello_mini_supermimic_smoke`. The CLI accepts its public top-level overrides;
 edit the selected recipe for nested reward/physics changes. SONIC's corpus,
 immutable artifact identity, held-out clip names, pretrained checkpoint, and
 immutable source revision are explicit inputs; its fixed LoRA/PPO recipe lives
@@ -53,6 +54,33 @@ learning rate, sample-standard-deviation advantages and the reference critic's
 normalizer. Shared PPO defaults for other profiles are unchanged. Its corpus
 array-size guard and separate actor/critic optimization controls are documented
 in [SONIC transfer](sonic_transfer.md).
+
+## SuperMimic configuration
+
+The [full profile](../configs/profiles/train/bello_mini_supermimic.yaml) owns
+`config` (learning/replay), `environment` (control, feedback, and randomization),
+`observations`, `tracking`, `networks`, `sampling`, `dataset`, `warp`,
+`checkpoint_config`, and `wandb_config`. These decode into
+`SuperMimicTrainingRunConfig`; there is no PPO config in this task. The profile
+inherits only the Mini motion asset configuration, preserving its tuned gains
+and joint target restrictions. The
+[smoke profile](../configs/profiles/train/bello_mini_supermimic_smoke.yaml)
+overrides model widths and learning sizes for a compiled-loop check.
+
+Control timing has one owner, `environment.control`: physics timestep,
+decimation, command delay, and action clipping. Observation delay is sampled in
+control steps; command delay must be a whole physics substep within one control
+period. Supported physical randomization is friction, calibration, and torso
+COM, all explicitly supplied to the world model and privileged critic. Unknown
+dynamics randomization and unobserved pushes fail setup.
+
+`config.replay_steps` counts vector steps, so storage scales with `num_envs`.
+`config.max_replay_bytes` checks the actual transition footprint before replay
+allocation; `dataset.max_array_bytes` separately limits uncompressed reference
+arrays. Neither estimates all training VRAM. Warmup must hold a model window,
+and the training budget must permit actor updates after dynamics warmup.
+The complete observation, reward, normalization, sampling, resume, and export
+semantics are documented in [SuperMimic](supermimic.md).
 
 ```bash
 uv run bello-train --cfg job

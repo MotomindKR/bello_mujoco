@@ -1,6 +1,6 @@
 # bello_mujoco
 
-MJX-Warp PPO training, native MuJoCo evaluation, and hardware integration for
+MJX-Warp PPO and model-based training, native MuJoCo evaluation, and hardware integration for
 Bello and Bello Mini. Single-motion tracking uses BeyondMimic. Canonical URDFs,
 meshes, motor descriptions, and hardware clients come from pinned `deps/bello-stack`.
 
@@ -27,7 +27,10 @@ Linux; use Lima on macOS.
 
 Maintained experiments are `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
 `bello_mini_standing`, `motion`, `bello_mini_motion`, and
-`bello_mini_sonic_transfer`. SONIC transfer is an explicit pretrained-only
+`bello_mini_sonic_transfer`, `bello_mini_supermimic`, and
+`bello_mini_supermimic_smoke`. SuperMimic trains Mini from scratch with learned
+dynamics and imagined policy gradients; see [the workflow](docs/supermimic.md).
+SONIC transfer is an explicit pretrained-only
 workflow; see [SONIC transfer](docs/sonic_transfer.md). Values live in YAML, not documentation tables.
 Checkpoints require their exact clean root Git commit and pinned dependencies.
 Historical policies run from historical checkouts, without compatibility fallbacks.
@@ -50,6 +53,7 @@ not installed. Update the bridge before its consumers; see [PICO startup](docs/p
 
 - [Commands](docs/commands.md) and [configuration locations](docs/training_configuration.md)
 - [Training, evaluation, and checkpoints](docs/training_and_evaluation.md)
+- [SuperMimic for Bello Mini](docs/supermimic.md)
 - [Robot descriptions](docs/robot_assets.md) and [motion tracking](docs/motion_tracking.md)
 - [Bello Mini policy console](docs/policy_console.md)
 - [Barbell mode](docs/barbell_mode.md)

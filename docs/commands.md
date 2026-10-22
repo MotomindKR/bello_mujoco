@@ -6,7 +6,7 @@ The YAML files linked below are the authoritative field/default reference.
 
 | Command | Configuration | Purpose |
 | --- | --- | --- |
-| `bello-train` | [train.yaml](../configs/commands/train.yaml) | Locomotion, BeyondMimic, or SONIC LoRA PPO |
+| `bello-train` | [train.yaml](../configs/commands/train.yaml) | PPO tasks or Mini SuperMimic model-based learning |
 | `bello-eval` | [eval.yaml](../configs/commands/eval.yaml) | Linux CPU evaluation |
 | `bello-export-policy` | [export.yaml](../configs/commands/export.yaml) | ONNX/reference deployment bundle |
 | `bello-vast-train` | [vast_train.yaml](../configs/commands/vast_train.yaml) | Bounded remote training |
@@ -29,6 +29,8 @@ uv run --group training --group reference-validation bello-train \
   motion_dataset_artifact=ENTITY/PROJECT/mini-sonic:v0 \
   pretrained_checkpoint=/data/sonic_release/last.pt pretrained_revision=COMMIT
 uv run --group training bello-train experiment=bello_mini_locomotion resume_path=checkpoints/RUN
+uv run --group training bello-train experiment=bello_mini_supermimic_smoke \
+  motion_dataset=/data/mini evaluation_clips='[held_out_walk]' wandb_enabled=false
 uv run bello-eval task=locomotion checkpoint_path=checkpoints/RUN gamepad_enabled=false steps=1500
 uv run bello-eval task=motion checkpoint_path=checkpoints/RUN output_path=outputs/motion.mp4
 uv run bello-eval task=sonic_transfer checkpoint_path=checkpoints/RUN \
@@ -48,6 +50,15 @@ video failures are fatal; use `video_enabled=false` to disable videos explicitly
 SONIC evaluation accepts only clip names recorded in the checkpoint's held-out
 split. SONIC export bundles only `reference_clips`; see
 [SONIC transfer](sonic_transfer.md).
+
+SuperMimic selects `experiment=bello_mini_supermimic` or its small
+`bello_mini_supermimic_smoke` profile. It accepts `motion_dataset`, optional
+immutable `motion_dataset_artifact`, and `evaluation_clips`, with no pretrained
+inputs. `motion_path`, payload overrides, pretrained fields, and `video_enabled`
+are rejected. Training video is a separate evaluation command. Use
+`task=supermimic` with an explicit output directory and held-out clip names for
+evaluation; export requires `motion_dataset` and `reference_clips`. See the
+[complete commands and input layout](supermimic.md).
 
 For a freshly trained torso-conditioned locomotion policy, add
 `torso_command=[0.1,-0.15,0.2]` to `bello-eval`. Values are roll/pitch/yaw radians;

@@ -211,6 +211,10 @@ def export_checkpoint(config: ExportConfig) -> Path:
     )
     if raw_metadata.get("task") == "sonic_transfer":
         return export_sonic_checkpoint(config, output)
+    if raw_metadata.get("task") == "supermimic":
+        from bello_mujoco.supermimic.deployment import export_supermimic_checkpoint
+
+        return export_supermimic_checkpoint(config, output)
     git_commit = capture_repository_commit()
     saved = load_checkpoint_metadata(config.checkpoint_path)
     if saved.task == "locomotion":
@@ -295,7 +299,7 @@ def sonic_actor_onnx(policy, *, model, env, metadata: dict):
     import onnx
     from onnx import TensorProto, helper, numpy_helper
 
-    from bello_mujoco.sonic.control import logical_action_scale
+    from bello_mujoco.envs.actions import logical_action_scale
 
     nodes, constants = [], []
 
@@ -612,7 +616,7 @@ def export_sonic_checkpoint(config: ExportConfig, output: Path) -> Path:
         env=env,
         metadata=metadata,
     )
-    content = sonic_deployment_bundle(
+    content = multi_clip_deployment_bundle(
         graph.SerializeToString(),
         physics=physics_mjcf(model),
         clips=tuple(zip(config.reference_clips, paths, strict=True)),
@@ -622,7 +626,7 @@ def export_sonic_checkpoint(config: ExportConfig, output: Path) -> Path:
     return output
 
 
-def sonic_deployment_bundle(
+def multi_clip_deployment_bundle(
     policy: bytes,
     *,
     physics: bytes,

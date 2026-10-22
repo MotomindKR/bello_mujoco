@@ -162,7 +162,7 @@ def test_sonic_bundle_contains_only_selected_named_clips(tmp_path):
     walk.write_bytes(b"walk")
     dance.write_bytes(b"dance")
 
-    content = deployment.sonic_deployment_bundle(
+    content = deployment.multi_clip_deployment_bundle(
         b"actor",
         physics=b"physics",
         clips=(("walk", walk), ("dance", dance)),

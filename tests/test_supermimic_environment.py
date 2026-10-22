@@ -1,0 +1,444 @@
+from dataclasses import replace
+
+import jax
+import jax.numpy as jnp
+import mujoco
+import numpy as np
+import pytest
+
+from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig, MotionResetConfig
+from bello_mujoco.envs.supermimic import BelloSuperMimicEnv
+from bello_mujoco.evaluation.motion import (
+    make_native_motion_step,
+    reset_native_motion_rollout,
+)
+from bello_mujoco.models.compiler import ModelConfig
+from bello_mujoco.motion.clip import MotionClip, save_motion_clip
+from bello_mujoco.robot_tasks import motion_task_definition
+from bello_mujoco.sim import load_model
+from bello_mujoco.supermimic.kinematics import Kinematics
+from bello_mujoco.supermimic.mdp import imagined_return, lambda_returns
+from bello_mujoco.supermimic.sampling import ReturnSampler
+
+
+def test_imagined_return_and_lambda_targets_handle_failure_and_bootstrap():
+    rewards = jnp.array([1.0, 2.0, 3.0])
+    dones = jnp.array([0.0, 1.0, 0.0])
+    values = jnp.array([10.0, 20.0, 30.0, 40.0])
+    assert imagined_return(rewards, dones, 40.0, 0.5) == 2.0
+    np.testing.assert_allclose(
+        lambda_returns(rewards, dones, values, 0.5, 1.0), [2.0, 2.0, 23.0]
+    )
+    np.testing.assert_allclose(
+        lambda_returns(rewards, dones, values, 0.5, 0.0), [11.0, 2.0, 23.0]
+    )
+    soft = jnp.array([0.1, 0.2, 0.3])
+    expected = (
+        1.0 + 0.5 * 0.9 * 2.0 + 0.25 * 0.9 * 0.8 * 3.0 + 0.125 * 0.9 * 0.8 * 0.7 * 40.0
+    )
+    assert float(imagined_return(rewards, soft, 40.0, 0.5)) == pytest.approx(expected)
+    derivative = jax.grad(lambda final: imagined_return(rewards, soft, final, 0.5))(
+        40.0
+    )
+    assert derivative == pytest.approx(0.125 * 0.9 * 0.8 * 0.7)
+
+
+def test_return_sampler_excludes_held_out_bins_and_preserves_final_bin_width():
+    from types import SimpleNamespace
+
+    bank = SimpleNamespace(
+        fps=50.0,
+        time_offsets=np.array([0, 64]),
+        lengths=np.array([63, 70]),
+        split_ids=np.array([0, 1]),
+    )
+    sampler = ReturnSampler.from_bank(bank)
+    np.testing.assert_array_equal(sampler.starts, [0, 50, 64, 114])
+    np.testing.assert_array_equal(sampler.lengths, [50, 12, 50, 19])
+    state = sampler.initial_state()
+    state = sampler.update(
+        state,
+        jnp.array([0, 1, 1]),
+        jnp.array([10.0, 0.0, 2.0]),
+        jnp.array([True, True, True]),
+        10.0,
+    )
+    probabilities = sampler.probabilities(state, 10.0)
+    assert probabilities[1] > probabilities[0]
+    np.testing.assert_array_equal(probabilities[2:], [0.0, 0.0])
+    draws = jax.jit(jax.vmap(lambda k: sampler.sample(k, probabilities)))(
+        jax.random.split(jax.random.key(0), 500)
+    )
+    assert draws.max() <= 61 and draws.min() >= 0
+    assert np.unique(np.asarray(draws)[np.asarray(draws) >= 50]).size == 12
+
+
+@pytest.fixture
+def mini_corpus(tmp_path):
+    asset = ModelConfig(asset="bello_mini", actuator_mode="policy")
+    model = load_model(asset, load_mjx=False)
+    bodies = motion_task_definition("bello_mini").beyondmimic_tracked_body_names
+    kin = Kinematics.from_model(
+        model.mj_model, model.actuator_joint_names, bodies, root_body_name="pelvis_link"
+    )
+    physical = kin.from_qpos(
+        jnp.asarray(model.default_qpos), jnp.asarray(model.default_qvel)
+    )
+    poses = kin.forward(physical)
+    frames = 12
+
+    def repeat(value):
+        return np.repeat(np.asarray(value)[None], frames, axis=0)
+
+    clip = MotionClip(
+        50.0,
+        model.actuator_joint_names,
+        bodies,
+        repeat(model.default_qpos),
+        repeat(model.default_qvel),
+        repeat(poses.position),
+        repeat(poses.quaternion),
+        repeat(poses.linear_velocity),
+        repeat(poses.angular_velocity),
+        np.zeros((frames, 2)),
+    )
+    path = tmp_path / "standing.npz"
+    save_motion_clip(path, clip)
+    return asset, path
+
+
+@pytest.mark.integration
+def test_native_mini_collection_uses_new_codec_reward_and_terminal_successors(
+    mini_corpus,
+):
+    asset, path = mini_corpus
+    config = MotionTrackingEnvConfig(reset=MotionResetConfig(random_start=False))
+    env = BelloSuperMimicEnv.load_corpus(asset, config, (path,), load_mjx=False)
+    data = mujoco.MjData(env.model.mj_model)
+    state, sample = reset_native_motion_rollout(env, data)
+    assert sample.shape == (env.codec.sample_size,)
+    critic = env.critic_observation(state)
+    assert critic.shape == (env.critic_observation_size,)
+    assert np.isfinite(critic).all()
+    assert env.goal(state.reference_time).shape == (env.codec.goal_size,)
+    step = make_native_motion_step(env)
+    first = state
+    for _ in range(3):
+        state, sample, reward, done, info = step(
+            data, state, jnp.zeros(env.action_size)
+        )
+        assert np.isfinite(reward) and np.isfinite(sample).all()
+    assert state.reference_time == 3.0
+    expected_reward, _ = env.mdp.reward(
+        env.physical_state(state),
+        env.reference_state(
+            state.reference_time, state.alignment_xy, state.alignment_yaw
+        ),
+        state.last_action,
+        first.last_action,
+    )
+    np.testing.assert_allclose(expected_reward, reward, atol=1e-6)
+    terminal = replace(
+        env.physical_state(state),
+        position=env.physical_state(state).position + jnp.array([0.0, 0.0, 1.0]),
+    )
+    assert env.mdp.terminal(
+        terminal,
+        env.reference_state(
+            state.reference_time, state.alignment_xy, state.alignment_yaw
+        ),
+    )
+
+
+@pytest.mark.integration
+def test_cuda_mini_compiled_collect_fit_and_improve(mini_corpus):
+    if not any(device.platform == "gpu" for device in jax.devices()):
+        pytest.skip("requires CUDA/MJX-Warp")
+    from bello_mujoco.configuration import supermimic_training_profile
+    from bello_mujoco.supermimic.collection import initialize_collection
+    from bello_mujoco.supermimic.optimization import initialize_learner
+    from bello_mujoco.training.supermimic import (
+        compile_updates,
+        load_environment,
+        require_valid_metrics,
+    )
+
+    _, path = mini_corpus
+    run = supermimic_training_profile(path.parent, name="bello_mini_supermimic_smoke")
+    cfg = replace(
+        run.config,
+        num_envs=2,
+        warmup_steps=4,
+        window_length=2,
+        model_batch_size=4,
+        imagined_batch_size=2,
+        imagination_horizon=2,
+    )
+    run = replace(run, config=cfg)
+    env = load_environment(run, load_mjx=True)
+    learner = initialize_learner(
+        env, cfg, run.networks, env.action_size + 5, jax.random.PRNGKey(0)
+    )
+    runner = initialize_collection(env, cfg, learner, jax.random.PRNGKey(1))
+    collect, fit, improve = compile_updates(env, cfg)
+    for _ in range(8):
+        runner, metrics = collect(runner, env.reference_bank)
+        require_valid_metrics(metrics)
+    runner, metrics = fit(runner)
+    require_valid_metrics(metrics)
+    runner, metrics = improve(runner, env.reference_bank)
+    require_valid_metrics(metrics)
+    assert int(runner.actor_updates) == 1
+
+
+@pytest.mark.integration
+def test_mini_checkpoint_actor_restores_exports_and_evaluates_held_out_clip(
+    mini_corpus, monkeypatch, tmp_path, request
+):
+    from types import SimpleNamespace
+    from zipfile import ZipFile
+    import json
+    import os
+    import shutil
+    import subprocess
+    import onnx
+    from onnx.reference import ReferenceEvaluator
+
+    from bello_mujoco.configuration import supermimic_training_profile
+    from bello_mujoco.deployment import ExportConfig, export_checkpoint
+    from bello_mujoco.evaluation import supermimic as evaluation
+    from bello_mujoco.sonic.corpus import prepare_corpus, verify_corpus
+    from bello_mujoco.supermimic import checkpoint, deployment
+    from bello_mujoco.supermimic.collection import CollectorState, RunnerState
+    from bello_mujoco.supermimic.optimization import initialize_learner
+    from bello_mujoco.training.supermimic import load_environment
+
+    _, path = mini_corpus
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    shutil.copyfile(path, corpus / path.name)
+    path = corpus / path.name
+    held_out = path.with_stem("held_out")
+    shutil.copyfile(path, held_out)
+    prepare_corpus(
+        path.parent,
+        {
+            path.stem: {"split": "train", "source_sequence": "training"},
+            held_out.stem: {"split": "evaluation", "source_sequence": "evaluation"},
+        },
+    )
+    run = supermimic_training_profile(path.parent, name="bello_mini_supermimic_smoke")
+    run = replace(run, dataset=replace(run.dataset, evaluation_clips=(held_out.stem,)))
+    env = load_environment(run, load_mjx=False)
+    learner = initialize_learner(
+        env, run.config, run.networks, env.action_size + 5, jax.random.PRNGKey(1)
+    )
+    # Actor-only consumers do not need a simulator/replay allocation.
+    collector = CollectorState(*([jnp.zeros(1)] * 6), vector_steps=jnp.asarray(4))
+    runner = RunnerState(
+        learner,
+        collector,
+        None,
+        env.sampler.initial_state(),
+        jax.random.PRNGKey(2),
+        jnp.asarray(1),
+        jnp.asarray(1),
+    )
+    source_checks = []
+    commit = "0" * 40
+    native = None
+    if os.environ.get("BELLO_POLICY_BIN"):
+        native, _, source = request.getfixturevalue("rust_policy")
+        commit = subprocess.check_output(
+            ["git", "-C", str(source), "rev-parse", "HEAD"],
+            text=True,
+        ).strip()
+    monkeypatch.setattr(checkpoint, "require_repository_commit", source_checks.append)
+    monkeypatch.setattr(deployment, "require_repository_commit", source_checks.append)
+    monkeypatch.setattr(deployment, "capture_repository_commit", lambda: commit)
+    saved = tmp_path / "checkpoint"
+    checkpoint.save_checkpoint(
+        saved,
+        runner,
+        run,
+        git_commit=commit,
+        dataset_digest=verify_corpus(path.parent, (held_out.stem,)),
+    )
+    bundle = export_checkpoint(
+        ExportConfig(
+            checkpoint_path=saved,
+            output_path=tmp_path / "policy.zip",
+            motion_dataset=path.parent,
+            reference_clips=(held_out.stem,),
+        )
+    )
+    if native is not None:
+        result = native(content=bundle.read_bytes(), check=True, clip=held_out.stem)
+        assert result.returncode == 0, result.stderr
+    restored, actor, obs_norm, goal_norm, _ = checkpoint.load_actor(
+        saved, dataset_directory=path.parent, reference_clips=(held_out.stem,)
+    )
+    data = mujoco.MjData(restored.model.mj_model)
+    state, observation = reset_native_motion_rollout(restored, data)
+    history = restored.codec.initial_history(observation)
+    goal = restored.goal(state.reference_time)
+    with ZipFile(bundle) as archive:
+        assert set(archive.namelist()) == {
+            "policy.onnx",
+            "physics.xml",
+            "clips.json",
+            "clips/held_out.npz",
+        }
+        graph = onnx.load_from_string(archive.read("policy.onnx"))
+        mujoco.MjModel.from_xml_string(archive.read("physics.xml").decode())
+    output = ReferenceEvaluator(graph).run(
+        None,
+        {
+            "observation": np.asarray(jnp.concatenate((history.reshape(-1), goal)))[
+                None
+            ],
+        },
+    )
+    np.testing.assert_allclose(
+        output[0][0], actor(history, goal, obs_norm, goal_norm), atol=2e-6
+    )
+    closed = []
+    monkeypatch.setattr(
+        evaluation,
+        "open_rollout_video_resources",
+        lambda *a, **k: (
+            SimpleNamespace(close=lambda: closed.append(True)),
+            None,
+            None,
+            None,
+        ),
+    )
+    monkeypatch.setattr(evaluation, "write_video_frame", lambda *a, **k: None)
+    report = evaluation.render_supermimic_checkpoint(
+        saved,
+        path.parent,
+        (held_out.stem,),
+        tmp_path / "evaluation",
+        steps=3,
+    )
+    row = report["clips"][held_out.stem]
+    assert closed == [True]
+    assert row["rendered_steps"] == 3
+    assert row["normalized_return"] == pytest.approx(
+        row["episode_return"] / (5 * restored.control_timestep * row["planned_steps"])
+    )
+    assert json.loads((tmp_path / "evaluation/summary.json").read_text()) == report
+    assert source_checks and all(value == commit for value in source_checks)
+    with pytest.raises(ValueError, match="held-out"):
+        evaluation.render_supermimic_checkpoint(
+            saved,
+            path.parent,
+            (path.stem,),
+            tmp_path / "invalid",
+        )
+
+
+@pytest.mark.integration
+def test_environment_rejects_unrecorded_dynamics_randomization(mini_corpus):
+    asset, path = mini_corpus
+    config = MotionTrackingEnvConfig()
+    config = replace(
+        config,
+        model_randomization=replace(
+            config.model_randomization, enabled=True, joint_origin_range=(-0.01, 0.01)
+        ),
+    )
+    with pytest.raises(ValueError, match="context currently supports"):
+        BelloSuperMimicEnv.load_corpus(asset, config, (path,), load_mjx=False)
+
+
+@pytest.mark.integration
+def test_mini_imagination_updates_actor_and_critic_without_updating_dynamics(
+    mini_corpus,
+):
+    import equinox as eqx
+    from bello_mujoco.supermimic.config import LearningConfig, ObservationConfig
+    from bello_mujoco.supermimic.model import NetworkConfig
+    from bello_mujoco.supermimic.optimization import (
+        initialize_learner,
+        update_actor_critic,
+    )
+    from bello_mujoco.supermimic.replay import ReplayStart, Transition
+    from bello_mujoco.supermimic.state import PhysicalState
+
+    asset, path = mini_corpus
+    env = BelloSuperMimicEnv.load_corpus(
+        asset,
+        MotionTrackingEnvConfig(),
+        (path,),
+        observation_config=ObservationConfig(history_frames=2, future_frames=2),
+        load_mjx=False,
+    )
+    data = mujoco.MjData(env.model.mj_model)
+    state, observation = reset_native_motion_rollout(env, data)
+    physical = env.physical_state(state)
+    context = env.context(state, 0)
+    transition = Transition(
+        state=physical,
+        successor=physical,
+        filtered_feedback=PhysicalState.unflatten(
+            state.actor_feedback_history[0], env.action_size
+        ),
+        previous_motor=state.data.ctrl,
+        motor=state.data.ctrl,
+        action=state.last_action,
+        previous_action=state.last_action,
+        observation=observation,
+        context=context,
+        alignment_xy=state.alignment_xy,
+        alignment_yaw=state.alignment_yaw,
+        reference_frame=state.reference_time,
+        clip_id=jnp.asarray(0),
+        episode_id=jnp.asarray(0),
+        episode_step=jnp.asarray(0),
+        remaining_steps=jnp.asarray(11),
+        reward=jnp.asarray(0.0),
+        terminal=jnp.asarray(False),
+        timeout=jnp.asarray(False),
+    )
+    starts = ReplayStart(
+        jax.tree.map(lambda x: x[None], transition),
+        env.codec.initial_history(observation)[None],
+        PhysicalState.unflatten(state.actor_feedback_history[None], env.action_size),
+        jnp.asarray(True),
+    )
+    config = LearningConfig(
+        num_envs=1,
+        total_timesteps=100,
+        replay_steps=8,
+        warmup_steps=2,
+        window_length=2,
+        model_batches=1,
+        model_batch_size=2,
+        imagined_batch_size=1,
+        imagination_horizon=2,
+        critic_epochs=1,
+        critic_minibatches=1,
+    )
+    networks = NetworkConfig(
+        dynamics_widths=(8,), actor_widths=(8,), critic_widths=(8,), latent_size=4
+    )
+    learner = initialize_learner(
+        env, config, networks, context.size, jax.random.key(12)
+    )
+    update = eqx.filter_jit(
+        lambda value, start, key: update_actor_critic(value, start, env, config, 0, key)
+    )
+    updated, metrics = update(learner, starts, jax.random.key(13))
+    assert metrics["invalid/actor_critic_update"] == 0
+    assert all(np.isfinite(x).all() for x in jax.tree.leaves(metrics))
+    assert any(
+        not np.array_equal(a, b)
+        for a, b in zip(
+            jax.tree.leaves(updated.actor), jax.tree.leaves(learner.actor), strict=True
+        )
+    )
+    for a, b in zip(
+        jax.tree.leaves(updated.model), jax.tree.leaves(learner.model), strict=True
+    ):
+        np.testing.assert_array_equal(a, b)

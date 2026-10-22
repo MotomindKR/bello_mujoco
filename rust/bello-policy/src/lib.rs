@@ -26,6 +26,7 @@ pub mod power;
 pub mod reference;
 pub mod sonic;
 pub mod startup;
+pub mod supermimic;
 pub mod target_limits;
 pub mod torso;
 pub mod tracking;
@@ -52,7 +53,7 @@ impl PolicyMetadata {
         ensure!(
             matches!(
                 self.task.as_str(),
-                "locomotion" | "motion_tracking" | "sonic_transfer"
+                "locomotion" | "motion_tracking" | "sonic_transfer" | "supermimic"
             ),
             "unknown policy task"
         );
@@ -250,7 +251,7 @@ impl Policy {
             None
         };
         let mut reference_clips = BTreeMap::new();
-        if metadata.task == "sonic_transfer" {
+        if matches!(metadata.task.as_str(), "sonic_transfer" | "supermimic") {
             #[derive(Deserialize)]
             struct Manifest {
                 clips: Vec<String>,
@@ -258,7 +259,7 @@ impl Policy {
             let manifest: Manifest = serde_json::from_reader(
                 archive
                     .by_name("clips.json")
-                    .context("SONIC deployment bundle is missing clips.json")?,
+                    .context("multi-clip deployment bundle is missing clips.json")?,
             )?;
             ensure!(
                 !manifest.clips.is_empty()
@@ -270,13 +271,13 @@ impl Policy {
                                 == Some(name)
                     })
                     && manifest.clips.iter().collect::<BTreeSet<_>>().len() == manifest.clips.len(),
-                "invalid SONIC clip manifest"
+                "invalid reference clip manifest"
             );
             for name in manifest.clips {
                 let mut bytes = Vec::new();
                 archive
                     .by_name(&format!("clips/{name}.npz"))
-                    .with_context(|| format!("SONIC bundle is missing clip {name}"))?
+                    .with_context(|| format!("bundle is missing reference clip {name}"))?
                     .read_to_end(&mut bytes)?;
                 reference_clips.insert(name, bytes);
             }

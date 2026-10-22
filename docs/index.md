@@ -7,6 +7,8 @@
 - [BeyondMimic tracking](motion_tracking.md)
 - [Bello Mini policy console](policy_console.md)
 - [SONIC LoRA transfer](sonic_transfer.md)
+- [SuperMimic learning and deployment](supermimic.md)
+- [SuperMimic port plan for Bello Mini](supermimic_plan.md)
 - [Hardware](hardware.md), [emulator](emulator.md), and [Lima](macos_vcan.md)
 - [PICO tracking and hand-control startup](pico_startup.md)
 - [Hand control API and ownership](hand_control.md)
@@ -24,6 +26,7 @@
 | `models/` | Thin canonical URDF-to-MuJoCo compilation |
 | `envs/` | Task stepping, shared scalar/batch transitions, observations, gait, geometry, rewards, diagnostics |
 | `training/` | PPO optimization/rollouts, explicit environment contract, normalization, metrics, shared host update loop, checkpoints and remote training |
+| `supermimic/` | Analytic kinematics, learned dynamics, replay, imagined actor/critic updates, return curriculum, checkpoints, and export |
 | `evaluation/` | Native CPU rollouts, shared video resources, isolated software workers |
 | `hardware/` | Direct XRoboToolkit body and FastSAM retargeting, reference producers, pose diagnostics, and independent hands |
 | `motion/` | Reference clip loading and runtime reconstruction |

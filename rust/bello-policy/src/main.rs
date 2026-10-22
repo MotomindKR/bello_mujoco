@@ -14,7 +14,7 @@ struct Args {
     policy: PathBuf,
     #[arg(long)]
     source: PathBuf,
-    /// Bundled prerecorded SONIC clip to select before runtime initialization.
+    /// Bundled prerecorded reference clip to select before runtime initialization.
     #[arg(long)]
     clip: Option<String>,
     #[arg(long)]
@@ -41,7 +41,13 @@ async fn main() -> Result<()> {
         policy.metadata.coordinates.len()
     );
     if args.check {
-        if policy.metadata.task == "motion_tracking" {
+        if policy.metadata.task == "supermimic" {
+            let clip = args
+                .clip
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("SuperMimic check requires --clip"))?;
+            bello_policy::supermimic::SuperMimic::new(policy, clip)?;
+        } else if policy.metadata.task == "motion_tracking" {
             bello_policy::motion::Motion::new(policy)?;
         } else if policy.metadata.task == "sonic_transfer" {
             let clip = args
@@ -53,6 +59,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     if let Some(path) = args.hardware_config {
+        anyhow::ensure!(
+            policy.metadata.task != "supermimic",
+            "SuperMimic hardware control requires trained-policy commissioning; use --check or --telemetry"
+        );
         use bello_hardware_client::raw::proto::GroupState;
         use bello_policy::hardware::{Config, Hardware};
 
@@ -214,7 +224,18 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     if args.telemetry {
-        if policy.metadata.task == "motion_tracking" {
+        if policy.metadata.task == "supermimic" {
+            let clip = args
+                .clip
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("SuperMimic telemetry requires --clip"))?;
+            let mut runtime = bello_policy::supermimic::SuperMimic::new(policy, clip)?;
+            for line in io::stdin().lock().lines() {
+                let sample = serde_json::from_str(&line?)?;
+                println!("{}", serde_json::to_string(&runtime.step(&sample)?)?);
+            }
+            return Ok(());
+        } else if policy.metadata.task == "motion_tracking" {
             let mut runtime = bello_policy::motion::Motion::new(policy)?;
             for line in io::stdin().lock().lines() {
                 let sample = serde_json::from_str(&line?)?;

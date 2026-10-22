@@ -1,0 +1,99 @@
+# Asset gains come from the canonical bello_mini_motion profile.
+dataset:
+  directory: motions/local
+  evaluation_clips: []
+  artifact: null
+  max_array_bytes: 4294967296
+config:
+  seed: 0
+  total_timesteps: 3276800000
+  num_envs: 4096
+  replay_steps: 1000
+  max_replay_bytes: 17179869184
+  warmup_steps: 64
+  model_warmup_updates: 500
+  window_length: 8
+  model_batches: 10
+  model_batch_size: 2048
+  imagined_batch_size: 4096
+  imagination_horizon: 32
+  critic_epochs: 5
+  critic_minibatches: 4
+  update_to_data_ratio: 0.4
+  action_noise: 0.1
+  learning_rate: 0.0002
+  learning_rate_decay_updates: 250000
+  learning_rate_final_fraction: 0.03
+  gamma: 0.99
+  gae_lambda: 0.95
+  max_gradient_norm: 1.0
+  actor_gradient_clip: 0.1
+environment:
+  control:
+    physics_timestep: 0.005
+    decimation: 4
+    command_delay_seconds: 0.01
+    action_clip: 20.0
+  filtering:
+    enabled: true
+    cutoff_hz: 10.0
+    noise_before_filter: true
+    residual_noise_scale: 0.1
+  latency:
+    enabled: true
+    delay_steps: [0, 2]
+  noise:
+    enabled: true
+    joint_position: 0.01
+    joint_velocity: 0.5
+    base_angular_velocity: 0.2
+    anchor_orientation: 0.05
+  randomization:
+    enabled: true
+    seed: ${config.seed}
+    joint_angle_offset_range: [-0.02, 0.02]
+    torso_com_offset_range: [-0.01, 0.01]
+    friction_range: [0.6, 1.2]
+observations:
+  history_frames: 10
+  future_frames: 10
+  reference_orientation: true
+  goal_joint_velocity_scale: 0.1
+tracking:
+  body_position_sigma: 0.3
+  body_orientation_sigma: 0.4
+  body_linear_velocity_sigma: 1.0
+  body_angular_velocity_sigma: 3.141592653589793
+  root_position_sigma: 0.3
+  root_orientation_sigma: 0.4
+  action_rate_weight: -0.1
+  joint_limit_weight: -2.0
+  soft_limit_factor: 0.9
+  height_error: 0.25
+  tilt_error: 0.8
+  soft_height_width: 0.02
+  soft_tilt_width: 0.04
+networks:
+  dynamics_widths: [2048, 2048, 2048]
+  actor_widths: [2048, 1024, 512, 256]
+  critic_widths: [256, 128]
+  latent_size: 32
+sampling:
+  uniform_weight: 0.5
+  difficult_weight: 0.4
+  past_weight: 0.1
+  temperature: 25.0
+  return_alpha: 0.1
+checkpoint_config:
+  enabled: true
+  directory: checkpoints
+  name: bello_mini_supermimic_seed${config.seed}
+  every_updates: 1000
+  resume_path: null
+  upload_wandb_artifact: true
+  wandb_artifact_name: null
+  wandb_artifact_type: checkpoint
+wandb_config:
+  group: bello-mini-supermimic
+  run_name: bello_mini_supermimic_seed${config.seed}
+  tags: [bello-mini, supermimic, world-model]

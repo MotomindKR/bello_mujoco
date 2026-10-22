@@ -22,6 +22,7 @@ from bello_mujoco.configuration import (
     ExperimentName,
     is_motion_experiment,
     is_sonic_transfer_experiment,
+    is_supermimic_experiment,
     profile_config_relative_path,
 )
 from bello_mujoco.training.vast_provider import (
@@ -139,7 +140,9 @@ def validate_config(config: VastTrainConfig) -> None:
             raise ValueError(
                 "--end-effector-payload-mass-kg must be finite and nonnegative"
             )
-    elif is_sonic_transfer_experiment(config.experiment):
+    elif is_sonic_transfer_experiment(config.experiment) or is_supermimic_experiment(
+        config.experiment
+    ):
         if (
             not config.motion_dataset_artifact
             or re.fullmatch(
@@ -150,7 +153,7 @@ def validate_config(config: VastTrainConfig) -> None:
             raise ValueError(
                 "--motion-dataset-artifact must include an immutable version or digest"
             )
-        if (
+        if is_sonic_transfer_experiment(config.experiment) and (
             config.pretrained_revision is None
             or re.fullmatch(r"[0-9a-f]{40}", config.pretrained_revision) is None
         ):
@@ -158,7 +161,16 @@ def validate_config(config: VastTrainConfig) -> None:
                 "--pretrained-revision must be a 40-character lowercase commit"
             )
         if config.motion_path is not None:
-            raise ValueError("SONIC uses a dataset artifact, not --motion-path")
+            raise ValueError("dataset experiments do not accept --motion-path")
+        if config.end_effector_payload_mass_kg is not None:
+            raise ValueError("dataset experiments do not accept a payload mass")
+        if (
+            is_supermimic_experiment(config.experiment)
+            and config.pretrained_revision is not None
+        ):
+            raise ValueError(
+                "SuperMimic trains from scratch; omit --pretrained-revision"
+            )
     elif (
         config.motion_path is not None
         or config.motion_dataset_artifact is not None
@@ -289,7 +301,9 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
         except subprocess.CalledProcessError as exc:
             raise ValueError(f"{path!r} does not exist on origin/{branch}") from exc
     submodule_paths = ["deps/bello-stack"]
-    if is_sonic_transfer_experiment(config.experiment):
+    if is_sonic_transfer_experiment(config.experiment) or is_supermimic_experiment(
+        config.experiment
+    ):
         submodule_paths.append("deps/gear_sonic")
     for submodule_path in submodule_paths:
         submodule_entry = run_git(
@@ -313,6 +327,8 @@ def resolve_git_selection(repo_root: Path, config: VastTrainConfig) -> GitSelect
 
 
 def _task_name(config: VastTrainConfig) -> str:
+    if is_supermimic_experiment(config.experiment):
+        return "supermimic"
     if is_sonic_transfer_experiment(config.experiment):
         return "sonic-transfer"
     if is_motion_experiment(config.experiment):
