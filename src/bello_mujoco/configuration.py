@@ -33,6 +33,7 @@ ExperimentName = Literal[
     "bello_mini_sonic_transfer",
     "bello_mini_supermimic",
     "bello_mini_supermimic_smoke",
+    "bello_mini_supermimic_pilot",
 ]
 CONFIG_ROOT = project_data_path("configs")
 _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
@@ -47,6 +48,9 @@ _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
     "bello_mini_supermimic_smoke": Path(
         "profiles/train/bello_mini_supermimic_smoke.yaml"
     ),
+    "bello_mini_supermimic_pilot": Path(
+        "profiles/train/bello_mini_supermimic_pilot.yaml"
+    ),
 }
 
 
@@ -59,7 +63,11 @@ def is_sonic_transfer_experiment(name: ExperimentName) -> bool:
 
 
 def is_supermimic_experiment(name: ExperimentName) -> bool:
-    return name in ("bello_mini_supermimic", "bello_mini_supermimic_smoke")
+    return name in (
+        "bello_mini_supermimic",
+        "bello_mini_supermimic_smoke",
+        "bello_mini_supermimic_pilot",
+    )
 
 
 def dataclass_from_dict(
@@ -324,10 +332,10 @@ def supermimic_training_profile(
     merged = OmegaConf.merge(
         base, OmegaConf.load(_config("profiles/train/bello_mini_supermimic.yaml"))
     )
-    if name == "bello_mini_supermimic_smoke":
+    if name != "bello_mini_supermimic":
         merged = OmegaConf.merge(
             merged,
-            OmegaConf.load(_config("profiles/train/bello_mini_supermimic_smoke.yaml")),
+            OmegaConf.load(CONFIG_ROOT.parent / profile_config_relative_path(name)),
         )
     merged.dataset.directory = str(dataset_directory.expanduser().resolve())
     return structured_config(SuperMimicTrainingRunConfig, merged)

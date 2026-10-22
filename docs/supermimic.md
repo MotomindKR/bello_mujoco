@@ -72,6 +72,12 @@ timesteps, learning rate, contact budget, logging, and checkpoint destinations.
 Training rejects single-motion paths, pretrained inputs, payload overrides, and
 `video_enabled`. Evaluate checkpoints separately for videos.
 
+`bello_mini_supermimic_pilot` uses the full actor/dynamics architectures and
+32-step imagination with 128 real environments, smaller optimizer/replay batches,
+and 2,097,152 real transitions. Use it after the smoke check for initial GPU
+memory, throughput, stability, and tracking measurements. It is a pilot recipe,
+not a demonstrated convergence budget.
+
 The full recipe uses 50 Hz control, four 5 ms substeps, 10 ms command delay,
 friction/calibration/torso-COM context, noisy feedback, low-pass filtering, and
 0-2 control steps of observation latency. These are initial simulation choices;
@@ -229,7 +235,7 @@ later integration and trained-policy validation.
 
 ## Remote preflight and validation
 
-Both profiles support `bello-vast-train` with a pinned dataset and no pretrained
+All three profiles support `bello-vast-train` with a pinned dataset and no pretrained
 revision. Commit/push the reviewed branch for remote cloning. A dry run inspects
 selection without renting:
 
@@ -240,12 +246,19 @@ uv run bello-vast-train experiment=bello_mini_supermimic \
   evaluation_clips='[held_out_walk]' dry_run=true
 ```
 
-Before full training, the launcher runs the small profile, verifies actor
+Before selected training, the launcher runs the small profile, verifies actor
 updates, restores native MuJoCo inference, checks finite stepping, and exports
 a bundle. No GEAR-SONIC weight download occurs. The source-only `gear_sonic`
 submodule is still initialized because the repository's exact-source contract
 requires its recorded gitlink for every checkpoint operation. Deadlines and teardown rules
 apply; see [Vast.ai](vast_ai.md).
+
+After successful training, the host evaluates all selected held-out clips in
+native CPU MuJoCo, exports an actor bundle, and uploads the report, videos, bundle,
+and checkpoint metadata as a W&B evaluation artifact. It waits for upload before
+marking the job complete. With no held-out clips, it exports a selected training
+clip and records no generalization evaluation. The job deadline includes setup,
+preflight, training, evaluation, and upload; leave time for those final steps.
 
 Run the [repository gate](../CONTRIBUTION.md#validation). Default tests cover
 invariance, FK Jacobians, constraints, replay masks/history, dynamics fitting,

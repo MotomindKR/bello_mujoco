@@ -42,9 +42,10 @@ without making that margin a physical stop or a target clamp.
 | `deps/bello-stack/descriptions/` | Canonical geometry and hardware configuration |
 
 Maintained experiments: `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
-`bello_mini_standing`, `motion`, `bello_mini_motion`, and
-`bello_mini_sonic_transfer`, `bello_mini_supermimic`, and
-`bello_mini_supermimic_smoke`. The CLI accepts its public top-level overrides;
+`bello_mini_standing`, `motion`, `bello_mini_motion`,
+`bello_mini_sonic_transfer`, `bello_mini_supermimic`,
+`bello_mini_supermimic_smoke`, and `bello_mini_supermimic_pilot`.
+The CLI accepts its public top-level overrides;
 edit the selected recipe for nested reward/physics changes. SONIC's corpus,
 immutable artifact identity, held-out clip names, pretrained checkpoint, and
 immutable source revision are explicit inputs; its fixed LoRA/PPO recipe lives
@@ -66,6 +67,9 @@ inherits only the Mini motion asset configuration, preserving its tuned gains
 and joint target restrictions. The
 [smoke profile](../configs/profiles/train/bello_mini_supermimic_smoke.yaml)
 overrides model widths and learning sizes for a compiled-loop check.
+The [pilot profile](../configs/profiles/train/bello_mini_supermimic_pilot.yaml)
+retains the full networks and 32-step imagination, while reducing environment,
+replay, and optimizer batch sizes for initial single-GPU learning measurements.
 
 Control timing has one owner, `environment.control`: physics timestep,
 decimation, command delay, and action clipping. Observation delay is sampled in

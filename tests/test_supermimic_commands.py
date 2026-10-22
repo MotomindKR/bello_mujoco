@@ -20,7 +20,12 @@ def command(name, overrides):
 
 
 @pytest.mark.parametrize(
-    "profile", ["bello_mini_supermimic", "bello_mini_supermimic_smoke"]
+    "profile",
+    [
+        "bello_mini_supermimic",
+        "bello_mini_supermimic_smoke",
+        "bello_mini_supermimic_pilot",
+    ],
 )
 def test_training_cli_routes_dataset_seed_and_resume_without_pretrained(
     profile, monkeypatch
@@ -88,7 +93,12 @@ def test_evaluation_cli_routes_held_out_clips_and_first_frame_options(monkeypatc
 
 
 @pytest.mark.parametrize(
-    "profile", ["bello_mini_supermimic", "bello_mini_supermimic_smoke"]
+    "profile",
+    [
+        "bello_mini_supermimic",
+        "bello_mini_supermimic_smoke",
+        "bello_mini_supermimic_pilot",
+    ],
 )
 def test_remote_config_accepts_pinned_dataset_and_rejects_wrong_training_inputs(
     profile,
@@ -123,5 +133,16 @@ def test_remote_script_parses_and_restores_improved_actor_before_full_training()
     assert "load_actor(" in preflight and "make_native_motion_step(env)" in preflight
     assert "export_checkpoint(ExportConfig(" in preflight
     assert script.index("supermimic_preflight_checkpoint_restored") < script.rindex(
+        "uv run --no-sync bello-train"
+    )
+    evaluation = next(
+        block for block in blocks if "supermimic_evaluation_artifact" in block
+    )
+    assert evaluation.index("configure_software_rendering()") < evaluation.index(
+        "import wandb"
+    )
+    assert "render_supermimic_checkpoint(" in evaluation
+    assert "run.log_artifact(artifact).wait()" in evaluation
+    assert script.index("supermimic_evaluation_artifact") > script.rindex(
         "uv run --no-sync bello-train"
     )

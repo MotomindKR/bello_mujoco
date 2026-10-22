@@ -4,6 +4,8 @@ SuperMimic dataset jobs use the same bounded lifecycle with a pinned corpus and
 no pretrained input. Their compiled preflight fits dynamics, improves an actor,
 restores native inference, and exports before full training. See
 [SuperMimic remote commands](supermimic.md#remote-preflight-and-validation).
+Successful SuperMimic jobs also evaluate held-out clips and upload their videos,
+report, and deployment bundle before completion-triggered teardown.
 
 `bello-vast-train` rents one instance, clones a pinned root commit and its
 required `bello-stack` submodule, and starts detached training. The Vast host owns

@@ -186,7 +186,7 @@ dataset_experiment=false
 supermimic_experiment=false
 case "$experiment" in
   bello_mini_sonic_transfer) dataset_experiment=true ;;
-  bello_mini_supermimic|bello_mini_supermimic_smoke)
+  bello_mini_supermimic|bello_mini_supermimic_smoke|bello_mini_supermimic_pilot)
     dataset_experiment=true
     supermimic_experiment=true
     ;;
@@ -567,6 +567,62 @@ uv run --no-sync bello-train \
   wandb_enabled=true \
   run_name="$run_name" \
   checkpoint_name="$run_name"
+
+if [ "$supermimic_experiment" = true ]; then
+  JAX_PLATFORMS=cpu uv run --no-sync python - \
+    "$run_name" "$job_dir/motion_dataset" "$job_dir/results" "$evaluation_clips" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from bello_mujoco.evaluation.software import configure_software_rendering
+configure_software_rendering()
+
+import wandb
+
+from bello_mujoco.deployment import ExportConfig, export_checkpoint
+from bello_mujoco.evaluation.supermimic import render_supermimic_checkpoint
+from bello_mujoco.supermimic.checkpoint import checkpoint_metadata
+
+run_name, dataset_path, output_path, evaluation_json = sys.argv[1:]
+dataset, output = Path(dataset_path), Path(output_path)
+paths = list(Path("checkpoints").glob(f"{run_name}_*/final"))
+if len(paths) != 1:
+    raise RuntimeError("SuperMimic training did not produce exactly one final checkpoint")
+checkpoint = paths[0]
+metadata = checkpoint_metadata(checkpoint)
+output.mkdir(parents=True, exist_ok=True)
+selected = tuple(json.loads(evaluation_json))
+report = None
+if selected:
+    report = render_supermimic_checkpoint(
+        checkpoint, dataset, selected, output, stop_on_terminal=True
+    )
+clips = selected or (sorted(dataset.glob("*.npz"))[0].stem,)
+bundle = export_checkpoint(ExportConfig(
+    checkpoint_path=checkpoint, output_path=output / "policy.zip",
+    motion_dataset=dataset, reference_clips=clips,
+))
+(output / "checkpoint-metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+tracking = metadata["resolved_config"]["wandb_config"]
+with wandb.init(
+    entity=tracking["entity"], project=tracking["project"],
+    name=f"{run_name}-evaluation", group=tracking["group"],
+    job_type="supermimic-evaluation", dir=tracking["dir"],
+) as run:
+    if report is not None:
+        run.log({f"evaluation/{key}": value for key, value in report["summary"].items()
+                 if isinstance(value, (float, int))})
+    artifact = wandb.Artifact(f"{run_name}-evaluation", type="evaluation", metadata={
+        "source_commit": metadata["git_commit"],
+        "dataset_manifest_sha256": metadata["dataset_manifest_sha256"],
+    })
+    artifact.add_dir(str(output))
+    logged = run.log_artifact(artifact).wait()
+    print(json.dumps({"supermimic_evaluation_artifact": logged.qualified_name,
+                      "evaluation_run": run.url, "bundle": str(bundle)}), flush=True)
+PY
+fi
 """
 
 
