@@ -299,8 +299,9 @@ uses source commit `2b4f5550302a6fed447222444d0301e87d69cdd2`, stack
 world-model architecture, 32-step imagination, 128 environments, and 512 replay
 steps. The authorized budget is $0.75/hour and two hours, with host-owned teardown;
 the selected RTX 4090 has 48 GiB and costs $0.6963/hour.
-The run completed 2,097,152 real transitions, 6,528 model-training updates, and
-6,028 actor/critic updates in 49 minutes of training. All update validity checks
+The run completed 2,097,152 real transitions and 6,528 training iterations,
+including 13,056 world-model optimizer steps and 6,028 actor/critic optimization
+rounds, in 49 minutes of training. All update validity checks
 passed. Automatic teardown completed, and Vast's instance inventory confirmed
 that pilot instance `57179009` was absent afterward. The unrelated stopped
 instance was left untouched.
