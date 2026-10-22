@@ -20,8 +20,11 @@ validate numerical behavior.
 A CUDA smoke run, trained-actor JAX/Rust parity, and full checkpoint restoration
 have passed on a rented Vast RTX 4090. The first bounded learning pilot and its
 native evaluation are recorded in [the workflow](supermimic.md#first-cuda-pilot).
-Matched PPO comparisons, corpus-scale learning curves, seed studies, live
-tracking, and physical commissioning remain experimental milestones below.
+The subsequent bounded eight-hour AMASS run trained on 4,166 clips and evaluated
+all 544 held-out clips; its learning curves and results are recorded in
+[the full-bank report](supermimic.md#full-amass-run). Matched PPO comparisons,
+longer training, seed studies, live tracking, and physical commissioning remain
+experimental milestones below.
 
 ## Method and initial scope
 

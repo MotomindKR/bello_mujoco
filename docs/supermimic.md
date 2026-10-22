@@ -10,9 +10,9 @@ records the initial choices and later experiments; this page describes the
 implemented workflow.
 
 Synthetic JAX tests, native Mini physics/FK tests, and ONNX/Rust checks validate
-numerical behavior. CUDA training and physical commissioning have not been run
-on the development macOS host. There is no trained checkpoint or measured
-tracking performance yet. The small profile checks the compiled loop; it is
+numerical behavior. Bounded CUDA training has run on rented Vast RTX 4090 hosts;
+the measurements and immutable artifacts are recorded below. Physical
+commissioning has not run. The small profile checks the compiled loop; it is
 not a learning-performance recipe.
 
 ## Prepare inputs
@@ -299,7 +299,7 @@ this CPU-only host. The broader native runtime regression run also passed.
 The local gate preceded the paid CUDA pilot below. Physical commissioning
 remains separate.
 
-## First CUDA pilot
+## Full AMASS run
 
 The broader follow-up uses `bello_mini_supermimic_amass` with immutable dataset
 `gyungmin/bello-mujoco/mini-supermimic-amass-8h-20261022:v0`, manifest SHA-256
@@ -309,6 +309,90 @@ The bank retains 4,166 training clips (28,807.76 s) and 544 held-out clips
 (2,880.62 s), with disjoint inherited subject and source identities. Canonical
 tracked link-origin twists were recomputed for every frame. This is a fresh
 training run; its corpus differs from the six-clip pilot below.
+
+The [full-bank training run](https://wandb.ai/gyungmin/bello-mujoco/runs/0n2msvmr)
+uses source `913d5a6417c294d0086b7774ccc17ebd527f810f` and seed zero. It retains
+the full networks and 32-step imagination, increases collection to 1,024
+environments, and uses two model batches of 512 and imagined batches of 512.
+The RTX 4090 has 24,564 MiB of memory and a quoted rate of $0.6024/hour, below
+the authorized $0.75/hour cap. The entire remote job has a two-hour deadline.
+
+Training stopped at its explicit 4,500-second wall budget, saving the complete
+final state after 6,088 outer updates, 12,176 dynamics optimizer steps, 5,588
+actor/critic updates, and 15,650,816 real transitions. The transition ceiling was
+16,777,216; the earlier wall-time cutoff preserves time for the full benchmark
+and artifact upload. W&B records 4,503.34 seconds including finalization. All
+update validity checks passed. The full final checkpoint is
+`gyungmin/bello-mujoco/supermimic-amass-8h-20261022-seed0_20261022_095807_004219:v6`.
+
+The final deterministic native benchmark covered every held-out clip from frame
+zero: all 544 completed their full duration, totalling 144,031 control steps.
+Equal-per-clip normalized return was 0.7713, root position RMS 0.325 m, root
+orientation RMS 6.70 deg, and joint position RMS 0.178 rad. Projection or slew
+limits intervened on 5.55% of steps on average. Mean peak actuator effort ratio
+was 0.9943. Completion measures reaching the clip end; return and pose errors
+measure tracking quality.
+
+| Held-out collection | Completed clips | Normalized return | Root position RMS |
+| --- | --- | --- | --- |
+| BMLmovi | 57/57 | 0.8123 | 0.200 m |
+| BMLrub | 43/43 | 0.6981 | 0.309 m |
+| CMU | 26/26 | 0.7525 | 0.483 m |
+| EKUT | 81/81 | 0.8451 | 0.185 m |
+| KIT | 69/69 | 0.7798 | 0.347 m |
+| MoSh | 3/3 | 0.7674 | 0.136 m |
+| WEIZMANN | 265/265 | 0.7514 | 0.377 m |
+
+The eight-clip suite was fixed before training and covers walking, circular
+walking, jogging, turning, bending, one-leg motion, and two other full-body
+sequences. Its matched learning measurements are:
+
+| Outer update | Real transitions | Mean completion | Normalized return |
+| --- | --- | --- | --- |
+| 1,000 | 2,625,536 | 26.3% | 0.0813 |
+| 3,000 | 7,745,536 | 100% | 0.6638 |
+| Final (6,088) | 15,650,816 | 100% | 0.7252 |
+
+The [full evaluation run](https://wandb.ai/gyungmin/bello-mujoco/runs/svthtghw)
+persisted reports for all 544 clips, the eight selected videos, the self-contained
+ONNX bundle, checkpoint metadata, and evaluation provenance in
+`gyungmin/bello-mujoco/supermimic-amass-8h-20261022-seed0-compiled-evaluation:v0`.
+The checkpoint, actor, full state, corpus manifest, driver, and bundle identity
+checks passed after download. The final bundle passed Rust validation and
+64-frame JAX/Rust telemetry parity: maximum observation/action difference
+`2.87e-6`, accepted motor-target difference `9.54e-7 rad`, using ONNX Runtime
+1.23.2.
+The [analysis run](https://wandb.ai/gyungmin/bello-mujoco/runs/tzkhttm1) preserves
+learning curves, the captioned eight-motion overview, collection-level results,
+parity checks, integrity checks, and teardown evidence in
+`gyungmin/bello-mujoco/supermimic-amass-8h-20261022-seed0-analysis:v0`.
+
+The recorded training source predates the CPU evaluation optimization. Its
+benchmark used a separately recorded compiled driver against the unchanged
+source APIs. Two complete clips matched the original scorer's episode counters
+and failure flags, with maximum return difference `1.40e-7` and root-position
+RMS difference `2.86e-8 m`. The driver SHA-256 is
+`7009bd711dac08bbe7b200700ddc8f86657153aeb79c631cfae54fd189b02057`.
+The duplicate slow scorer was paused; the compiled benchmark, export, and upload
+finished in 1,148.61 seconds. The source commit and checkpoint metadata were
+preserved throughout. Restore this historical policy in a clean checkout at
+`913d5a6` with its frozen dependencies; the artifact includes its benchmark driver.
+
+Training peak device memory was 9,099 MiB. Instance `57190867` was manually
+destroyed after both artifacts were collected and verified; Vast inventory
+confirmed its absence. The two-hour job deadline and host teardown supervisor
+remained armed. Rental wall time was 111.19 minutes; the quoted-rate estimate
+was $1.12, excluding any provider billing adjustments.
+
+The final CPU gate passed 902 tests with five expected skips. Lockfile, protobuf,
+Ruff, native visual/headless parity, and fixed-contact-buffer physics checks
+passed. This is one seed with nominal evaluation dynamics. Longer training,
+multi-seed robustness, a matched PPO comparison, target-device timing, and
+physical commissioning remain unmeasured. The lowest-return held-out clip,
+`amass__CMU__144__144_05_stageii`, scored 0.444 with 0.840 m root-position RMS;
+the aggregate completion rate leaves meaningful tracking errors to improve.
+
+## First CUDA pilot
 
 The 2026-10-22 [Vast pilot run](https://wandb.ai/gyungmin/bello-mujoco/runs/5rd94jy0)
 uses source commit `2b4f5550302a6fed447222444d0301e87d69cdd2`, stack
