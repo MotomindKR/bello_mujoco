@@ -287,4 +287,78 @@ formatting, and the locked Rust build passed. Seven SuperMimic native tests
 passed, including Mini checkpoint/export/evaluation and Rust observation/action
 parity at upright and vertical headings. Its CUDA collection test skipped on
 this CPU-only host. The broader native runtime regression run also passed.
-No paid training job or physical robot trial was started.
+The local gate preceded the paid CUDA pilot below. Physical commissioning
+remains separate.
+
+## First CUDA pilot
+
+The 2026-10-22 [Vast pilot run](https://wandb.ai/gyungmin/bello-mujoco/runs/5rd94jy0)
+uses source commit `2b4f5550302a6fed447222444d0301e87d69cdd2`, stack
+`29d4d9bc59e2999dcd623a32bf893d0c1735d686`, and the
+`bello_mini_supermimic_pilot` profile with seed zero. It keeps the full actor and
+world-model architecture, 32-step imagination, 128 environments, and 512 replay
+steps. The authorized budget is $0.75/hour and two hours, with host-owned teardown;
+the selected RTX 4090 has 48 GiB and costs $0.6963/hour.
+The run completed 2,097,152 real transitions, 6,528 model-training updates, and
+6,028 actor/critic updates in 49 minutes of training. All update validity checks
+passed. Automatic teardown completed, and Vast's instance inventory confirmed
+that pilot instance `57179009` was absent afterward. The unrelated stopped
+instance was left untouched.
+
+The immutable dataset is
+`gyungmin/bello-mujoco/mini-supermimic-amass-pilot-20261022:v0`, manifest SHA-256
+`8e4a6bf0f1f70e580bd63f8192d18bfcf159ccfee9d77340f7e947f319825ea6`.
+Five 50 Hz clips cover standing, swaying, walking, slow walking, and clapping,
+totalling 26.86 seconds. The held-out clip is
+`amass__BMLrub__rub016__0005_normal_walk1_stageii` (3.24 seconds), from a different
+subject than the training walk. Splits and source identities are inherited from
+the existing AMASS corpus. Preparation recomputes canonical tracked link-origin
+twists and screens joint/motor bounds, velocity, and terrain penetration without
+relaxing the robot constraints.
+
+Native CPU MuJoCo evaluation starts at frame zero with deterministic actions:
+
+| Checkpoint update | Real transitions | Completion | Normalized return | Root position RMS | Root orientation RMS | Joint RMS |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1,000 | 328,192 | 51.2% | 0.2194 | 0.256 m | 24.31 deg | 0.352 rad |
+| 2,000 | 648,192 | 100% | 0.5929 | 0.203 m | 7.83 deg | 0.286 rad |
+| 4,000 | 1,288,192 | 100% | 0.6171 | 0.251 m | 7.17 deg | 0.276 rad |
+| Final (6,528) | 2,097,152 | 100% | 0.6385 | 0.178 m | 6.67 deg | 0.276 rad |
+
+The final clip reached its normal timeout without a terminal failure. Command
+projection or slew limits intervened on 9.26% of steps; peak actuator effort
+reached the configured limit. These are measured constraints, not evidence of
+hardware commissioning.
+
+The CUDA smoke completed collection, model fitting, imagined actor/critic updates,
+checkpoint restoration, native stepping, and export. A separate diagnostic
+restored the full update-4,000 runner, including replay and optimizer/controller
+state, and advanced collection, model fitting, and actor/critic optimization.
+The trained update-2,000 actor passed the Rust bundle check and 64-frame telemetry
+parity: maximum action difference `1.87e-6`, accepted motor-target difference
+`5.97e-7 rad`. The final actor also passed: action difference `4.07e-6` and accepted
+motor-target difference `9.84e-7 rad`. Training alone used about 4.72 GiB of device
+memory, measured before the separate resume diagnostic.
+
+Persisted W&B artifacts are:
+
+- Full final checkpoint:
+  `gyungmin/bello-mujoco/supermimic-amass-pilot-20261022-seed0_20261022_075614_795649:v6`.
+- Visible video, report, and self-contained ONNX bundle:
+  `gyungmin/bello-mujoco/supermimic-amass-pilot-20261022-seed0-final-visible-evaluation:v0`,
+  from the [visible evaluation run](https://wandb.ai/gyungmin/bello-mujoco/runs/wzpgbxn4).
+
+Both artifacts were downloaded locally; actor, full-state, and corpus-manifest
+checksums passed. The standard and visible final evaluations produced identical
+numeric reports.
+
+This run predates the visual-model evaluation fix. Its visible diagnostic video
+changes canonical collision-geometry RGBA and headlight only; physics, inference,
+weights, and source identity remain unchanged. Checkpoints require a separate
+clean checkout at their recorded commit and `uv sync --frozen`; advancing this
+branch does not migrate historical checkpoints.
+
+These measurements cover one short held-out walking clip and one seed. They do
+not establish long-horizon recovery, corpus-wide generalization, target-device
+50 Hz timing, or physical operation. Larger screened corpora, longer held-out
+motions, multiple seeds, and matched PPO comparisons are the next experiments.

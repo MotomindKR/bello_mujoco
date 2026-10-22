@@ -16,10 +16,12 @@ critic updates, collector, checkpoint/resume, native evaluation, ONNX export,
 Rust prerecorded telemetry codec, and dataset-driven Vast route are implemented.
 The maintained commands and configuration contract are in
 [the SuperMimic workflow](supermimic.md). Synthetic CPU and native Mini checks
-validate numerical behavior; CUDA training has not been run on this macOS host.
-Full learning curves, matched PPO comparisons, seed studies, live tracking, and
-physical commissioning remain experimental milestones below. No trained policy
-or hardware readiness is implied by the implementation status.
+validate numerical behavior.
+A CUDA smoke run, trained-actor JAX/Rust parity, and full checkpoint restoration
+have passed on a rented Vast RTX 4090. The first bounded learning pilot and its
+native evaluation are recorded in [the workflow](supermimic.md#first-cuda-pilot).
+Matched PPO comparisons, corpus-scale learning curves, seed studies, live
+tracking, and physical commissioning remain experimental milestones below.
 
 ## Method and initial scope
 
@@ -523,6 +525,6 @@ those inputs gate the corresponding measured experiments.
 For one engineer, a rough planning allowance is four to six weeks for a tested
 trainer, pilot experiments, export, and HIL, assuming working data and GPU access.
 Physical commissioning and broad motion coverage depend on measured outcomes
-and operator availability. With the initial software path implemented, the next
-experiment is the CUDA Mini smoke run, followed by a small reviewed corpus
-pilot with real-simulator evaluation and memory/throughput measurements.
+and operator availability. After the first CUDA pilot, the next experiments
+are longer held-out motions, a larger screened corpus, multiple seeds, and
+matched simulator/compute comparisons against the existing PPO tracker.
