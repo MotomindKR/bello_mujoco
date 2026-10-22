@@ -12,7 +12,7 @@ def main():
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     if hasattr(os, "sched_getaffinity"):
         available = sorted(os.sched_getaffinity(0))
-        assigned = available[request["index"] :: request["workers"]]
+        assigned = available[request["index"] :: request["workers"]][:4]
         if assigned:
             os.sched_setaffinity(0, assigned)
     from bello_mujoco.evaluation.software import configure_software_rendering

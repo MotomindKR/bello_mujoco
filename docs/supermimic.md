@@ -198,6 +198,9 @@ of 4,096 contacts and 65,536 force rows to prevent contact-count changes from
 recompiling the complete outcome function. Every actual contact and force is
 retained; exceeding either capacity raises an error. MuJoCo physics and control
 timing retain their recorded settings.
+Video lighting brightens the floor and headlight so the canonical dark Mini
+meshes remain visible. Native evaluation workers use at most four Linux CPUs
+each to bound thread-pool contention during small-batch inference.
 
 ```bash
 uv run bello-eval task=supermimic checkpoint_path=checkpoints/RUN/final \

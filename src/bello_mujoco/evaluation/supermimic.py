@@ -89,6 +89,14 @@ def render_supermimic_checkpoint(
         )
         resources = None
         if name in videos:
+            env.model.mj_model.vis.headlight.ambient[:] = 0.8
+            env.model.mj_model.vis.headlight.diffuse[:] = 0.8
+            env.model.mj_model.geom_rgba[env.model.terrain_geom_ids] = (
+                0.6,
+                0.6,
+                0.6,
+                1.0,
+            )
             resources, renderer, camera, writer = open_rollout_video_resources(
                 env.model.mj_model,
                 output / f"{name}.mp4",
