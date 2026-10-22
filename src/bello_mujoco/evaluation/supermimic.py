@@ -5,6 +5,7 @@ import math
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 from statistics import mean
 
@@ -70,9 +71,14 @@ def render_supermimic_checkpoint(
             )
         output.mkdir(parents=True, exist_ok=True)
         data = mujoco.MjData(env.model.mj_model)
-        state, observation = reset_native_motion_rollout(env, data)
+        capacities = {"contact_capacity": 4096, "force_capacity": 65536}
+        state, observation = reset_native_motion_rollout(env, data, **capacities)
         history = env.codec.initial_history(observation)
-        native_step = make_native_motion_step(env)
+        native_step = make_native_motion_step(env, **capacities)
+        goal_at = jax.jit(env.goal)
+        command_at = jax.jit(env.mapping.command)
+
+        measure_at = jax.jit(partial(_tracking_errors, env))
         planned_steps = math.ceil(
             (env.reference_bank.max_clip_frames - 1)
             / (env.reference_bank.fps * env.control_timestep)
@@ -96,8 +102,8 @@ def render_supermimic_checkpoint(
         peak_effort, limited = 0.0, 0
         try:
             for _ in range(limit):
-                action = infer(history, env.goal(state.reference_time))
-                proposal = env.mapping.command(
+                action = infer(history, goal_at(state.reference_time))
+                proposal = command_at(
                     action, state.data.ctrl, state.joint_default_offset
                 )
                 limited += int(
@@ -113,28 +119,10 @@ def render_supermimic_checkpoint(
                     raise RuntimeError(
                         "SuperMimic native evaluation encountered nonfinite state"
                     )
-                physical = env.physical_state(state)
-                reference = env.reference_state(
-                    state.reference_time, state.alignment_xy, state.alignment_yaw
-                )
-                root_errors.append(
-                    float(jnp.linalg.norm(physical.position - reference.position))
-                )
-                orientation_errors.append(
-                    float(
-                        jnp.linalg.norm(
-                            rot.log(
-                                rot.multiply(
-                                    rot.conjugate(physical.quaternion),
-                                    reference.quaternion,
-                                )
-                            )
-                        )
-                    )
-                )
-                joint_errors.append(
-                    np.asarray(physical.joint_position - reference.joint_position)
-                )
+                position_error, orientation_error, joint_error = measure_at(state)
+                root_errors.append(float(position_error))
+                orientation_errors.append(float(orientation_error))
+                joint_errors.append(np.asarray(joint_error))
                 peak_effort = max(
                     peak_effort,
                     float(
@@ -194,6 +182,22 @@ def render_supermimic_checkpoint(
         json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
     )
     return report
+
+
+def _tracking_errors(env, state):
+    physical = env.physical_state(state)
+    reference = env.reference_state(
+        state.reference_time, state.alignment_xy, state.alignment_yaw
+    )
+    return (
+        jnp.linalg.norm(physical.position - reference.position),
+        jnp.linalg.norm(
+            rot.log(
+                rot.multiply(rot.conjugate(physical.quaternion), reference.quaternion)
+            )
+        ),
+        physical.joint_position - reference.joint_position,
+    )
 
 
 def _evaluation_report(results):

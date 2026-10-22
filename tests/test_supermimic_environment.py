@@ -280,6 +280,33 @@ def test_mini_checkpoint_actor_restores_exports_and_evaluates_held_out_clip(
     )
     data = mujoco.MjData(restored.model.mj_model)
     state, observation = reset_native_motion_rollout(restored, data)
+    fixed_data = mujoco.MjData(restored.model.mj_model)
+    fixed, _ = reset_native_motion_rollout(
+        restored, fixed_data, contact_capacity=4096, force_capacity=65536
+    )
+    assert fixed.data._impl.contact__geom.shape == (4096, 2)
+    assert fixed.data._impl.efc__force.shape == (65536,)
+    step_default = make_native_motion_step(restored)
+    step_fixed = make_native_motion_step(
+        restored, contact_capacity=4096, force_capacity=65536
+    )
+    action = jnp.zeros(restored.action_size)
+    advanced, _, reward, _, _ = step_default(data, state, action)
+    fixed_advanced, _, fixed_reward, _, _ = step_fixed(fixed_data, fixed, action)
+    np.testing.assert_array_equal(data.qpos, fixed_data.qpos)
+    np.testing.assert_array_equal(data.qvel, fixed_data.qvel)
+    np.testing.assert_allclose(fixed_reward, reward, atol=1e-6)
+    np.testing.assert_array_equal(
+        fixed_advanced.data._impl.nacon, advanced.data._impl.nacon
+    )
+    np.testing.assert_allclose(
+        fixed_advanced.data._impl.efc__force[: data.nefc], data.efc_force
+    )
+    with pytest.raises(ValueError, match="contact_capacity"):
+        reset_native_motion_rollout(restored, fixed_data, contact_capacity=0)
+    with pytest.raises(ValueError, match="force_capacity"):
+        reset_native_motion_rollout(restored, fixed_data, force_capacity=0)
+    state, observation = reset_native_motion_rollout(restored, data)
     visible, *_ = checkpoint.load_actor(
         saved,
         dataset_directory=path.parent,

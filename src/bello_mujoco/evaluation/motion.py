@@ -217,6 +217,8 @@ def reset_native_motion_rollout(
     mj_data: mujoco.MjData,
     *,
     rng: jax.Array | None = None,
+    contact_capacity: int | None = None,
+    force_capacity: int | None = None,
 ) -> tuple[MotionTrackingState, jax.Array]:
     reference_time = jax.numpy.asarray(0.0, dtype=jax.numpy.float32)
     source = env.aligned_reference(
@@ -244,6 +246,8 @@ def reset_native_motion_rollout(
         joint_default_offset=joint_default_offset,
         step_count=0,
         episode_return=0.0,
+        contact_capacity=contact_capacity,
+        force_capacity=force_capacity,
     )
     feedback_rng = latency_rng = obs_rng = None
     if rng is not None:
@@ -258,7 +262,12 @@ def reset_native_motion_rollout(
     return state, env.observation(state, obs_rng)
 
 
-def make_native_motion_step(env: BelloMotionTrackingEnv):
+def make_native_motion_step(
+    env: BelloMotionTrackingEnv,
+    *,
+    contact_capacity: int | None = None,
+    force_capacity: int | None = None,
+):
     """Compile task math once per rollout; native MuJoCo still owns physics."""
     target = jax.jit(lambda state, action: env.action_target(state, action))
     delayed = jax.jit(lambda old, new, index: env.delayed_ctrl(old, new, index))
@@ -287,6 +296,8 @@ def make_native_motion_step(env: BelloMotionTrackingEnv):
             joint_default_offset=state.joint_default_offset,
             step_count=int(state.step_count) + 1,
             episode_return=float(state.episode_return),
+            contact_capacity=contact_capacity,
+            force_capacity=force_capacity,
         )
         stepped = stepped.replace(
             last_substep_qvel=jax.numpy.asarray(last_substep_qvel)
@@ -339,16 +350,31 @@ def native_motion_state(
     joint_default_offset: jax.Array,
     step_count: int,
     episode_return: float,
+    contact_capacity: int | None = None,
+    force_capacity: int | None = None,
 ) -> MotionTrackingState:
     ncon = int(mj_data.ncon)
     nefc = int(mj_data.nefc)
     # Bucket dynamic contact shapes so compiled task math is reused as contacts change.
     capacity = 1 << max(0, ncon - 1).bit_length()
+    if contact_capacity is not None:
+        if type(contact_capacity) is not int or contact_capacity < max(1, ncon):
+            raise ValueError(
+                "contact_capacity must be positive and retain every native contact"
+            )
+        capacity = contact_capacity
     contact_geom = np.zeros((capacity, 2), dtype=np.int32)
     contact_geom[:ncon] = mj_data.contact.geom[:ncon]
     contact_address = np.full(capacity, -1, dtype=np.int32)
     contact_address[:ncon] = mj_data.contact.efc_address[:ncon]
-    efc_force = np.zeros(1 << max(0, nefc - 1).bit_length(), dtype=np.float32)
+    efc_capacity = 1 << max(0, nefc - 1).bit_length()
+    if force_capacity is not None:
+        if type(force_capacity) is not int or force_capacity < max(1, nefc):
+            raise ValueError(
+                "force_capacity must be positive and retain every constraint force"
+            )
+        efc_capacity = force_capacity
+    efc_force = np.zeros(efc_capacity, dtype=np.float32)
     if nefc:
         efc_force[:nefc] = np.asarray(mj_data.efc_force[:nefc], dtype=np.float32)
     impl = NativeContactData(

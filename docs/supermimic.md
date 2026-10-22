@@ -192,6 +192,12 @@ starts at frame zero and runs deterministic actions.
 Video evaluation loads the canonical visual model; training and export retain
 the physics model. Robot collision geometry in the physics model is transparent
 and is unsuitable as the sole source of a policy video.
+CPU evaluation compiles goal assembly, command diagnostics, and tracking-error
+measurements. SuperMimic uses fixed native contact/constraint metadata capacities
+of 4,096 contacts and 65,536 force rows to prevent contact-count changes from
+recompiling the complete outcome function. Every actual contact and force is
+retained; exceeding either capacity raises an error. MuJoCo physics and control
+timing retain their recorded settings.
 
 ```bash
 uv run bello-eval task=supermimic checkpoint_path=checkpoints/RUN/final \
