@@ -41,7 +41,10 @@ def render_supermimic_checkpoint(
     if output.suffix:
         raise ValueError("SuperMimic output_path must be a directory")
     env, actor, obs_norm, goal_norm, config = load_actor(
-        checkpoint, dataset_directory=dataset, reference_clips=(selected_clips[0],)
+        checkpoint,
+        dataset_directory=dataset,
+        reference_clips=(selected_clips[0],),
+        use_viewer_model=True,
     )
     if any(name not in config.dataset.evaluation_clips for name in selected_clips):
         raise ValueError("selected clips must belong to the recorded held-out split")
@@ -54,6 +57,7 @@ def render_supermimic_checkpoint(
                 load_mjx=False,
                 paths=(config.dataset.directory / f"{name}.npz",),
                 evaluation_names=(),
+                use_viewer_model=True,
             )
         output.mkdir(parents=True, exist_ok=True)
         data = mujoco.MjData(env.model.mj_model)

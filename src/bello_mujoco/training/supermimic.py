@@ -88,7 +88,9 @@ class SuperMimicTrainingRunConfig:
             )
 
 
-def load_environment(run_config, *, load_mjx, paths=None, evaluation_names=None):
+def load_environment(
+    run_config, *, load_mjx, paths=None, evaluation_names=None, use_viewer_model=False
+):
     if paths is None:
         paths = tuple(sorted(run_config.dataset.directory.glob("*.npz")))
     return BelloSuperMimicEnv.load_corpus(
@@ -104,6 +106,7 @@ def load_environment(run_config, *, load_mjx, paths=None, evaluation_names=None)
         warp=run_config.warp,
         batch_size=run_config.config.num_envs if load_mjx else 1,
         load_mjx=load_mjx,
+        use_viewer_model=use_viewer_model,
     )
 
 

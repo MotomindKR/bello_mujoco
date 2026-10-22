@@ -132,7 +132,7 @@ def restore_checkpoint(path, template, run_config, *, git_commit, dataset_digest
     return restored
 
 
-def load_actor(path, *, dataset_directory, reference_clips):
+def load_actor(path, *, dataset_directory, reference_clips, use_viewer_model=False):
     from bello_mujoco.configuration import dataclass_from_dict
     from bello_mujoco.training.supermimic import SuperMimicTrainingRunConfig
     from bello_mujoco.supermimic.model import Actor, Moments
@@ -175,6 +175,7 @@ def load_actor(path, *, dataset_directory, reference_clips):
         load_mjx=False,
         paths=tuple(directory / f"{name}.npz" for name in reference_clips),
         evaluation_names=(),
+        use_viewer_model=use_viewer_model,
     )
     codec = env.codec
     template = (

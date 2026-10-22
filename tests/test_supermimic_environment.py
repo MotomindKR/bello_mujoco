@@ -280,6 +280,21 @@ def test_mini_checkpoint_actor_restores_exports_and_evaluates_held_out_clip(
     )
     data = mujoco.MjData(restored.model.mj_model)
     state, observation = reset_native_motion_rollout(restored, data)
+    visible, *_ = checkpoint.load_actor(
+        saved,
+        dataset_directory=path.parent,
+        reference_clips=(held_out.stem,),
+        use_viewer_model=True,
+    )
+    visual_data = mujoco.MjData(visible.model.mj_model)
+    visual_data.qpos[:], visual_data.qvel[:], visual_data.ctrl[:] = (
+        data.qpos,
+        data.qvel,
+        data.ctrl,
+    )
+    mujoco.mj_forward(restored.model.mj_model, data)
+    mujoco.mj_forward(visible.model.mj_model, visual_data)
+    np.testing.assert_allclose(visual_data.qacc, data.qacc, atol=1e-7, rtol=1e-7)
     history = restored.codec.initial_history(observation)
     goal = restored.goal(state.reference_time)
     with ZipFile(bundle) as archive:
@@ -303,15 +318,15 @@ def test_mini_checkpoint_actor_restores_exports_and_evaluates_held_out_clip(
         output[0][0], actor(history, goal, obs_norm, goal_norm), atol=2e-6
     )
     closed = []
+
+    def visible_video_resources(model, *args, **kwargs):
+        assert np.any(model.geom_rgba[model.geom_bodyid > 0, 3] > 0)
+        return SimpleNamespace(close=lambda: closed.append(True)), None, None, None
+
     monkeypatch.setattr(
         evaluation,
         "open_rollout_video_resources",
-        lambda *a, **k: (
-            SimpleNamespace(close=lambda: closed.append(True)),
-            None,
-            None,
-            None,
-        ),
+        visible_video_resources,
     )
     monkeypatch.setattr(evaluation, "write_video_frame", lambda *a, **k: None)
     report = evaluation.render_supermimic_checkpoint(

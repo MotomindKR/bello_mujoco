@@ -189,6 +189,9 @@ On Linux or Lima, select names in the recorded held-out split. Evaluation
 disables noise, sampled latency, and physical randomization, preserving trained
 control delay and filtering. Normalizers and curriculum are frozen. Each clip
 starts at frame zero and runs deterministic actions.
+Video evaluation loads the canonical visual model; training and export retain
+the physics model. Robot collision geometry in the physics model is transparent
+and is unsuitable as the sole source of a policy video.
 
 ```bash
 uv run bello-eval task=supermimic checkpoint_path=checkpoints/RUN/final \
