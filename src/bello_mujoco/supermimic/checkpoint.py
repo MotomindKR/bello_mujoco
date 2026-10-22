@@ -18,6 +18,7 @@ def resume_contract(run_config):
     value = to_builtin(run_config)
     value.pop("checkpoint_config")
     value.pop("wandb_config")
+    value.pop("max_training_seconds")
     value["config"].pop("total_timesteps")
     value["dataset"].pop("directory")
     return value

@@ -34,6 +34,7 @@ ExperimentName = Literal[
     "bello_mini_supermimic",
     "bello_mini_supermimic_smoke",
     "bello_mini_supermimic_pilot",
+    "bello_mini_supermimic_amass",
 ]
 CONFIG_ROOT = project_data_path("configs")
 _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
@@ -51,6 +52,9 @@ _PROFILE_CONFIG_PATHS: dict[ExperimentName, Path] = {
     "bello_mini_supermimic_pilot": Path(
         "profiles/train/bello_mini_supermimic_pilot.yaml"
     ),
+    "bello_mini_supermimic_amass": Path(
+        "profiles/train/bello_mini_supermimic_amass.yaml"
+    ),
 }
 
 
@@ -67,6 +71,7 @@ def is_supermimic_experiment(name: ExperimentName) -> bool:
         "bello_mini_supermimic",
         "bello_mini_supermimic_smoke",
         "bello_mini_supermimic_pilot",
+        "bello_mini_supermimic_amass",
     )
 
 

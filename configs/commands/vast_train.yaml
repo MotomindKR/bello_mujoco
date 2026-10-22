@@ -3,6 +3,8 @@ motion_path: null  # Local .npz uploaded over SSH; need not be tracked in Git.
 motion_dataset_artifact: null
 pretrained_revision: null
 evaluation_clips: []
+evaluation_video_clips: null  # SuperMimic: null renders all; [] renders none.
+evaluation_workers: 1  # SuperMimic native CPU evaluation processes.
 total_timesteps: null
 num_envs: null
 offer:

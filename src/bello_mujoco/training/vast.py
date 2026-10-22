@@ -70,6 +70,8 @@ class VastTrainConfig:
     motion_dataset_artifact: str | None = None
     pretrained_revision: str | None = None
     evaluation_clips: tuple[str, ...] = ()
+    evaluation_video_clips: tuple[str, ...] | None = None
+    evaluation_workers: int = 1
     total_timesteps: int | None = None
     num_envs: int | None = None
     learning_rate: float | None = None
@@ -120,6 +122,21 @@ def credential(env_name: str, service: str, username: str, *, required: bool) ->
 def validate_config(config: VastTrainConfig) -> None:
     if config.experiment not in get_args(ExperimentName):
         raise ValueError("--experiment is invalid")
+    if type(config.evaluation_workers) is not int or config.evaluation_workers <= 0:
+        raise ValueError("evaluation_workers must be a positive integer")
+    if not is_supermimic_experiment(config.experiment) and (
+        config.evaluation_workers != 1 or config.evaluation_video_clips is not None
+    ):
+        raise ValueError(
+            "evaluation_workers and evaluation_video_clips require SuperMimic"
+        )
+    if config.evaluation_video_clips is not None and (
+        len(set(config.evaluation_video_clips)) != len(config.evaluation_video_clips)
+        or not set(config.evaluation_video_clips).issubset(config.evaluation_clips)
+    ):
+        raise ValueError(
+            "evaluation_video_clips must be a unique subset of evaluation_clips"
+        )
     if len(set(config.evaluation_clips)) != len(config.evaluation_clips) or any(
         not name or Path(name).name != name or Path(name).suffix
         for name in config.evaluation_clips

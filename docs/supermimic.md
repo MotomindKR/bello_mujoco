@@ -238,7 +238,7 @@ later integration and trained-policy validation.
 
 ## Remote preflight and validation
 
-All three profiles support `bello-vast-train` with a pinned dataset and no pretrained
+All SuperMimic profiles support `bello-vast-train` with a pinned dataset and no pretrained
 revision. Commit/push the reviewed branch for remote cloning. A dry run inspects
 selection without renting:
 
@@ -291,6 +291,15 @@ The local gate preceded the paid CUDA pilot below. Physical commissioning
 remains separate.
 
 ## First CUDA pilot
+
+The broader follow-up uses `bello_mini_supermimic_amass` with immutable dataset
+`gyungmin/bello-mujoco/mini-supermimic-amass-8h-20261022:v0`, manifest SHA-256
+`f83d855b410b245bb3e86e28bc14bd3969838f71a336a3f79bfe3266d615c3fc`.
+All 4,710 parent clips passed current Mini joint/motor, speed, and terrain checks.
+The bank retains 4,166 training clips (28,807.76 s) and 544 held-out clips
+(2,880.62 s), with disjoint inherited subject and source identities. Canonical
+tracked link-origin twists were recomputed for every frame. This is a fresh
+training run; its corpus differs from the six-clip pilot below.
 
 The 2026-10-22 [Vast pilot run](https://wandb.ai/gyungmin/bello-mujoco/runs/5rd94jy0)
 uses source commit `2b4f5550302a6fed447222444d0301e87d69cdd2`, stack

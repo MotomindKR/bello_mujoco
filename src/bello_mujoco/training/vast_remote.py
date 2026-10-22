@@ -181,12 +181,14 @@ learning_rate="${10}"
 motion_dataset_artifact="${MOTION_DATASET_ARTIFACT:-}"
 pretrained_revision="${PRETRAINED_REVISION:-}"
 evaluation_clips="${EVALUATION_CLIPS:-[]}"
+evaluation_video_clips="${EVALUATION_VIDEO_CLIPS:-null}"
+evaluation_workers="${EVALUATION_WORKERS:-1}"
 job_dir="${BELLO_JOB_DIR:-}"
 dataset_experiment=false
 supermimic_experiment=false
 case "$experiment" in
   bello_mini_sonic_transfer) dataset_experiment=true ;;
-  bello_mini_supermimic|bello_mini_supermimic_smoke|bello_mini_supermimic_pilot)
+  bello_mini_supermimic|bello_mini_supermimic_smoke|bello_mini_supermimic_pilot|bello_mini_supermimic_amass)
     dataset_experiment=true
     supermimic_experiment=true
     ;;
@@ -515,6 +517,16 @@ bundle = export_checkpoint(ExportConfig(
 ))
 print({"supermimic_preflight_checkpoint_restored": str(checkpoint),
        "deployment_bundle": str(bundle)})
+held_out = tuple(metadata["resolved_config"]["dataset"]["evaluation_clips"][:2])
+if held_out:
+    from bello_mujoco.evaluation.supermimic import evaluate_supermimic_corpus
+    report = evaluate_supermimic_corpus(
+        checkpoint, dataset, held_out, directory / "parallel-native-evaluation",
+        video_clips=(), workers=min(2, len(held_out)),
+    )
+    if report["summary"]["clip_count"] != len(held_out):
+        raise RuntimeError("parallel evaluation omitted a held-out clip")
+    print({"supermimic_parallel_evaluation_preflight": len(held_out)}, flush=True)
 PY
 fi
 
@@ -570,7 +582,7 @@ uv run --no-sync bello-train \
 
 if [ "$supermimic_experiment" = true ]; then
   JAX_PLATFORMS=cpu uv run --no-sync python - \
-    "$run_name" "$job_dir/motion_dataset" "$job_dir/results" "$evaluation_clips" <<'PY'
+    "$run_name" "$job_dir/motion_dataset" "$job_dir/results" "$evaluation_clips" "$evaluation_video_clips" "$evaluation_workers" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -581,10 +593,10 @@ configure_software_rendering()
 import wandb
 
 from bello_mujoco.deployment import ExportConfig, export_checkpoint
-from bello_mujoco.evaluation.supermimic import render_supermimic_checkpoint
+from bello_mujoco.evaluation.supermimic import evaluate_supermimic_corpus
 from bello_mujoco.supermimic.checkpoint import checkpoint_metadata
 
-run_name, dataset_path, output_path, evaluation_json = sys.argv[1:]
+run_name, dataset_path, output_path, evaluation_json, videos_json, workers = sys.argv[1:]
 dataset, output = Path(dataset_path), Path(output_path)
 paths = list(Path("checkpoints").glob(f"{run_name}_*/final"))
 if len(paths) != 1:
@@ -595,10 +607,11 @@ output.mkdir(parents=True, exist_ok=True)
 selected = tuple(json.loads(evaluation_json))
 report = None
 if selected:
-    report = render_supermimic_checkpoint(
-        checkpoint, dataset, selected, output, stop_on_terminal=True
+    report = evaluate_supermimic_corpus(
+        checkpoint, dataset, selected, output, video_clips=json.loads(videos_json), workers=int(workers)
     )
-clips = selected or (sorted(dataset.glob("*.npz"))[0].stem,)
+videos = json.loads(videos_json)
+clips = (selected if videos is None else tuple(videos)) or (sorted(dataset.glob("*.npz"))[0].stem,)
 bundle = export_checkpoint(ExportConfig(
     checkpoint_path=checkpoint, output_path=output / "policy.zip",
     motion_dataset=dataset, reference_clips=clips,
@@ -657,6 +670,8 @@ def run_remote_training(
                 "motion_dataset_artifact": config.motion_dataset_artifact or "",
                 "pretrained_revision": config.pretrained_revision or "",
                 "evaluation_clips": json.dumps(config.evaluation_clips),
+                "evaluation_video_clips": json.dumps(config.evaluation_video_clips),
+                "evaluation_workers": config.evaluation_workers,
                 "job_dir": f"/workspace/.bello-vast/{run_name}",
             },
             "script": REMOTE_TRAIN_SCRIPT,
@@ -881,6 +896,8 @@ env.update({
     "MOTION_DATASET_ARTIFACT": str(dataset_training.get("motion_dataset_artifact", "")),
     "PRETRAINED_REVISION": str(dataset_training.get("pretrained_revision", "")),
     "EVALUATION_CLIPS": str(dataset_training.get("evaluation_clips", "[]")),
+    "EVALUATION_VIDEO_CLIPS": str(dataset_training.get("evaluation_video_clips", "null")),
+    "EVALUATION_WORKERS": str(dataset_training.get("evaluation_workers", 1)),
     "BELLO_JOB_DIR": str(dataset_training.get("job_dir", "")),
 })
 script = payload["script"]

@@ -343,6 +343,22 @@ def test_mini_checkpoint_actor_restores_exports_and_evaluates_held_out_clip(
         row["episode_return"] / (5 * restored.control_timestep * row["planned_steps"])
     )
     assert json.loads((tmp_path / "evaluation/summary.json").read_text()) == report
+    monkeypatch.setattr(
+        evaluation,
+        "open_rollout_video_resources",
+        lambda *a, **k: pytest.fail("headless evaluation opened a renderer"),
+    )
+    headless = evaluation.render_supermimic_checkpoint(
+        saved,
+        path.parent,
+        (held_out.stem,),
+        tmp_path / "headless",
+        steps=3,
+        video_clips=(),
+    )
+    headless_row = headless["clips"][held_out.stem]
+    assert headless_row["rendered_steps"] == 0
+    assert headless_row == pytest.approx(row | {"rendered_steps": 0})
     assert source_checks and all(value == commit for value in source_checks)
     with pytest.raises(ValueError, match="held-out"):
         evaluation.render_supermimic_checkpoint(

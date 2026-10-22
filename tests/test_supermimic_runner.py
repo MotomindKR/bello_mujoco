@@ -250,3 +250,64 @@ def test_nonfinite_metrics_stop_training():
         require_valid_metrics({"model/loss": jnp.nan})
     with pytest.raises(RuntimeError, match="invalid/collection"):
         require_valid_metrics({"invalid/collection": 1.0})
+
+
+def test_wall_budget_publishes_partial_final_checkpoint_after_actor_update(
+    toy_runner, tmp_path, monkeypatch
+):
+    import json
+    from bello_mujoco.configuration import supermimic_training_profile
+    from bello_mujoco.supermimic import checkpoint
+    from bello_mujoco.training import supermimic as training
+
+    env, cfg, runner = toy_runner
+    (tmp_path / "sonic-corpus.json").write_text(
+        json.dumps({"clips": [{"array_bytes": 1}]})
+    )
+    run = replace(
+        supermimic_training_profile(tmp_path),
+        config=cfg,
+        observations=env.codec.config,
+        max_training_seconds=1,
+    )
+    clock = iter((0.0, 0.0, 2.0))
+    monkeypatch.setattr(
+        training, "time", SimpleNamespace(monotonic=lambda: next(clock))
+    )
+    monkeypatch.setattr(training, "capture_repository_commit", lambda: "0" * 40)
+    monkeypatch.setattr(
+        training.jax, "devices", lambda: [SimpleNamespace(platform="gpu")]
+    )
+    monkeypatch.setattr(training, "verify_corpus", lambda *a: "digest")
+    monkeypatch.setattr(training, "load_environment", lambda *a, **k: env)
+    monkeypatch.setattr(training, "initialize_learner", lambda *a, **k: runner.learner)
+    monkeypatch.setattr(training, "initialize_collection", lambda *a, **k: runner)
+
+    def collect(state, bank):
+        return replace(
+            state,
+            collector=replace(
+                state.collector, vector_steps=state.collector.vector_steps + 1
+            ),
+        ), {"invalid/collection": 0.0}
+
+    def improve(state, bank):
+        return replace(state, actor_updates=state.actor_updates + 1), {
+            "invalid/actor_critic_update": 0.0
+        }
+
+    monkeypatch.setattr(
+        training,
+        "compile_updates",
+        lambda *a: (collect, lambda s: (s, {"invalid/model_update": 0.0}), improve),
+    )
+    monkeypatch.setattr(training, "checkpoint_path", lambda *a: tmp_path / "saved")
+    saved = []
+    monkeypatch.setattr(
+        checkpoint, "save_checkpoint", lambda p, s, *a, **k: saved.append((p, s))
+    )
+    training.run_training(run)
+    [(path, restored)] = saved
+    assert path == tmp_path / "saved/final"
+    assert int(restored.actor_updates) == 1
+    assert int(restored.collector.vector_steps) * cfg.num_envs < cfg.total_timesteps

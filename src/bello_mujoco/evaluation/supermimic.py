@@ -2,6 +2,9 @@
 
 import json
 import math
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from statistics import mean
 
@@ -32,11 +35,17 @@ def render_supermimic_checkpoint(
     *,
     steps=None,
     stop_on_terminal=True,
+    video_clips=None,
 ):
     if not selected_clips or len(set(selected_clips)) != len(selected_clips):
         raise ValueError("SuperMimic evaluation requires unique held-out clip names")
     if steps is not None and (type(steps) is not int or steps <= 0):
         raise ValueError("steps must be a positive integer or null")
+    videos = set(selected_clips if video_clips is None else video_clips)
+    if not videos.issubset(selected_clips) or (
+        video_clips is not None and len(videos) != len(video_clips)
+    ):
+        raise ValueError("video_clips must be a unique subset of selected_clips")
     output = Path(output_directory)
     if output.suffix:
         raise ValueError("SuperMimic output_path must be a directory")
@@ -44,7 +53,7 @@ def render_supermimic_checkpoint(
         checkpoint,
         dataset_directory=dataset,
         reference_clips=(selected_clips[0],),
-        use_viewer_model=True,
+        use_viewer_model=bool(videos),
     )
     if any(name not in config.dataset.evaluation_clips for name in selected_clips):
         raise ValueError("selected clips must belong to the recorded held-out split")
@@ -57,7 +66,7 @@ def render_supermimic_checkpoint(
                 load_mjx=False,
                 paths=(config.dataset.directory / f"{name}.npz",),
                 evaluation_names=(),
-                use_viewer_model=True,
+                use_viewer_model=bool(videos),
             )
         output.mkdir(parents=True, exist_ok=True)
         data = mujoco.MjData(env.model.mj_model)
@@ -72,14 +81,16 @@ def render_supermimic_checkpoint(
         camera_config = CameraConfig(
             mode="follow", distance=3.0, azimuth=135.0, elevation=-16.0
         )
-        resources, renderer, camera, writer = open_rollout_video_resources(
-            env.model.mj_model,
-            output / f"{name}.mp4",
-            width=640,
-            height=480,
-            fps=round(1 / env.control_timestep),
-            camera_config=camera_config,
-        )
+        resources = None
+        if name in videos:
+            resources, renderer, camera, writer = open_rollout_video_resources(
+                env.model.mj_model,
+                output / f"{name}.mp4",
+                width=640,
+                height=480,
+                fps=round(1 / env.control_timestep),
+                camera_config=camera_config,
+            )
         total, failed, timed_out, completed = 0.0, False, False, 0
         root_errors, orientation_errors, joint_errors = [], [], []
         peak_effort, limited = 0.0, 0
@@ -137,21 +148,24 @@ def render_supermimic_checkpoint(
                 history = env.codec.advance_history(history, observation)
                 failed |= bool(info["done/terminal"])
                 timed_out |= bool(info["done/timeout"])
-                write_video_frame(
-                    renderer,
-                    camera,
-                    writer,
-                    env.model.mj_model,
-                    data,
-                    camera_config,
-                    root_body_name=env.model.robot.root_body_name,
-                )
+                if name in videos:
+                    write_video_frame(
+                        renderer,
+                        camera,
+                        writer,
+                        env.model.mj_model,
+                        data,
+                        camera_config,
+                        root_body_name=env.model.robot.root_body_name,
+                    )
                 if bool(done) and (timed_out or (stop_on_terminal and failed)):
                     break
         finally:
-            resources.close()
+            if resources is not None:
+                resources.close()
         results[name] = {
-            "rendered_steps": completed,
+            "evaluated_steps": completed,
+            "rendered_steps": completed if name in videos else 0,
             "planned_steps": planned_steps,
             "episode_return": total,
             "normalized_return": total / (5 * env.control_timestep * planned_steps),
@@ -166,6 +180,23 @@ def render_supermimic_checkpoint(
             "motor_peak_effort_ratio": peak_effort,
             "limited_step_fraction": limited / completed,
         }
+        print(
+            json.dumps(
+                {
+                    "evaluated_clip": name,
+                    "completion_fraction": results[name]["completion_fraction"],
+                }
+            ),
+            flush=True,
+        )
+    report = _evaluation_report(results)
+    (output / "summary.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    )
+    return report
+
+
+def _evaluation_report(results):
     fields = (
         "episode_return",
         "normalized_return",
@@ -191,7 +222,79 @@ def render_supermimic_checkpoint(
             for field in fields
         },
     }
-    report = {"summary": summary, "clips": results}
+    return {"summary": summary, "clips": results}
+
+
+def _evaluate_partition(arguments):
+    checkpoint, dataset, selected, output, videos, index, workers = arguments
+    subprocess.run(
+        [sys.executable, "-m", "bello_mujoco.evaluation.supermimic_worker"],
+        input=json.dumps(
+            {
+                "checkpoint": str(checkpoint),
+                "dataset": str(dataset),
+                "selected": selected,
+                "output": str(output),
+                "videos": videos,
+                "index": index,
+                "workers": workers,
+            }
+        ),
+        text=True,
+        check=True,
+    )
+    return json.loads((output / "summary.json").read_text())
+
+
+def evaluate_supermimic_corpus(
+    checkpoint,
+    dataset,
+    selected_clips,
+    output_directory,
+    *,
+    video_clips=None,
+    workers=1,
+):
+    """Evaluate every selected held-out clip, rendering only the explicit video subset."""
+    if type(workers) is not int or workers <= 0:
+        raise ValueError("workers must be a positive integer")
+    if not selected_clips or len(set(selected_clips)) != len(selected_clips):
+        raise ValueError("evaluation requires unique selected_clips")
+    videos = tuple(selected_clips if video_clips is None else video_clips)
+    if len(set(videos)) != len(videos) or not set(videos).issubset(selected_clips):
+        raise ValueError("video_clips must be a unique subset of selected_clips")
+    if workers == 1:
+        return render_supermimic_checkpoint(
+            checkpoint, dataset, selected_clips, output_directory, video_clips=videos
+        )
+    output = Path(output_directory)
+    count = min(workers, len(selected_clips))
+    arguments = []
+    for index in range(count):
+        selected = tuple(selected_clips[index::count])
+        arguments.append(
+            (
+                checkpoint,
+                dataset,
+                selected,
+                output / f"worker-{index:02d}",
+                tuple(name for name in videos if name in selected),
+                index,
+                count,
+            )
+        )
+    results = {}
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        for report, argument in zip(
+            pool.map(_evaluate_partition, arguments), arguments, strict=True
+        ):
+            results.update(report["clips"])
+            partition = argument[3]
+            for video in partition.glob("*.mp4"):
+                video.replace(output / video.name)
+            (partition / "summary.json").unlink()
+            partition.rmdir()
+    report = _evaluation_report(results)
     (output / "summary.json").write_text(
         json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
     )

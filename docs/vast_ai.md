@@ -145,6 +145,15 @@ fixed training costs.
 Inspect the returned offer's CPU allocation separately; CPU-core count is not
 currently a configurable launcher filter.
 
+For the bounded SuperMimic full-corpus experiment, select
+`experiment=bello_mini_supermimic_amass`. Supply the complete immutable held-out
+list in `evaluation_clips`, use `evaluation_workers=8`, and choose a small
+`evaluation_video_clips` subset. All held-out clips receive native numerical
+evaluation; only that subset is rendered and bundled for playback. Workers run
+in separate CPU processes with partitioned Linux CPU affinity. The profile stops
+training at 75 minutes and saves its final checkpoint, reserving the rest of a
+two-hour job for evaluation and uploads. The host supervisor still owns teardown.
+
 Non-dry execution reads:
 
 - `VAST_API_KEY` or keyring `vast/api_key`;

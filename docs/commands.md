@@ -129,3 +129,7 @@ The public `offer` tree exposes `gpu_name`, `min_gpu_ram_gb`, `min_cpu_ram_gb`,
 `disk_gb` and the existing marketplace filters.
 Training supports exactly one GPU per instance. Use `dry_run=true` to inspect
 selection without renting.
+SuperMimic remote jobs accept `evaluation_workers` for isolated native CPU
+evaluation processes and `evaluation_video_clips` as a unique subset of the full
+held-out `evaluation_clips`. The default `null` renders all selected clips;
+`[]` scores every clip without videos. Other task routes reject these settings.

@@ -80,6 +80,8 @@ class VastTrainCommandConfig:
     motion_dataset_artifact: str | None
     pretrained_revision: str | None
     evaluation_clips: tuple[str, ...]
+    evaluation_video_clips: tuple[str, ...] | None
+    evaluation_workers: int
     total_timesteps: int | None
     num_envs: int | None
     offer: VastOfferConfig
@@ -520,6 +522,8 @@ def _vast_train_hydra(config: DictConfig) -> None:
         motion_dataset_artifact=command.motion_dataset_artifact,
         pretrained_revision=command.pretrained_revision,
         evaluation_clips=command.evaluation_clips,
+        evaluation_video_clips=command.evaluation_video_clips,
+        evaluation_workers=command.evaluation_workers,
         total_timesteps=command.total_timesteps,
         num_envs=command.num_envs,
         offer=command.offer,

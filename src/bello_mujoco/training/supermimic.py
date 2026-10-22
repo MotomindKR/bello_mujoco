@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field, replace
 import json
 import math
+import time
 from pathlib import Path
 
 import jax
@@ -57,6 +58,7 @@ class DatasetConfig:
 class SuperMimicTrainingRunConfig:
     asset_config: ModelConfig
     dataset: DatasetConfig
+    max_training_seconds: float | None = None
     config: LearningConfig = field(default_factory=LearningConfig)
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     observations: ObservationConfig = field(default_factory=ObservationConfig)
@@ -68,6 +70,11 @@ class SuperMimicTrainingRunConfig:
     wandb_config: WandbConfig = field(default_factory=WandbConfig)
 
     def __post_init__(self):
+        if self.max_training_seconds is not None and (
+            not math.isfinite(self.max_training_seconds)
+            or self.max_training_seconds <= 0
+        ):
+            raise ValueError("max_training_seconds must be positive and finite")
         maximum_history = max(
             self.observations.history_frames,
             self.environment.latency.delay_steps[1] + 1,
@@ -187,6 +194,7 @@ def require_valid_metrics(metrics):
 def run_training(run_config):
     from bello_mujoco.supermimic.checkpoint import restore_checkpoint, save_checkpoint
 
+    started = time.monotonic()
     commit = capture_repository_commit()
     if not any(device.platform == "gpu" for device in jax.devices()):
         raise RuntimeError(
@@ -270,6 +278,21 @@ def run_training(run_config):
             vector_steps += 1
         while vector_steps < remaining:
             update = int(jax.device_get(runner.update))
+            if (
+                run_config.max_training_seconds is not None
+                and time.monotonic() - started >= run_config.max_training_seconds
+            ):
+                print(
+                    json.dumps(
+                        {
+                            "training_stop": "wall_time_budget",
+                            "update": update,
+                            "env_steps": vector_steps * cfg.num_envs,
+                        }
+                    ),
+                    flush=True,
+                )
+                break
             before = math.floor(update / cfg.update_to_data_ratio)
             after = math.floor((update + 1) / cfg.update_to_data_ratio)
             metrics = {}

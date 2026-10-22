@@ -1,0 +1,17 @@
+# Bounded first full-corpus run; preserve full networks and 32-step imagination.
+max_training_seconds: 4500
+config:
+  total_timesteps: 16777216
+  num_envs: 1024
+  replay_steps: 512
+  max_replay_bytes: 8589934592
+  model_batches: 2
+  model_batch_size: 512
+  imagined_batch_size: 512
+  learning_rate_decay_updates: 10000
+checkpoint_config:
+  name: bello_mini_supermimic_amass_seed${config.seed}
+  every_updates: 1000
+wandb_config:
+  group: bello-mini-supermimic-amass
+  run_name: bello_mini_supermimic_amass_seed${config.seed}

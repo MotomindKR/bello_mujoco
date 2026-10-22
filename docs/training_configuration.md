@@ -44,7 +44,8 @@ without making that margin a physical stop or a target clamp.
 Maintained experiments: `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
 `bello_mini_standing`, `motion`, `bello_mini_motion`,
 `bello_mini_sonic_transfer`, `bello_mini_supermimic`,
-`bello_mini_supermimic_smoke`, and `bello_mini_supermimic_pilot`.
+`bello_mini_supermimic_smoke`, `bello_mini_supermimic_pilot`, and
+`bello_mini_supermimic_amass`.
 The CLI accepts its public top-level overrides;
 edit the selected recipe for nested reward/physics changes. SONIC's corpus,
 immutable artifact identity, held-out clip names, pretrained checkpoint, and
@@ -70,6 +71,13 @@ overrides model widths and learning sizes for a compiled-loop check.
 The [pilot profile](../configs/profiles/train/bello_mini_supermimic_pilot.yaml)
 retains the full networks and 32-step imagination, while reducing environment,
 replay, and optimizer batch sizes for initial single-GPU learning measurements.
+The [AMASS profile](../configs/profiles/train/bello_mini_supermimic_amass.yaml)
+uses 1,024 environments with the full networks. Its `max_training_seconds` stops
+training after 75 minutes, including setup and compilation, and saves the full
+final state even when the transition target is unfinished. The deadline is
+checked between complete optimization iterations. This operational budget may
+change on resume; the learning contract remains fixed. An unset budget runs to
+`config.total_timesteps`.
 
 Control timing has one owner, `environment.control`: physics timestep,
 decimation, command delay, and action clipping. Observation delay is sampled in

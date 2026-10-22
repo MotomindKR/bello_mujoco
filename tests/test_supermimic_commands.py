@@ -25,6 +25,7 @@ def command(name, overrides):
         "bello_mini_supermimic",
         "bello_mini_supermimic_smoke",
         "bello_mini_supermimic_pilot",
+        "bello_mini_supermimic_amass",
     ],
 )
 def test_training_cli_routes_dataset_seed_and_resume_without_pretrained(
@@ -98,6 +99,7 @@ def test_evaluation_cli_routes_held_out_clips_and_first_frame_options(monkeypatc
         "bello_mini_supermimic",
         "bello_mini_supermimic_smoke",
         "bello_mini_supermimic_pilot",
+        "bello_mini_supermimic_amass",
     ],
 )
 def test_remote_config_accepts_pinned_dataset_and_rejects_wrong_training_inputs(
@@ -141,7 +143,7 @@ def test_remote_script_parses_and_restores_improved_actor_before_full_training()
     assert evaluation.index("configure_software_rendering()") < evaluation.index(
         "import wandb"
     )
-    assert "render_supermimic_checkpoint(" in evaluation
+    assert "evaluate_supermimic_corpus(" in evaluation
     assert "run.log_artifact(artifact).wait()" in evaluation
     assert script.index("supermimic_evaluation_artifact") > script.rindex(
         "uv run --no-sync bello-train"
