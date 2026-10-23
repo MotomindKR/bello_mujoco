@@ -475,8 +475,80 @@ curriculum audits, native/model and reset counterfactuals, LAFAN archive invento
 and exact 40-clip source cohort, broader AMASS candidate list, and exploratory
 BVH retarget reports. Validation passed 906 default CPU tests plus the native
 Mini rollout integration case; the CUDA case skipped on this CPU host. Lint,
-formatting, lock, and protobuf checks passed. No new trained-policy quality
-measurement is claimed for these fixes.
+formatting, lock, and protobuf checks passed. The retraining below measures the
+resulting policy; separate ablations would be needed to isolate each fix.
+
+## Corrected-source AMASS retraining
+
+The [retraining run](https://wandb.ai/gyungmin/bello-mujoco/runs/0hr2s0md)
+started from scratch at source `d3b3bb7a96a062cb3c21b08f73edfc415fe59eac`,
+using the same immutable eight-hour AMASS corpus, held-out identities, seed zero,
+and bounded learning profile as the previous run. All learning, environment,
+observation, reward-configuration, network, sampling-configuration, Warp, and asset
+settings compare equal. The two audited implementation fixes change behavior.
+LAFAN/BONES motions were not added to this controlled comparison.
+
+Training reached its 16,777,216-transition ceiling after 6,528 outer updates,
+13,056 dynamics optimizer steps, and 6,028 actor/critic updates. W&B records
+3,770.77 seconds, below the 4,500-second training limit. The prior run stopped at
+6,088 updates on its wall budget, so the new final policy also has 7.2% more real
+transitions. All update-validity checks passed.
+
+The complete native benchmark evaluated the same 544 held-out clips from their
+first frame. All completed in both runs; metrics are equal-per-clip means.
+
+| Metric | Previous | Corrected-source retraining |
+| --- | --- | --- |
+| Normalized return | 0.7713 | 0.7868 |
+| Root position RMS | 0.325 m | 0.295 m |
+| Root orientation RMS | 6.70 deg | 6.59 deg |
+| Joint position RMS | 0.1780 rad | 0.1700 rad |
+| Projection/slew intervention | 5.55% | 4.44% |
+
+Joint RMS improved on 441/544 clips and root position RMS on 334/544. These are
+modest aggregate improvements. The fixed eight-motion suite remains weak:
+normalized return changed from 0.7252 to 0.7377, root RMS from 0.360 to 0.359 m,
+and joint RMS from 0.2342 to 0.2348 rad. Its final pose errors are essentially
+unchanged. At the matched 3,000-update checkpoint, both policies completed all
+eight motions; root RMS improved from 0.472 to 0.354 m and joint RMS from 0.2811
+to 0.2751 rad. Normalized-return comparisons also include the yaw-alignment
+reward correction; pose-error definitions are unchanged. This is one seed, not
+an isolated ablation or a reproduction of the paper's G1/BONES experiment.
+
+The curriculum defect is measurably removed: final reset probability assigned
+to last-second bins fell from 43.53% to 7.26%, against their 13.52% uniform mass.
+Their share of the difficulty component fell from 76.83% to 0.71%. Every training
+bin was visited. Both saved replay buffers contain zero held-out transitions.
+Removing this sampling bias did not resolve the poor tracking on the hard suite.
+
+The final checkpoint is
+`gyungmin/bello-mujoco/supermimic-amass-fixed-20261023-seed0_20261023_070415_582836:v6`;
+the complete report, eight videos, and deployment bundle are
+`gyungmin/bello-mujoco/supermimic-amass-fixed-20261023-seed0-evaluation:v0`.
+Actor/full-state/corpus hashes, checkpoint source, all evaluation identities,
+video presence, and deployment-bundle source were verified after download.
+The bundle passed Rust validation and 64-frame JAX/Rust telemetry parity using
+ONNX Runtime 1.23.2: maximum observation/action difference `3.15e-6`, and accepted
+motor-target difference `1.07e-6 rad`.
+
+Local comparison outputs are under `outputs/supermimic-retrain-20261023/`.
+`reference-before-after.mp4` synchronizes exact kinematic target poses, the prior
+policy, and the retrained policy for all eight preselected motions. It starts
+each column at reference frame one, matching the first simulated policy frame.
+`before-after-comparison.png` covers all 544 clips; `learning-comparison.png`
+covers the fixed suite at matched intermediate updates and each final policy.
+The [comparison analysis](https://wandb.ai/gyungmin/bello-mujoco/runs/bojicw1z)
+is archived as
+`gyungmin/bello-mujoco/supermimic-amass-fixed-20261023-seed0-analysis:v1`,
+including the verified 50 Hz comparison video, plots, sampler audit, configuration
+comparison, native parity, and teardown evidence.
+
+Vast instance `57335092` used an RTX 4090 at $0.4770/hour and completed under the
+two-hour job limit. Automatic host teardown was verified by instance absence at
+08:22:03 UTC on October 23. The observed rental interval was 90.1 minutes,
+approximately $0.72 at the quoted rate, excluding transfer/billing adjustments.
+The historical `913d5a6` checkout and a separate clean `d3b3bb7` evaluation
+checkout remain available; checkpoint compatibility guards were preserved.
 
 ## First CUDA pilot
 
