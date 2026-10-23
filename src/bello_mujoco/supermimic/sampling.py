@@ -8,6 +8,25 @@ import jax.numpy as jnp
 import numpy as np
 
 
+def completed_return(
+    discounted_return,
+    episode_return,
+    episode_steps,
+    terminal,
+    timeout,
+    *,
+    gamma,
+    max_episode_steps,
+):
+    """Continue a truncated episode at its mean reward for curriculum scoring."""
+    mean_reward = episode_return / jnp.maximum(episode_steps, 1)
+    if gamma < 1:
+        continuation = gamma**episode_steps * mean_reward / (1 - gamma)
+    else:
+        continuation = mean_reward * jnp.maximum(max_episode_steps - episode_steps, 0)
+    return discounted_return + jnp.where(timeout & ~terminal, continuation, 0.0)
+
+
 @dataclass(frozen=True)
 class SamplingConfig:
     uniform_weight: float = 0.5

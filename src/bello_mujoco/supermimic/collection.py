@@ -8,6 +8,7 @@ import jax.numpy as jnp
 
 from bello_mujoco.envs.geometry import tree_where
 from bello_mujoco.supermimic.replay import ReplayBuffer, Transition
+from bello_mujoco.supermimic.sampling import completed_return
 from bello_mujoco.supermimic.state import PhysicalState
 
 
@@ -38,12 +39,7 @@ class RunnerState:
 def maximum_return(env, config):
     if config.gamma < 1:
         return 5.0 * env.control_timestep / (1.0 - config.gamma)
-    return (
-        5.0
-        * env.control_timestep
-        * env.reference_bank.max_clip_frames
-        / (env.reference_bank.fps * env.control_timestep)
-    )
+    return 5.0 * env.control_timestep * env.max_episode_steps
 
 
 def make_transition(env, before, after, observation, action, episode_ids, reward, info):
@@ -160,7 +156,15 @@ def collect_step(runner, env, config):
     sampling = env.sampler.update(
         runner.sampling,
         collector.start_bins,
-        discounted,
+        completed_return(
+            discounted,
+            after.episode_return,
+            after.episode_length,
+            info["done/terminal"],
+            info["done/timeout"],
+            gamma=config.gamma,
+            max_episode_steps=env.max_episode_steps,
+        ),
         done,
         maximum_return(env, config),
     )

@@ -43,6 +43,7 @@ class ToyState:
     alignment_yaw: jax.Array
     joint_default_offset: jax.Array
     episode_length: jax.Array
+    episode_return: jax.Array
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,10 @@ class ToyEnv:
     action_clip: float = 20.0
     control_timestep: float = 0.02
     maximum_observation_delay_steps: int = 0
+
+    @property
+    def max_episode_steps(self):
+        return self.reference_bank.max_clip_frames - 1
 
     def physical_state(self, state):
         return self.kinematics.from_qpos(state.data.qpos, state.data.qvel)
@@ -104,6 +109,7 @@ class ToyEnv:
             jnp.zeros(count),
             jnp.zeros((count, 1)),
             jnp.zeros(count, jnp.int32),
+            jnp.zeros(count),
         )
         return state, jax.vmap(self.observe)(state)
 
@@ -129,6 +135,7 @@ class ToyEnv:
                 s, self.reference_state(0.0, jnp.zeros(2), 0.0), a, p
             )
         )(physical, action, state.last_action)
+        stepped = replace(stepped, episode_return=state.episode_return + reward)
         return (
             stepped,
             jax.vmap(self.observe)(stepped),
@@ -250,6 +257,54 @@ def test_nonfinite_metrics_stop_training():
         require_valid_metrics({"model/loss": jnp.nan})
     with pytest.raises(RuntimeError, match="invalid/collection"):
         require_valid_metrics({"invalid/collection": 1.0})
+
+
+def test_collector_bootstraps_timeout_curriculum_but_preserves_replay_flags(
+    toy_runner, monkeypatch
+):
+    env, config, runner = toy_runner
+    original_step = ToyEnv.step_batch
+
+    def timeout_step(self, *args, **kwargs):
+        state, observation, reward, done, info = original_step(self, *args, **kwargs)
+        info = {**info, "done/terminal": jnp.zeros_like(done), "done/timeout": done}
+        return state, observation, reward, done, info
+
+    monkeypatch.setattr(ToyEnv, "step_batch", timeout_step)
+    collect, _, _ = compile_updates(env, config)
+    for _ in range(2):
+        runner, _ = collect(runner, env.reference_bank)
+    rewards = np.asarray(runner.replay.data.reward[:2])
+    expected = (rewards[0] + config.gamma * rewards[1]) + (
+        config.gamma**2 * rewards.mean(axis=0) / (1 - config.gamma)
+    )
+    assert float(runner.sampling.returns[0]) == pytest.approx(expected.mean(), rel=1e-5)
+    assert np.all(runner.replay.data.timeout[1])
+    assert not np.any(runner.replay.data.terminal[1])
+
+
+def test_reward_reanchors_tilted_reference_with_relative_rotation_yaw(toy_runner):
+    from bello_mujoco.envs.geometry import yaw_quat
+    from bello_mujoco.supermimic import rotations as rot
+
+    env, _, _ = toy_runner
+    state = env.reference_state(0.0, jnp.zeros(2), 0.0)
+    reference = replace(state, quaternion=rot.exp(jnp.array([-0.2, 0.5, 0.4])))
+    state = replace(state, quaternion=rot.exp(jnp.array([0.6, -0.3, 0.2])))
+    alignment = yaw_quat(
+        rot.multiply(state.quaternion, rot.conjugate(reference.quaternion))
+    )
+    targets = env.kinematics.forward(reference)
+    bodies = env.kinematics.forward(state)
+    expected = state.position + rot.rotate(
+        alignment, targets.position - reference.position
+    )
+    _, terms = env.mdp.reward(state, reference, jnp.zeros(1), jnp.zeros(1))
+    np.testing.assert_allclose(
+        terms["body_position_squared"],
+        jnp.mean(jnp.sum((bodies.position - expected) ** 2, axis=-1)),
+        rtol=1e-5,
+    )
 
 
 def test_wall_budget_publishes_partial_final_checkpoint_after_actor_update(

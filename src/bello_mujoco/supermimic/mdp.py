@@ -54,9 +54,8 @@ class TrackingMDP:
             self.kinematics.forward(state),
             self.kinematics.forward(reference),
         )
-        alignment = rot.multiply(
-            rot.heading(state.quaternion),
-            rot.conjugate(rot.heading(reference.quaternion)),
+        alignment = rot.heading(
+            rot.multiply(state.quaternion, rot.conjugate(reference.quaternion))
         )
         origin = state.position.at[2].set(reference.position[2])
         target_position = origin + rot.rotate(

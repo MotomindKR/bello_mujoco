@@ -44,6 +44,30 @@ digest, verified against the local bytes. Publishing a corpus is a separate
 explicit operation. Remote jobs require the pinned artifact and download it
 before the preflight.
 
+LAFAN1 is a separate human BVH dataset. Download the original archive from
+[Ubisoft La Forge](https://github.com/ubisoft/ubisoft-laforge-animation-dataset),
+which documents its license and Git LFS workflow:
+
+```bash
+mkdir -p outputs/lafan1-source
+curl -fL --retry 3 \
+  https://media.githubusercontent.com/media/ubisoft/ubisoft-laforge-animation-dataset/master/lafan1/lafan1.zip \
+  -o outputs/lafan1-source/lafan1.zip
+unzip -tq outputs/lafan1-source/lafan1.zip
+unzip -q outputs/lafan1-source/lafan1.zip -d outputs/lafan1-source/bvh
+```
+
+The checked archive SHA-256 is
+`ea918082b500a5d158e9d3aa39039df04cd42e25f5c02fe8f7e88e8e9365a977`.
+It contains 77 sequences (4.5981 hours); every whole sequence exceeds 30 seconds.
+The [unofficial reproduction](https://github.com/zita-ch/supermimic_vibed)
+uses 40 G1 retargets from
+[this dataset](https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset).
+All 40 have matching original BVHs, totaling 2.4506 hours. G1 CSVs cannot be
+loaded as Mini references: retarget the human source to Mini and validate the
+resulting motion clips. Do not apply the AMASS preparation's 2-30 second whole
+sequence filter to LAFAN1.
+
 ## Train and resume
 
 Use a clean checkout and initialized pinned dependencies on a Linux x86 CUDA
@@ -103,7 +127,12 @@ completed episodes, failures, skipped policy updates, and
 `collection/limited_fraction` for projection/slew intervention. Logging uses the
 existing local/W&B path. Reset sampling mixes uniform/difficult/historical
 weighting over one-second training bins. Difficulty uses an EMA of actual
-discounted episode returns attributed to the starting bin; historical weights
+discounted episode returns attributed to the starting bin. At a clip timeout,
+the episode's mean step reward estimates the discounted continuation; terminal
+failures receive no continuation, including failures on the final frame. This
+keeps successful short clip tails from appearing harder solely because they
+contain fewer steps. With gamma equal to one, continuation uses the bank's
+maximum episode length. Historical weights
 accumulate previous difficulty distributions. Held-out clips never enter
 learning or the curriculum.
 
@@ -391,6 +420,63 @@ multi-seed robustness, a matched PPO comparison, target-device timing, and
 physical commissioning remain unmeasured. The lowest-return held-out clip,
 `amass__CMU__144__144_05_stageii`, scored 0.444 with 0.840 m root-position RMS;
 the aggregate completion rate leaves meaningful tracking errors to improve.
+
+## Tracking audit
+
+The October 23 audit found two implementation discrepancies relative to the
+[unofficial source at a1508d4](https://github.com/zita-ch/supermimic_vibed/tree/a1508d42c9d1699a52e8233ab16d08c488441ab9).
+The original paper does not supply official implementation code; matching the
+unofficial source is a separate check from matching the paper.
+
+First, the return curriculum compared raw discounted returns from variable-length
+episodes with an infinite-horizon maximum of 10. Even perfect one-step, one-second,
+and ten-second episodes scored 0.1, 3.9499, and 9.9343 respectively. Normal clip
+endings therefore looked difficult. In the final checkpoint, the last-second
+bins comprised 13.52% of eligible bins but received 43.53% of reset probability
+and 76.83% of the current difficulty component. The collector now continues
+timeouts at their mean step reward when scoring the curriculum, matching the
+unofficial implementation's bootstrap. Actual failures receive no continuation.
+This changes curriculum statistics, not recorded rewards or terminal flags.
+
+Second, tracking rewards aligned reference bodies using the difference of two
+independently extracted headings. The existing BeyondMimic path and unofficial
+implementation instead extract the yaw of the relative root rotation. These
+operations differ when the two roots have different tilts. SuperMimic now uses
+the latter expression, with a regression case covering tilted roots.
+
+The historical checkpoint and normalizers restored exactly in their unchanged
+`913d5a6` source checkout. Native/model probes on three walking states showed
+reasonable short-horizon predictions away from reset, but mixed action-gradient
+agreement that depended on the finite-difference scale and contact state. These
+probes do not establish a model-gradient implementation bug. A separate native
+counterfactual changing only the initial motor target from neutral to reference
+also had mixed results, so reset control initialization remains unchanged.
+
+Training scale remains a separate concern. The bounded AMASS profile used
+1,024 model windows per outer update versus 20,480 in the full recipe, and 512
+imagined starts versus 4,096. Its learning-rate decay used 10,000 updates instead
+of 250,000. The completed run contains 6,088 outer updates. These differences
+and the curriculum defect are plausible contributors to weak tracking; their
+individual effect requires retraining and ablation. Completion alone remains
+insufficient evidence of good tracking.
+
+Broader source preselection on the NAS found 13,991 AMASS candidates (48.75 h)
+when removing the upper duration cap and blanket activity exclusions, compared
+with 11,657 (25.50 h) under the previous source rules. This is source selection,
+not a validated retarget corpus. Explicit terrain/object-supported sources remain
+excluded from this flat-ground candidate pass. BONES-SEED human SOMA BVHs are
+available separately from its G1 CSVs. Exploratory Mini retargets covered six
+LAFAN sequences and eight BONES sequences. Some BONES probes contain solver
+startup spikes, sustained high speeds, or floor penetration; they are diagnostic
+outputs, not training-ready references. Source archives remain unchanged.
+
+Local evidence is under `outputs/supermimic-audit-20261022/`: checkpoint and
+curriculum audits, native/model and reset counterfactuals, LAFAN archive inventory
+and exact 40-clip source cohort, broader AMASS candidate list, and exploratory
+BVH retarget reports. Validation passed 906 default CPU tests plus the native
+Mini rollout integration case; the CUDA case skipped on this CPU host. Lint,
+formatting, lock, and protobuf checks passed. No new trained-policy quality
+measurement is claimed for these fixes.
 
 ## First CUDA pilot
 

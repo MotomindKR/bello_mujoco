@@ -18,7 +18,31 @@ from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.sim import load_model
 from bello_mujoco.supermimic.kinematics import Kinematics
 from bello_mujoco.supermimic.mdp import imagined_return, lambda_returns
-from bello_mujoco.supermimic.sampling import ReturnSampler
+from bello_mujoco.supermimic.sampling import ReturnSampler, completed_return
+
+
+@pytest.mark.parametrize("gamma", [0.99, 1.0])
+def test_timeout_curriculum_return_is_independent_of_successful_tail_length(gamma):
+    steps = jnp.array([1, 50, 500])
+    reward = 0.1
+    observed = (
+        reward * (1 - gamma**steps) / (1 - gamma) if gamma < 1 else reward * steps
+    )
+    score = jax.jit(
+        lambda terminal, timeout: completed_return(
+            observed,
+            reward * steps,
+            steps,
+            terminal,
+            timeout,
+            gamma=gamma,
+            max_episode_steps=500,
+        )
+    )
+    np.testing.assert_allclose(score(False, True), 10 if gamma < 1 else 50, rtol=1e-6)
+    np.testing.assert_allclose(score(True, True), observed)
+    np.testing.assert_allclose(score(True, False), observed)
+    np.testing.assert_allclose(score(False, False), observed)
 
 
 def test_imagined_return_and_lambda_targets_handle_failure_and_bootstrap():
