@@ -146,7 +146,7 @@ For this comparison, command delay, feedback filtering, and observation latency
 are disabled. Reset perturbations, calibration resampling, friction range,
 ten-frame history/goals, optimizer schedule, and gradient clipping follow the
 unofficial recipe. Mini geometry, actuator gains, coupled target/step limits,
-self-contacts, and the Mini-scale torso-COM range remain explicit departures.
+and the Mini-scale torso-COM range remain explicit departures.
 This simulation baseline requires separate hardware robustness validation.
 
 Native evaluation defaults to `evaluation_split=held_out`. To measure tracking
@@ -244,6 +244,26 @@ slow save is visible separately from training throughput.
 All maintained SuperMimic recipes disable robot self-collisions, preserving
 robot-ground contacts, to match the unofficial reproduction. This choice is
 recorded in `asset_config.self_collisions` and applies to both generated models.
+They inherit the Mini motion-profile stiffnesses with reduced damping for
+hip roll and the ankle differential motors:
+
+| Motor group | Kp | SuperMimic Kd | Motion-profile Kd |
+| --- | ---: | ---: | ---: |
+| Hip roll, each side | 140 | 6 | 9 |
+| Ankle differential, each motor | 20 | 1 | 1.5 |
+
+These task-specific overrides live in `asset_config.joint_gains` in the common
+SuperMimic profile. Stiffness and its action scaling, torque limits, command
+position/rate limits, and all other gains retain their inherited values.
+With the current unit-reduction differential, the effective ankle gains are
+Kp 40 and Kd 2 per logical axis before saturation; pitch and roll still share
+the two motors' torque budget. The physical reduction magnitudes require
+calibration. The damping adjustment is a simulation training default, not a
+hardware commissioning result. Native frozen-policy sensitivity checks do not
+establish quality after retraining. Saved checkpoints retain their recorded gains;
+training with changed gains requires a fresh run rather than resuming an old
+world model and replay buffer under different dynamics.
+
 They also disable command transport delay and feedback
 filtering/latency, matching the reference comparison. The generic smoke now
 exercises that same control path. A CUDA audit found nonfinite feedback with the

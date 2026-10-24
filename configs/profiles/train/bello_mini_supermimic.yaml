@@ -1,6 +1,14 @@
-# Asset gains come from the canonical bello_mini_motion profile.
+# Inherit Mini motion gains with task-specific damping overrides.
 asset_config:
   self_collisions: false
+  joint_gains:
+    left_hip_roll_joint: [140.0, 6.0]
+    right_hip_roll_joint: [140.0, 6.0]
+    # Ankle gains apply to each physical differential motor.
+    left_ankle_pitch_joint: [20.0, 1.0]
+    right_ankle_pitch_joint: [20.0, 1.0]
+    left_ankle_roll_joint: [20.0, 1.0]
+    right_ankle_roll_joint: [20.0, 1.0]
 dataset:
   directory: motions/local
   evaluation_clips: []
