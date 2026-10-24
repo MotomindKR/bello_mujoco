@@ -24,7 +24,7 @@ from bello_mujoco.supermimic.kinematics import Kinematics
 from bello_mujoco.supermimic.mdp import TrackingConfig, TrackingMDP, critic_features
 from bello_mujoco.supermimic.observations import ObservationCodec
 from bello_mujoco.supermimic.sampling import ReturnSampler, SamplingConfig
-from bello_mujoco.supermimic.state import PhysicalState
+from bello_mujoco.supermimic.state import BodyState, PhysicalState
 
 
 def validate_frame_clock(bank, control_timestep):
@@ -132,6 +132,10 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         use_viewer_model=False,
         load_mjx=True,
     ):
+        if load_mjx and env_config.observation_low_pass_filter.enabled:
+            raise ValueError(
+                "filtered SuperMimic MJX-Warp training is not validated; use the unfiltered reference profile"
+            )
         model = load_model(
             asset_config,
             warp=warp,
@@ -304,6 +308,21 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             self.kinematics.from_qpos(reference.qpos, reference.qvel), xy, yaw
         )
 
+    def reference_bodies(self, frame, xy, yaw):
+        """Cached body targets on the validated collection frame clock."""
+        if self.reference_bank.fps * self.control_timestep < 1:
+            # Interpolating joint angles requires FK after interpolation.
+            return self.kinematics.forward(self.reference_state(frame, xy, yaw))
+        sample = self.reference_bank.sample_global_frame(frame)
+        orientation = rot.exp(jnp.array([0.0, 0.0, yaw]))
+        shift = jnp.concatenate((xy, jnp.zeros(1)))
+        return BodyState(
+            rot.rotate(orientation, sample.body_pos) + shift,
+            rot.multiply(orientation, sample.body_quat),
+            rot.rotate(orientation, sample.body_lin_vel),
+            rot.rotate(orientation, sample.body_ang_vel),
+        )
+
     def goal(self, frame):
         bank = self.reference_bank
         clip = self.clip_id(frame)
@@ -357,6 +376,19 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
 
     def physical_state(self, state):
         return self.kinematics.from_qpos(state.data.qpos, state.data.qvel)
+
+    def physics_metrics(self, data):
+        impl = data._impl
+        return {
+            "physics/max_constraints": jnp.max(impl.nefc),
+            "physics/contacts": jnp.max(impl.nacon),
+            "invalid/constraint_capacity": jnp.any(impl.nefc > impl.njmax).astype(
+                jnp.float32
+            ),
+            "invalid/contact_capacity": jnp.any(impl.nacon > impl.naconmax).astype(
+                jnp.float32
+            ),
+        }
 
     def _actor_feedback(self, data):
         return self.kinematics.from_qpos(data.qpos, data.qvel).flatten()

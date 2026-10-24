@@ -141,6 +141,22 @@ def mini_corpus(tmp_path):
     return asset, path
 
 
+def test_filtered_gpu_training_is_rejected_before_loading_assets():
+    from bello_mujoco.envs.feedback import ObservationLowPassFilterConfig
+
+    config = replace(
+        MotionTrackingEnvConfig(),
+        observation_low_pass_filter=ObservationLowPassFilterConfig(enabled=True),
+    )
+    with pytest.raises(ValueError, match="filtered SuperMimic MJX-Warp"):
+        BelloSuperMimicEnv.load_corpus(
+            ModelConfig(asset="bello_mini", actuator_mode="policy"),
+            config,
+            (),
+            load_mjx=True,
+        )
+
+
 @pytest.mark.integration
 def test_mini_reset_motor_target_tracks_the_constrained_reference_pose(mini_corpus):
     asset, path = mini_corpus
@@ -206,7 +222,8 @@ def test_native_mini_collection_uses_new_codec_reward_and_terminal_successors(
 
 
 @pytest.mark.integration
-def test_cuda_mini_compiled_collect_fit_and_improve(mini_corpus):
+@pytest.mark.parametrize("precision", ["float32", "bfloat16"])
+def test_cuda_mini_compiled_collect_fit_and_improve(mini_corpus, precision):
     if not any(device.platform == "gpu" for device in jax.devices()):
         pytest.skip("requires CUDA/MJX-Warp")
     from bello_mujoco.configuration import supermimic_training_profile
@@ -229,7 +246,9 @@ def test_cuda_mini_compiled_collect_fit_and_improve(mini_corpus):
         imagined_batch_size=2,
         imagination_horizon=2,
     )
-    run = replace(run, config=cfg)
+    run = replace(
+        run, config=cfg, networks=replace(run.networks, matmul_precision=precision)
+    )
     env = load_environment(run, load_mjx=True)
     learner = initialize_learner(
         env, cfg, run.networks, env.action_size + 5, jax.random.PRNGKey(0)
@@ -247,8 +266,9 @@ def test_cuda_mini_compiled_collect_fit_and_improve(mini_corpus):
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("precision", ["float32", "bfloat16"])
 def test_mini_checkpoint_actor_restores_exports_and_evaluates_held_out_clip(
-    mini_corpus, monkeypatch, tmp_path, request
+    mini_corpus, monkeypatch, tmp_path, request, precision
 ):
     from types import SimpleNamespace
     from zipfile import ZipFile
@@ -283,7 +303,11 @@ def test_mini_checkpoint_actor_restores_exports_and_evaluates_held_out_clip(
         },
     )
     run = supermimic_training_profile(path.parent, name="bello_mini_supermimic_smoke")
-    run = replace(run, dataset=replace(run.dataset, evaluation_clips=(held_out.stem,)))
+    run = replace(
+        run,
+        dataset=replace(run.dataset, evaluation_clips=(held_out.stem,)),
+        networks=replace(run.networks, matmul_precision=precision),
+    )
     env = load_environment(run, load_mjx=False)
     learner = initialize_learner(
         env, run.config, run.networks, env.action_size + 5, jax.random.PRNGKey(1)

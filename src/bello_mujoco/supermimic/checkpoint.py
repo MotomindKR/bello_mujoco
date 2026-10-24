@@ -8,10 +8,42 @@ import shutil
 import tempfile
 
 import equinox as eqx
+import jax
+import numpy as np
 
 from bello_mujoco.repository import require_repository_commit
 from bello_mujoco.sonic.corpus import MANIFEST, file_sha256
 from bello_mujoco.training.tracking import to_builtin
+
+
+_TRANSFER_CHUNK_BYTES = 16 * 1024 * 1024
+
+
+def _serialise_leaf(stream, value):
+    """Keep Equinox's NPY stream format without materializing a replay leaf on the host."""
+    if (
+        not isinstance(value, (jax.Array, np.ndarray))
+        or value.nbytes <= _TRANSFER_CHUNK_BYTES
+    ):
+        eqx.default_serialise_filter_spec(stream, value)
+        return
+    dtype = np.dtype(value.dtype)
+    if dtype.kind not in "biufc":
+        eqx.default_serialise_filter_spec(stream, value)
+        return
+    np.lib.format.write_array_header_1_0(
+        stream,
+        {
+            "descr": np.lib.format.dtype_to_descr(dtype),
+            "fortran_order": False,
+            "shape": value.shape,
+        },
+    )
+    row_bytes = value.nbytes // value.shape[0]
+    rows = max(1, _TRANSFER_CHUNK_BYTES // row_bytes)
+    for start in range(0, value.shape[0], rows):
+        chunk = np.ascontiguousarray(jax.device_get(value[start : start + rows]))
+        stream.write(memoryview(chunk).cast("B"))
 
 
 def resume_contract(run_config):
@@ -43,7 +75,9 @@ def save_checkpoint(path, runner, run_config, *, git_commit, dataset_digest):
         "resolved_config": to_builtin(run_config),
     }
     try:
-        eqx.tree_serialise_leaves(staging / "state.eqx", runner)
+        eqx.tree_serialise_leaves(
+            staging / "state.eqx", runner, filter_spec=_serialise_leaf
+        )
         learner = runner.learner
         eqx.tree_serialise_leaves(
             staging / "actor.eqx",

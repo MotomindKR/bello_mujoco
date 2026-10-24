@@ -1,5 +1,5 @@
 # Reference-comparison baseline: full unofficial batches and 14,000 updates.
-# Hardware filtering/delay commissioning is a separate experiment.
+# Hardware filtering/delay commissioning is separate from these baselines.
 max_training_seconds: null
 config:
   total_timesteps: 143622144
@@ -11,14 +11,6 @@ config:
   model_batch_size: 2048
   imagined_batch_size: 4096
 environment:
-  control:
-    command_delay_seconds: 0.0
-  filtering:
-    enabled: false
-    noise_before_filter: false
-  latency:
-    enabled: false
-    delay_steps: [0, 0]
   reset:
     initial_xy_range: [0.0, 0.0]
     initial_yaw_range: [0.0, 0.0]
@@ -33,7 +25,7 @@ environment:
     joint_angle_offset_range: [0.0, 0.0]
     friction_range: [0.3, 1.2]
 networks:
-  matmul_precision: tensorfloat32
+  matmul_precision: bfloat16
 checkpoint_config:
   name: bello_mini_supermimic_lafan_seed${config.seed}
   every_updates: 2000

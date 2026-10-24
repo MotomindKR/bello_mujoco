@@ -60,7 +60,7 @@ class NetworkConfig:
     actor_widths: tuple[int, ...] = (2048, 1024, 512, 256)
     critic_widths: tuple[int, ...] = (256, 128)
     latent_size: int = 32
-    matmul_precision: Literal["float32", "tensorfloat32"] = "float32"
+    matmul_precision: Literal["float32", "tensorfloat32", "bfloat16"] = "float32"
 
     def __post_init__(self):
         for widths in (self.dynamics_widths, self.actor_widths, self.critic_widths):
@@ -68,8 +68,10 @@ class NetworkConfig:
                 raise ValueError("network widths must be positive integer tuples")
         if type(self.latent_size) is not int or self.latent_size <= 0:
             raise ValueError("latent_size must be a positive integer")
-        if self.matmul_precision not in ("float32", "tensorfloat32"):
-            raise ValueError("matmul_precision must be float32 or tensorfloat32")
+        if self.matmul_precision not in ("float32", "tensorfloat32", "bfloat16"):
+            raise ValueError(
+                "matmul_precision must be float32, tensorfloat32, or bfloat16"
+            )
 
 
 class MLP(eqx.Module):
@@ -97,7 +99,7 @@ class MLP(eqx.Module):
             tuple(eqx.nn.LayerNorm(n) for n in sizes[1:-1]) if layer_norm else ()
         )
         self.activation = activation
-        if matmul_precision not in ("float32", "tensorfloat32"):
+        if matmul_precision not in ("float32", "tensorfloat32", "bfloat16"):
             raise ValueError("invalid MLP matmul precision")
         self.matmul_precision = matmul_precision
         last = self.layers[-1]
@@ -113,31 +115,38 @@ class MLP(eqx.Module):
         )
 
     def __call__(self, value):
+        mixed = self.matmul_precision == "bfloat16"
         for i, layer in enumerate(self.layers):
+            dtype = jnp.bfloat16 if mixed else jnp.float32
             value = (
                 jnp.matmul(
-                    value,
-                    layer.weight.T,
+                    value.astype(dtype),
+                    layer.weight.T.astype(dtype),
                     precision=(
                         jax.lax.Precision.HIGHEST
                         if self.matmul_precision == "float32"
                         else jax.lax.Precision.HIGH
                     ),
+                    preferred_element_type=jnp.float32,
                 )
-                + layer.bias
-            )
+                + layer.bias.astype(dtype).astype(jnp.float32)
+            ).astype(dtype)
             if i < len(self.layers) - 1:
                 if self.norms:
                     shape = value.shape
-                    value = jax.vmap(self.norms[i])(
-                        value.reshape((-1, shape[-1]))
-                    ).reshape(shape)
+                    value = (
+                        jax.vmap(self.norms[i])(
+                            value.astype(jnp.float32).reshape((-1, shape[-1]))
+                        )
+                        .reshape(shape)
+                        .astype(dtype)
+                    )
                 value = (
-                    jax.nn.silu(value)
+                    jax.nn.silu(value.astype(jnp.float32))
                     if self.activation == "silu"
-                    else jax.nn.elu(value)
-                )
-        return value
+                    else jax.nn.elu(value.astype(jnp.float32))
+                ).astype(dtype)
+        return value.astype(jnp.float32)
 
 
 def invariant_features(state):
@@ -274,7 +283,12 @@ class Actor(eqx.Module):
         )
 
     def __call__(self, history, goal, observation_norm, goal_norm):
-        latent = jnp.tanh(self.encoder(goal_norm.normalize(goal)))
+        return self.decode(history, self.encode_goal(goal, goal_norm), observation_norm)
+
+    def encode_goal(self, goal, goal_norm):
+        return jnp.tanh(self.encoder(goal_norm.normalize(goal)))
+
+    def decode(self, history, latent, observation_norm):
         values = observation_norm.normalize(history)
         values = values.reshape(values.shape[:-2] + (-1,))
         return self.decoder(jnp.concatenate((latent, values), axis=-1))
@@ -304,7 +318,9 @@ def world_model_loss(model, window, input_norm, output_norm, *, error_floor):
         prediction = model.step(state, *inputs, input_norm, output_norm)
         return prediction, prediction
 
-    _, predicted = jax.lax.scan(step, initial, controls)
+    _, predicted = jax.lax.scan(
+        step, initial, controls, unroll=min(8, controls[0].shape[0])
+    )
     predicted = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), predicted)
     scale = jnp.maximum(output_norm.std(1e-4), error_floor)
     error = state_delta(tr.successor, predicted) / scale

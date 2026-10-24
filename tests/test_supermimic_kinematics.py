@@ -133,6 +133,50 @@ def test_rotations_and_state_roundtrip_have_finite_zero_angle_gradients():
         np.testing.assert_array_equal(a, b)
 
 
+@pytest.mark.parametrize("fps,frame", [(50.0, 3.0), (100.0, 4.0), (25.0, 3.5)])
+def test_cached_reference_targets_match_fk_after_alignment(chain, fps, frame):
+    from types import SimpleNamespace
+
+    from bello_mujoco.envs.supermimic import BelloSuperMimicEnv, align_reference
+    from bello_mujoco.motion.clip import MotionClip
+    from bello_mujoco.sonic.reference import ReferenceBank
+
+    model, kin, _ = chain
+    qpos = jnp.tile(jnp.asarray(model.qpos0), (10, 1))
+    qpos = qpos.at[:, kin.joint_qpos_address].add(jnp.arange(10)[:, None] * 0.04)
+    qvel = jnp.asarray(np.random.default_rng(9).normal(size=(10, model.nv)))
+    physical = jax.vmap(kin.from_qpos)(qpos, qvel)
+    bodies = jax.vmap(kin.forward)(physical)
+    clip = MotionClip(
+        fps,
+        kin.joint_names,
+        kin.body_names,
+        qpos,
+        qvel,
+        *jax.tree.leaves(bodies),
+        jnp.zeros((10, 2)),
+    )
+    bank = ReferenceBank.from_clips((("moving", clip, "train"),))
+
+    def reference(frame, xy, yaw):
+        sample = bank.sample_global_frame(frame)
+        return align_reference(kin.from_qpos(sample.qpos, sample.qvel), xy, yaw)
+
+    env = SimpleNamespace(
+        reference_bank=bank,
+        kinematics=kin,
+        control_timestep=0.02,
+        reference_state=reference,
+    )
+    xy, yaw = jnp.array([0.4, -0.3]), jnp.array(0.7)
+    expected = kin.forward(reference(jnp.array(frame), xy, yaw))
+    actual = jax.jit(lambda f: BelloSuperMimicEnv.reference_bodies(env, f, xy, yaw))(
+        jnp.array(frame)
+    )
+    for a, b in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
+        np.testing.assert_allclose(a, b, atol=2e-6)
+
+
 def test_heading_is_defined_and_differentiable_at_vertical_forward_axis():
     quaternion = rot.exp(jnp.array([0.0, jnp.pi / 2, 0.0]))
     np.testing.assert_allclose(rot.heading(quaternion), [1.0, 0.0, 0.0, 0.0])

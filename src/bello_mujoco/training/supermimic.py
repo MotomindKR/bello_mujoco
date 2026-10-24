@@ -192,8 +192,41 @@ def require_valid_metrics(metrics):
             )
 
 
+def publish_checkpoint(path, runner, run_config, *, git_commit, dataset_digest, run):
+    from bello_mujoco.supermimic.checkpoint import save_checkpoint
+
+    started = perf_counter()
+    print(
+        json.dumps({"checkpoint_saving": str(path), "update": int(runner.update)}),
+        flush=True,
+    )
+    save_checkpoint(
+        path, runner, run_config, git_commit=git_commit, dataset_digest=dataset_digest
+    )
+    saved = perf_counter()
+    checkpoint = run_config.checkpoint_config
+    if checkpoint.upload_wandb_artifact:
+        track_checkpoint_artifact(
+            run,
+            path,
+            name=checkpoint.wandb_artifact_name or path.parent.name,
+            artifact_type=checkpoint.wandb_artifact_type,
+        )
+    print(
+        json.dumps(
+            {
+                "checkpoint_saved": str(path),
+                "update": int(runner.update),
+                "timing/checkpoint_seconds": saved - started,
+                "timing/checkpoint_publication_seconds": perf_counter() - saved,
+            }
+        ),
+        flush=True,
+    )
+
+
 def run_training(run_config):
-    from bello_mujoco.supermimic.checkpoint import restore_checkpoint, save_checkpoint
+    from bello_mujoco.supermimic.checkpoint import restore_checkpoint
 
     started = time.monotonic()
     commit = capture_repository_commit()
@@ -349,32 +382,28 @@ def run_training(run_config):
                 and update % checkpoint.every_updates == 0
             ):
                 path = root / f"update_{update:06d}"
-                save_checkpoint(
-                    path, runner, run_config, git_commit=commit, dataset_digest=digest
+                publish_checkpoint(
+                    path,
+                    runner,
+                    run_config,
+                    git_commit=commit,
+                    dataset_digest=digest,
+                    run=run,
                 )
-                if checkpoint.upload_wandb_artifact:
-                    track_checkpoint_artifact(
-                        run,
-                        path,
-                        name=checkpoint.wandb_artifact_name or root.name,
-                        artifact_type=checkpoint.wandb_artifact_type,
-                    )
         if int(jax.device_get(runner.actor_updates)) == 0:
             raise RuntimeError(
                 "training budget completed without an actor update; increase the budget or reduce model_warmup_updates"
             )
         if run_config.checkpoint_config.enabled:
             final = root / "final"
-            save_checkpoint(
-                final, runner, run_config, git_commit=commit, dataset_digest=digest
+            publish_checkpoint(
+                final,
+                runner,
+                run_config,
+                git_commit=commit,
+                dataset_digest=digest,
+                run=run,
             )
-            if run_config.checkpoint_config.upload_wandb_artifact:
-                track_checkpoint_artifact(
-                    run,
-                    final,
-                    name=run_config.checkpoint_config.wandb_artifact_name or root.name,
-                    artifact_type=run_config.checkpoint_config.wandb_artifact_type,
-                )
         succeeded = True
     finally:
         close_run(run, exit_code=0 if succeeded else 1)

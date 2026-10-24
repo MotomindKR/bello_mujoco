@@ -48,12 +48,14 @@ class TrackingMDP:
     timestep: float = field(metadata={"static": True})
     config: TrackingConfig = field(metadata={"static": True})
 
-    def reward(self, state, reference, action, previous_action):
+    def reward(
+        self, state, reference, action, previous_action, *, bodies=None, targets=None
+    ):
         cfg = self.config
-        bodies, targets = (
-            self.kinematics.forward(state),
-            self.kinematics.forward(reference),
-        )
+        if bodies is None:
+            bodies = self.kinematics.forward(state)
+        if targets is None:
+            targets = self.kinematics.forward(reference)
         alignment = rot.heading(
             rot.multiply(state.quaternion, rot.conjugate(reference.quaternion))
         )
@@ -153,9 +155,14 @@ class TrackingMDP:
         return 1.0 - alive
 
 
-def critic_features(state, reference, goal, context, kinematics):
+def critic_features(
+    state, reference, goal, context, kinematics, *, bodies=None, targets=None
+):
     heading_inverse = rot.conjugate(rot.heading(state.quaternion))
-    bodies, targets = kinematics.forward(state), kinematics.forward(reference)
+    if bodies is None:
+        bodies = kinematics.forward(state)
+    if targets is None:
+        targets = kinematics.forward(reference)
     alignment = rot.heading(
         rot.multiply(state.quaternion, rot.conjugate(reference.quaternion))
     )

@@ -148,5 +148,5 @@ def test_lafan_profile_uses_bounded_collection_without_shortening_references():
         Path("corpus"), name="bello_mini_supermimic_lafan"
     )
     assert run.config.max_episode_steps == 500
-    assert run.networks.matmul_precision == "tensorfloat32"
+    assert run.networks.matmul_precision == "bfloat16"
     assert run.config.learning_rate_decay_updates == 250000

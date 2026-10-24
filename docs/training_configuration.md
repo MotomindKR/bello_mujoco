@@ -63,13 +63,21 @@ The `bello_mini_supermimic_lafan` recipe uses whole LAFAN sequences. Its
 `config.max_episode_steps` caps collection episodes, while reference arrays and
 native full-clip evaluation retain the complete recording. A null cap preserves
 the reference-end timeout behavior. `networks.matmul_precision` explicitly
-selects `float32` or `tensorfloat32` matrix multiplication for the networks.
+selects `float32`, `tensorfloat32`, or `bfloat16` matrix multiplication for the
+networks. LAFAN uses BF16 network operands/activations with FP32 accumulation,
+master parameters, normalization statistics, and optimizer state. Physical state,
+kinematics, rewards, and returns stay FP32. ONNX export preserves the network's
+BF16 rounding using CPU-supported casts around FP32 matrix multiplication.
 The LAFAN comparison uses the full 4,096-environment, ten-by-2,048 dynamics,
 and 4,096-imagination batches. Its transition target covers exactly 14,000
 update cycles after collection warmup with no wall-time cutoff. It disables
-command delay and feedback filtering/latency for reference comparison; the
-base hardware-oriented recipe retains those controls. The return sampler
+command delay and feedback filtering/latency for reference comparison, inherited
+from the common SuperMimic recipe. Hardware filtering/delay commissioning uses
+separate explicitly configured settings. The return sampler
 uses alpha 0.2 and a 0.001 historical-difficulty EMA.
+SuperMimic allocates a shared contact pool of 128 contacts per environment and
+1,024 constraint rows per environment. Collection reports usage and rejects an
+update if either physics capacity overflows.
 See [LAFAN preparation and training](supermimic.md) for corpus constraints and
 the separate training/held-out evaluation reports.
 

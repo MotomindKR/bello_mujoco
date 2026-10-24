@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
+import equinox as eqx
 import numpy as np
 import pytest
 
@@ -20,6 +21,23 @@ from bello_mujoco.supermimic.replay import ReplayBuffer
 from bello_mujoco.supermimic.sampling import SamplingState
 from bello_mujoco.training.supermimic import DatasetConfig, SuperMimicTrainingRunConfig
 from test_supermimic_learning import transition
+
+
+def test_chunked_checkpoint_is_readable_by_unmodified_equinox(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint, "_TRANSFER_CHUNK_BYTES", 256)
+    tree = (
+        jnp.arange(240, dtype=jnp.float32).reshape((20, 12)),
+        np.arange(200, dtype=np.int32).reshape((20, 10)).T,
+        jnp.array(True),
+        3,
+    )
+    path = tmp_path / "chunked.eqx"
+    eqx.tree_serialise_leaves(path, tree, filter_spec=checkpoint._serialise_leaf)
+    restored = eqx.tree_deserialise_leaves(path, tree)
+    for actual, expected in zip(
+        jax.tree.leaves(restored), jax.tree.leaves(tree), strict=True
+    ):
+        np.testing.assert_array_equal(actual, expected)
 
 
 @pytest.fixture

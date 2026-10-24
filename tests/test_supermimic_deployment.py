@@ -25,7 +25,7 @@ from bello_mujoco.supermimic.state import PhysicalState
 
 
 @pytest.fixture
-def exported(tmp_path):
+def exported(tmp_path, request):
     from types import SimpleNamespace
 
     physics = b"""<mujoco><worldbody><body name="free" pos="0 0 1"><freejoint/><geom size=".1"/>
@@ -95,7 +95,11 @@ def exported(tmp_path):
     )
     env = SimpleNamespace(codec=codec, mapping=mapping, action_clip=2.0)
     networks = NetworkConfig(
-        actor_widths=(8,), dynamics_widths=(8,), critic_widths=(8,), latent_size=4
+        actor_widths=(8,),
+        dynamics_widths=(8,),
+        critic_widths=(8,),
+        latent_size=4,
+        matmul_precision=getattr(request, "param", "float32"),
     )
     actor = Actor(
         codec.sample_size, 3, codec.goal_size, 2, config=networks, key=jax.random.key(9)
@@ -103,6 +107,12 @@ def exported(tmp_path):
     actor = eqx.tree_at(
         lambda net: net.decoder.layers[-1].bias, actor, jnp.array([2.0, -3.0])
     )
+    if networks.matmul_precision == "bfloat16":
+        actor = eqx.tree_at(
+            lambda net: (net.decoder.layers[-1].weight, net.decoder.layers[-1].bias),
+            actor,
+            (actor.decoder.layers[-1].weight * 50, jnp.array([0.13, -0.27])),
+        )
     obs_norm = replace(
         Moments.empty(codec.sample_size),
         mean=jnp.linspace(-0.1, 0.1, codec.sample_size),
@@ -228,6 +238,7 @@ def trace(exported, *, vertical=False):
     return rows, expected
 
 
+@pytest.mark.parametrize("exported", ["float32", "bfloat16"], indirect=True)
 def test_onnx_actor_matches_normalized_jax_history_goal_and_motor_proposals(exported):
     env, actor, obs, goal, metadata, *_ = exported
     graph = actor_onnx(actor, obs, goal, env=env, metadata=metadata)
@@ -241,6 +252,7 @@ def test_onnx_actor_matches_normalized_jax_history_goal_and_motor_proposals(expo
 
 @pytest.mark.integration
 @pytest.mark.parametrize("vertical", [False, True])
+@pytest.mark.parametrize("exported", ["float32", "bfloat16"], indirect=True)
 def test_rust_codec_matches_jax_including_named_joints_fixed_root_and_step_limits(
     exported, rust_policy, vertical
 ):

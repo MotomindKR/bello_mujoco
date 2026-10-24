@@ -197,7 +197,12 @@ length. This preserves the reference gradient scale before clipping.
 Metrics include model/actor/critic losses, gradient norm, imagined reward,
 completed episodes, failures, skipped policy updates, and
 `collection/limited_fraction` for projection/slew intervention. Logging uses the
-existing local/W&B path. Reset sampling mixes uniform/difficult/historical
+existing local/W&B path. Collection also logs `physics/max_constraints` and
+`physics/contacts`; an `invalid/constraint_capacity` or
+`invalid/contact_capacity` result stops training before further optimization.
+Nonfinite actions, feedback, replay transitions, and normalization statistics
+are also rejected during collection, before model fitting.
+Reset sampling mixes uniform/difficult/historical
 weighting over one-second training bins. Difficulty uses an EMA of actual
 discounted episode returns attributed to the starting bin. At a clip timeout,
 the episode's mean step reward estimates the discounted continuation; terminal
@@ -217,6 +222,33 @@ atomically. Resume requires the same clean source commit, corpus identity, and
 resolved learning/environment/network settings. Only the total timestep budget
 and operational logging/checkpoint destinations may change; the dataset directory
 may move if its identity is preserved.
+
+Large checkpoint leaves transfer in row chunks of at most 16 MiB (or one row
+when a row is larger), retaining Equinox's NPY stream format. Full replay and
+collector continuation remain included. This bounds staging memory without
+replacing an exact continuation checkpoint with a model-only snapshot.
+
+The imagined recurrent loop computes only policy actions, learned dynamics, and
+causal feedback. Goals/reference samples and independent goal encodings are
+prepared before recurrence; reward
+and critic heads run over the flattened trajectory afterward, sharing one FK
+pass for predicted states. Reference body poses/twists use the verified corpus
+cache on integer collection clocks, with the same XY/yaw alignment as physical
+references. Sub-frame collection clocks compute FK after joint interpolation.
+This preserves derivatives through predicted states and the critic bootstrap.
+The short dynamics scan unrolls at most eight steps per loop iteration, exposing
+the reference-sized prediction window to the compiler without changing its loss.
+Checkpoint start/completion records include save and publication times so a
+slow save is visible separately from training throughput.
+
+All maintained SuperMimic recipes disable command transport delay and feedback
+filtering/latency, matching the reference comparison. The generic smoke now
+exercises that same control path. A CUDA audit found nonfinite feedback with the
+optional filtered hardware path; that configuration remains unvalidated for
+hardware commissioning and is rejected at GPU environment initialization.
+Its filter equations and the existing FK implementation
+are unchanged. No global Linux memory policy or third-party engine changes are
+part of the training implementation.
 
 ```bash
 uv run --group training bello-train \

@@ -40,23 +40,25 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
             filtering=env.config.observation_low_pass_filter,
         )
 
-        def value_input(state, frame):
-            reference = env.reference_state(frame, xy, yaw)
-            return critic_features(
-                state, reference, env.goal(frame), context, env.kinematics
-            )
+        def advance(frame, _):
+            frame = env.advance_reference_time(frame)
+            return frame, frame
 
-        def step(carry, _):
-            state, motor, previous_action, observations, feedback, frame, rng = carry
+        _, frames = jax.lax.scan(advance, start.reference_frame, None, length=horizon)
+        frames = jnp.concatenate((start.reference_frame[None], frames))
+        references = jax.vmap(lambda f: env.reference_state(f, xy, yaw))(frames)
+        goals = jax.vmap(env.goal)(frames)
+        latents = actor.encode_goal(goals[:-1], goal_norm)
+
+        def step(carry, inputs):
+            state, motor, observations, feedback, rng = carry
+            latent, reference_quaternion = inputs
             rng, feedback_key, observation_key = jax.random.split(rng, 3)
-            features = value_input(state, frame)
-            action = actor(observations, env.goal(frame), observation_norm, goal_norm)
+            action = actor.decode(observations, latent, observation_norm)
             command = env.mapping.command(action, motor, context[:count])
             successor = model.step(
                 state, motor, command.accepted, context, input_norm, output_norm
             )
-            next_frame = env.advance_reference_time(frame)
-            reference = env.reference_state(next_frame, xy, yaw)
             feedback = advance_feedback(
                 feedback,
                 successor,
@@ -70,58 +72,102 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
                 env.codec,
                 measured,
                 command.action,
-                reference.quaternion,
+                reference_quaternion,
                 context[:count],
                 observation_key,
                 noise=env.config.observation_noise,
                 filtering=env.config.observation_low_pass_filter,
             )
             observations = env.codec.advance_history(observations, sample)
-            reward, _ = env.mdp.reward(
-                successor, reference, command.action, previous_action
-            )
-            terminal = env.mdp.soft_termination(successor, reference)
-            clip = env.clip_id(next_frame)
-            end = (
-                env.reference_bank.time_offsets[clip]
-                + env.reference_bank.lengths[clip]
-                - 1
-            )
-            terminal = jnp.where(next_frame >= end, 1.0, terminal)
             return (
                 successor,
                 command.accepted,
-                command.action,
                 observations,
                 feedback,
-                next_frame,
                 rng,
-            ), (reward, terminal, features)
+            ), (successor, command.action)
 
         initial = (
             start.state,
             start.previous_motor,
-            start.previous_action,
             history,
             feedback_history,
-            start.reference_frame,
             noise_key,
         )
-        final, (rewards, terminals, features) = jax.lax.scan(
-            step, initial, None, length=horizon
+        _, (states, actions) = jax.lax.scan(
+            step, initial, (latents, references.quaternion[1:])
         )
-        final_features = value_input(final[0], final[5])
-        return ImaginedRollout(
-            rewards, terminals, jnp.concatenate((features, final_features[None]))
+        states = jax.tree.map(
+            lambda first, rest: jnp.concatenate((first[None], rest)),
+            start.state,
+            states,
         )
+        previous = jnp.concatenate((start.previous_action[None], actions[:-1]))
+        return states, actions, previous, frames, references, goals
 
-    result = jax.vmap(single)(
+    trajectories = jax.vmap(single)(
         tr,
         starts.history,
         starts.feedback_history,
         jax.random.split(key, tr.action.shape[0]),
     )
-    return jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), result)
+    states, actions, previous, frames, references, goals = jax.tree.map(
+        lambda x: jnp.swapaxes(x, 0, 1), trajectories
+    )
+
+    def flatten(value):
+        return value.reshape((-1,) + value.shape[2:])
+
+    def restore(value):
+        return value.reshape((horizon + 1, tr.action.shape[0]) + value.shape[1:])
+
+    bodies = jax.tree.map(
+        restore, jax.vmap(env.kinematics.forward)(jax.tree.map(flatten, states))
+    )
+    xy = jnp.broadcast_to(tr.alignment_xy, (horizon + 1,) + tr.alignment_xy.shape)
+    yaw = jnp.broadcast_to(tr.alignment_yaw, frames.shape)
+    targets = jax.tree.map(
+        restore,
+        jax.vmap(env.reference_bodies)(
+            frames.reshape(-1), flatten(xy), yaw.reshape(-1)
+        ),
+    )
+    contexts = jnp.broadcast_to(tr.context, (horizon + 1,) + tr.context.shape)
+
+    def features(state, reference, goal, context, body, target):
+        return critic_features(
+            state, reference, goal, context, env.kinematics, bodies=body, targets=target
+        )
+
+    critic_inputs = restore(
+        jax.vmap(features)(
+            *jax.tree.map(
+                flatten, (states, references, goals, contexts, bodies, targets)
+            )
+        )
+    )
+
+    def reward(state, reference, action, previous_action, body, target):
+        return env.mdp.reward(
+            state, reference, action, previous_action, bodies=body, targets=target
+        )[0]
+
+    successors, next_references, next_bodies, next_targets = jax.tree.map(
+        lambda x: x[1:], (states, references, bodies, targets)
+    )
+    rewards = jax.vmap(reward)(
+        *jax.tree.map(
+            flatten,
+            (successors, next_references, actions, previous, next_bodies, next_targets),
+        )
+    ).reshape((horizon, tr.action.shape[0]))
+    terminals = jax.vmap(env.mdp.soft_termination)(
+        *jax.tree.map(flatten, (successors, next_references))
+    ).reshape(rewards.shape)
+    clips = jax.vmap(env.clip_id)(frames[1:].reshape(-1)).reshape(rewards.shape)
+    end = env.reference_bank.time_offsets[clips] + env.reference_bank.lengths[clips] - 1
+    terminals = jnp.where(frames[1:] >= end, 1.0, terminals)
+    return ImaginedRollout(rewards, terminals, critic_inputs)
 
 
 def actor_loss(

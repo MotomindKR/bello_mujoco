@@ -2,6 +2,7 @@
 
 import json
 
+import jax.numpy as jnp
 import mujoco
 import numpy as np
 import onnx
@@ -84,22 +85,42 @@ def actor_onnx(actor, observation_norm, goal_norm, *, env, metadata):
             raise ValueError(
                 "exported actors must not contain hidden layer normalization"
             )
+        mixed = network.matmul_precision == "bfloat16"
+
+        def round_activation(value, name):
+            reduced = op("Cast", [value], name + "_bf16", to=TensorProto.BFLOAT16)
+            return op("Cast", [reduced], name, to=TensorProto.FLOAT)
+
+        def parameter(value):
+            return value.astype(jnp.bfloat16).astype(jnp.float32) if mixed else value
+
         for index, layer in enumerate(network.layers):
+            if mixed:
+                value = round_activation(value, f"{prefix}_input_{index}")
             value = op(
                 "Gemm",
                 [
                     value,
-                    constant(f"{prefix}_weight_{index}", np.asarray(layer.weight).T),
-                    constant(f"{prefix}_bias_{index}", layer.bias),
+                    constant(
+                        f"{prefix}_weight_{index}",
+                        np.asarray(parameter(layer.weight)).T,
+                    ),
+                    constant(f"{prefix}_bias_{index}", parameter(layer.bias)),
                 ],
                 f"{prefix}_linear_{index}",
             )
+            if mixed:
+                value = round_activation(value, f"{prefix}_rounded_linear_{index}")
             if index < len(network.layers) - 1:
                 if network.activation != "elu":
                     raise ValueError(
                         "SuperMimic actor export requires ELU hidden activations"
                     )
                 value = op("Elu", [value], f"{prefix}_activation_{index}", alpha=1.0)
+                if mixed:
+                    value = round_activation(
+                        value, f"{prefix}_rounded_activation_{index}"
+                    )
         return value
 
     latent = op("Tanh", [mlp(normalized_goal, actor.encoder, "encoder")], "latent")

@@ -68,9 +68,15 @@ class ToyEnv:
     def physical_state(self, state):
         return self.kinematics.from_qpos(state.data.qpos, state.data.qvel)
 
+    def physics_metrics(self, data):
+        return {}
+
     def reference_state(self, frame, xy, yaw):
         sample = self.reference_bank.sample_global_frame(frame)
         return self.kinematics.from_qpos(sample.qpos, sample.qvel)
+
+    def reference_bodies(self, frame, xy, yaw):
+        return self.kinematics.forward(self.reference_state(frame, xy, yaw))
 
     def clip_id(self, frame):
         return jnp.zeros_like(frame, dtype=jnp.int32)
@@ -248,6 +254,44 @@ def test_collection_episode_cap_preserves_timeout_successor_and_resets(toy_runne
 def test_episode_cap_rejects_invalid_steps(value):
     with pytest.raises(ValueError, match="max_episode_steps"):
         LearningConfig(max_episode_steps=value)
+
+
+def test_collection_rejects_overflowed_physics_capacity():
+    from bello_mujoco.envs.supermimic import BelloSuperMimicEnv
+
+    data = SimpleNamespace(
+        _impl=SimpleNamespace(
+            nefc=jnp.array([3, 9]), njmax=8, nacon=jnp.array([12]), naconmax=10
+        )
+    )
+    metrics = BelloSuperMimicEnv.physics_metrics(None, data)
+    assert float(metrics["physics/max_constraints"]) == 9
+    assert float(metrics["invalid/contact_capacity"]) == 1
+    with pytest.raises(RuntimeError, match="constraint_capacity"):
+        require_valid_metrics(metrics)
+
+
+def test_collection_rejects_nonfinite_feedback_before_replay_learning(
+    toy_runner, monkeypatch
+):
+    env, cfg, runner = toy_runner
+    original = ToyEnv.step_batch
+
+    def bad_feedback(self, *args, **kwargs):
+        state, observation, reward, done, info = original(self, *args, **kwargs)
+        state = replace(
+            state,
+            actor_feedback_history=state.actor_feedback_history.at[0, 0, 0].set(
+                jnp.nan
+            ),
+        )
+        return state, observation, reward, done, info
+
+    monkeypatch.setattr(ToyEnv, "step_batch", bad_feedback)
+    collect, _, _ = compile_updates(env, cfg)
+    _, metrics = collect(runner, env.reference_bank)
+    with pytest.raises(RuntimeError, match="invalid/collection"):
+        require_valid_metrics(metrics)
 
 
 def test_compiled_collect_fit_imagine_loop_preserves_terminal_successors(toy_runner):

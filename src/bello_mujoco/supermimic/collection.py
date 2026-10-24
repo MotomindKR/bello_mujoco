@@ -238,12 +238,33 @@ def collect_step(runner, env, config):
     commands = jax.vmap(env.mapping.command)(
         action, before.data.ctrl, before.joint_default_offset
     )
+    finite = jnp.all(
+        jnp.stack(
+            [
+                jnp.all(jnp.isfinite(value))
+                for value in jax.tree.leaves(
+                    (
+                        transition,
+                        observation,
+                        after.actor_feedback_history,
+                        learner.input_norm,
+                        learner.output_norm,
+                        learner.observation_norm,
+                        learner.goal_norm,
+                    )
+                )
+            ]
+        )
+    )
     return result, {
+        **env.physics_metrics(after.data),
         "collection/reward": reward.mean(),
         "collection/completed": done.sum(),
         "collection/failures": info["done/terminal"].sum(),
         "collection/limited_fraction": jnp.mean(
             jnp.any(jnp.abs(commands.requested - commands.accepted) > 1e-6, axis=-1)
         ),
-        "invalid/collection": jnp.any(info["done/nonfinite"]).astype(jnp.float32),
+        "invalid/collection": (jnp.any(info["done/nonfinite"]) | ~finite).astype(
+            jnp.float32
+        ),
     }
