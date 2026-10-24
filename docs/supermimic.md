@@ -326,6 +326,17 @@ use root height error, projected-gravity Z error, or nonfinite state. Imaginatio
 uses smooth survival factors and stops bootstrapping at clip end. These settings
 live in `tracking`; editing a profile does not change saved policies.
 
+The comparison defaults match Appendix A of the paper and the pinned unofficial
+implementation: absolute pelvis-height error above 0.25 m or an absolute
+difference above 0.8 between the reference and actual root-frame gravity Z
+components. The latter is dimensionless, corresponding to about 78 degrees of
+tilt for an upright reference. End-effector error, horizontal root drift, and
+joint RMS error are not termination gates. A full-clip evaluation fails at its
+first hard termination; reaching the clip end is a successful timeout. The
+10-second collection cap does not shorten benchmark recordings. See
+[the reference termination code](https://github.com/zita-ch/supermimic_vibed/blob/a1508d42c9d1699a52e8233ab16d08c488441ab9/supermimic/mdp.py#L148-L162)
+and [the reference evaluation loop](https://github.com/zita-ch/supermimic_vibed/blob/a1508d42c9d1699a52e8233ab16d08c488441ab9/supermimic/evaluate.py#L47-L83).
+
 ## Evaluate and export
 
 On Linux or Lima, select names in the recorded held-out split. Evaluation
