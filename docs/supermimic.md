@@ -671,6 +671,7 @@ These measurements cover one short held-out walking clip and one seed. They do
 not establish long-horizon recovery, corpus-wide generalization, target-device
 50 Hz timing, or physical operation. Larger screened corpora, longer held-out
 motions, multiple seeds, and matched PPO comparisons are the next experiments.
+
 ## Validated LAFAN corpus
 
 The complete 40-motion cohort was prepared at 50 Hz without activity or duration
@@ -684,3 +685,72 @@ Immutable dataset: `gyungmin/bello-mujoco/mini-supermimic-lafan40-20261024:v0`.
 Manifest SHA-256:
 `ed5a5c36cf1408ba16695c95ed98bb89688a91e73800da7842416e47812228c3`.
 The corpus contains retargeted references, not evidence of learned skill.
+
+## Broader LAFAN retraining
+
+The bounded LAFAN run used clean source
+`3f029897a2a695a08be2a43ba7b2659099dd480f`, the dataset above, and seed zero.
+An RTX 5090 completed 8,210 dynamics/critic update cycles, 7,710 actor updates,
+and 42,166,272 real simulation transitions in 4,506.42 seconds. This used 2,048
+environments, five dynamics batches of 1,024 windows, 1,024 imagined starts,
+32-step imagination, ten-second collection episodes, and network-only TF32.
+The [training run](https://wandb.ai/gyungmin/bello-mujoco/runs/fbf7it95) records
+the full configuration. This has different data and training settings from the
+earlier AMASS runs and is not a controlled before/after performance comparison.
+
+Every requested full recording received deterministic native CPU evaluation.
+The training-set and held-out reports remain separate; the latter holds out
+source sequences, not subjects.
+
+| Full recordings | Training (40) | Held out (9) |
+| --- | ---: | ---: |
+| Mean normalized return | 0.4526 | 0.1184 |
+| Mean completion fraction | 0.7190 | 0.2387 |
+| Complete recordings | 19/40 | 0/9 |
+| Mean root-position RMS | 4.841 m | 1.455 m |
+| Mean joint-position RMS | 16.35 deg | 28.75 deg |
+
+Four eight-second training windows were selected before actor training, using
+maximum wrist speed, maximum root height, or the largest two-second root rise
+from below 0.3 m. Their results expose failures hidden by aggregate completion:
+
+| Active window | Evaluated duration | Joint RMS | Root RMS |
+| --- | ---: | ---: | ---: |
+| Dance | 3.32/8 s; failed | 14.4 deg | 0.69 m |
+| Jump | 2.92/8 s; failed | 17.1 deg | 0.32 m |
+| Get up | 8/8 s | 29.4 deg | 1.45 m |
+| Fight/sports | 8/8 s | 19.0 deg | 1.85 m |
+
+Completion means avoiding the height/tilt termination thresholds. It does not
+establish accurate imitation. Complex tracking remains poor in this run.
+The 32-second comparison shows the entire target windows and labels failed
+policy segments while holding their last simulated frame.
+
+All 8,842 eligible training time bins were visited, with 254,071 completed
+collection episodes. None of the 1,048,576 saved replay transitions came from
+the held-out split. All 513,900 reference frames fit the static action range;
+the largest required normalized action was 15.88 against a clip of 20.
+At exact reference poses, the soft joint-limit cost reduces normalized score
+by approximately 2-5% before action-rate penalties. These checks do not prove
+dynamic feasibility. One remaining difference from the unofficial learner is
+the critic's history/goal inputs instead of explicit per-body position-error
+features; this run did not isolate its effect.
+
+All 932 CPU tests, formatting, lint, lock, and generated-protocol checks passed.
+The exported four-reference bundle passed Rust validation and 256-frame
+prerecorded inference parity: maximum observation/action error `3.64e-6`,
+accepted motor-target error `1.67e-6 rad`, with ONNX Runtime 1.23.2.
+
+Immutable artifacts:
+
+- Checkpoint: `gyungmin/bello-mujoco/supermimic-lafan-20261024-seed0_20261024_054340_125916:v8`.
+- Full evaluations: `gyungmin/bello-mujoco/supermimic-lafan-20261024-seed0-evaluation:v0`.
+- Active windows: `gyungmin/bello-mujoco/supermimic-lafan-20261024-seed0-active-evaluation:v0`.
+- [Analysis, graphs, video, and deployment bundle](https://wandb.ai/gyungmin/bello-mujoco/runs/7vokuael):
+  `gyungmin/bello-mujoco/supermimic-lafan-20261024-seed0-analysis:v0`.
+
+Instance `57471104` was automatically destroyed; Vast inventory confirmed its
+absence at 07:19:08 UTC on 2026-10-24. The observed rental interval was 113.71
+minutes at $0.72222/hour, approximately $1.37 before billing adjustments.
+Restore this checkpoint from a clean checkout at `3f02989`; the local
+`outputs/supermimic-lafan-20261023/training-runtime` preserves that exact source.
