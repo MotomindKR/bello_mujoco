@@ -29,6 +29,13 @@ networks:
 checkpoint_config:
   name: bello_mini_supermimic_lafan_seed${config.seed}
   every_updates: 2000
+checkpoint_evaluation:
+  enabled: true
+  windows:
+    - {clip: dance2_subject1, start_frame: 10027, max_steps: 400}
+    - {clip: jumps1_subject1, start_frame: 11613, max_steps: 400}
+    - {clip: fallAndGetUp1_subject1, start_frame: 7500, max_steps: 400}
+    - {clip: fightAndSports1_subject1, start_frame: 990, max_steps: 400}
 wandb_config:
   group: bello-mini-supermimic-lafan
   run_name: bello_mini_supermimic_lafan_seed${config.seed}

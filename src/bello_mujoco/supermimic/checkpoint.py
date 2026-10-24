@@ -50,6 +50,7 @@ def resume_contract(run_config):
     value = to_builtin(run_config)
     value.pop("checkpoint_config")
     value.pop("wandb_config")
+    value.pop("checkpoint_evaluation")
     value.pop("max_training_seconds")
     value["config"].pop("total_timesteps")
     value["dataset"].pop("directory")
@@ -83,9 +84,14 @@ def save_checkpoint(path, runner, run_config, *, git_commit, dataset_digest):
             staging / "actor.eqx",
             (learner.actor, learner.observation_norm, learner.goal_norm),
         )
+        eqx.tree_serialise_leaves(
+            staging / "dynamics.eqx",
+            (learner.model, learner.input_norm, learner.output_norm),
+        )
         shutil.copyfile(run_config.dataset.directory / MANIFEST, staging / MANIFEST)
         document["state_sha256"] = file_sha256(staging / "state.eqx")
         document["actor_sha256"] = file_sha256(staging / "actor.eqx")
+        document["dynamics_sha256"] = file_sha256(staging / "dynamics.eqx")
         (staging / "metadata.json").write_text(
             json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
         )
@@ -122,6 +128,7 @@ def checkpoint_metadata(path):
         "resolved_config",
         "state_sha256",
         "actor_sha256",
+        "dynamics_sha256",
     }
     if set(document) != required or document["task"] != "supermimic":
         raise ValueError("incompatible SuperMimic checkpoint metadata")
@@ -167,13 +174,13 @@ def restore_checkpoint(path, template, run_config, *, git_commit, dataset_digest
     return restored
 
 
-def load_actor(path, *, dataset_directory, reference_clips, use_viewer_model=False):
+def _evaluation_environment(
+    path, *, dataset_directory, reference_clips, use_viewer_model=False
+):
     from bello_mujoco.configuration import dataclass_from_dict
     from bello_mujoco.training.supermimic import SuperMimicTrainingRunConfig
-    from bello_mujoco.supermimic.model import Actor, Moments
     from bello_mujoco.training.supermimic import load_environment
     from bello_mujoco.sonic.corpus import verify_corpus
-    import jax
 
     path = Path(path)
     document = checkpoint_metadata(path)
@@ -212,6 +219,19 @@ def load_actor(path, *, dataset_directory, reference_clips, use_viewer_model=Fal
         evaluation_names=(),
         use_viewer_model=use_viewer_model,
     )
+    return document, config, env
+
+
+def load_actor(path, *, dataset_directory, reference_clips, use_viewer_model=False):
+    from bello_mujoco.supermimic.model import Actor, Moments
+
+    path = Path(path)
+    document, config, env = _evaluation_environment(
+        path,
+        dataset_directory=dataset_directory,
+        reference_clips=reference_clips,
+        use_viewer_model=use_viewer_model,
+    )
     codec = env.codec
     template = (
         Actor(
@@ -231,3 +251,25 @@ def load_actor(path, *, dataset_directory, reference_clips, use_viewer_model=Fal
         path / "actor.eqx", template
     )
     return env, actor, obs_norm, goal_norm, config
+
+
+def load_dynamics(path, *, dataset_directory, reference_clips):
+    """Load the diagnostic model snapshot without replay or optimizer allocation."""
+    from bello_mujoco.supermimic.model import Moments, WorldModel
+
+    path = Path(path)
+    document, config, env = _evaluation_environment(
+        path, dataset_directory=dataset_directory, reference_clips=reference_clips
+    )
+    if file_sha256(path / "dynamics.eqx") != document["dynamics_sha256"]:
+        raise ValueError("checkpoint dynamics checksum mismatch")
+    n, context_size = env.action_size, env.action_size + 5
+    template = (
+        WorldModel(n, context_size, config=config.networks, key=jax.random.PRNGKey(0)),
+        Moments.empty(13 + 4 * n + context_size),
+        Moments.empty(12 + 2 * n),
+    )
+    model, input_norm, output_norm = eqx.tree_deserialise_leaves(
+        path / "dynamics.eqx", template
+    )
+    return env, model, input_norm, output_norm, config

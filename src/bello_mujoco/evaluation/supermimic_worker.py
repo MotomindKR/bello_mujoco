@@ -14,9 +14,10 @@ def main():
         available = sorted(os.sched_getaffinity(0))
         assigned = available[request["index"] :: request["workers"]][:4]
         os.sched_setaffinity(0, assigned or available[:1])
-    from bello_mujoco.evaluation.software import configure_software_rendering
+    if request["videos"]:
+        from bello_mujoco.evaluation.software import configure_software_rendering
 
-    configure_software_rendering()
+        configure_software_rendering()
     from bello_mujoco.evaluation.supermimic import render_supermimic_checkpoint
 
     render_supermimic_checkpoint(

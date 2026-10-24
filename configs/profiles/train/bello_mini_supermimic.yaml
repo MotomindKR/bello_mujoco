@@ -108,6 +108,11 @@ checkpoint_config:
   upload_wandb_artifact: true
   wandb_artifact_name: null
   wandb_artifact_type: checkpoint
+checkpoint_evaluation:
+  enabled: false
+  cpu_cores: 1
+  finish_timeout_seconds: 900.0
+  windows: []
 wandb_config:
   group: bello-mini-supermimic
   run_name: bello_mini_supermimic_seed${config.seed}

@@ -464,7 +464,41 @@ def test_mini_checkpoint_actor_restores_exports_and_evaluates_held_out_clip(
     )
     headless_row = headless["clips"][held_out.stem]
     assert headless_row["rendered_steps"] == 0
-    assert headless_row == pytest.approx(row | {"rendered_steps": 0})
+    for key in row:
+        if key in ("motor_diagnostics", "failure_event"):
+            assert headless_row[key] == row[key]
+        else:
+            assert headless_row[key] == pytest.approx(
+                0 if key == "rendered_steps" else row[key]
+            )
+    assert set(headless_row["motor_diagnostics"]) == set(
+        restored.model.actuator_coordinate_names
+    )
+
+    from bello_mujoco.evaluation.world_model_audit import (
+        MotionWindow,
+        WorldModelAuditConfig,
+        audit_world_model,
+    )
+
+    model_report = audit_world_model(
+        WorldModelAuditConfig(
+            saved,
+            path.parent,
+            tmp_path / "model-audit.json",
+            (MotionWindow(held_out.stem, start_frame=1, max_steps=3),),
+            horizons=(1, 8),
+            anchor_stride=1,
+        )
+    )
+    window = model_report["windows"][f"{held_out.stem}:1"]
+    assert window["recorded_split"] == "evaluation"
+    assert window["observed_steps"] == window["tracking"]["planned_steps"] == 3
+    assert window["horizons"]["1"]["all"]["finite_windows"] == 3
+    assert window["horizons"]["8"]["all"]["windows"] == 0
+    assert window["tracking"]["normalized_return"] == pytest.approx(
+        window["tracking"]["episode_return"] / (5 * restored.control_timestep * 3)
+    )
     assert source_checks and all(value == commit for value in source_checks)
     with pytest.raises(ValueError, match="recorded held_out split"):
         evaluation.render_supermimic_checkpoint(

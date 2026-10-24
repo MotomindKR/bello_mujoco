@@ -8,6 +8,8 @@ The YAML files linked below are the authoritative field/default reference.
 | --- | --- | --- |
 | `bello-train` | [train.yaml](../configs/commands/train.yaml) | PPO tasks or Mini SuperMimic model-based learning |
 | `bello-prepare-lafan` | [prepare_lafan.yaml](../configs/commands/prepare_lafan.yaml) | Whole human BVH sequences to validated Mini clips |
+| `bello-audit-reference` | [audit_reference.yaml](../configs/commands/audit_reference.yaml) | Read-only reference torque, contact, and acceleration diagnostics |
+| `bello-audit-world-model` | [audit_world_model.yaml](../configs/commands/audit_world_model.yaml) | Contact-stratified autoregressive model errors against native rollouts |
 | `bello-eval` | [eval.yaml](../configs/commands/eval.yaml) | Linux CPU evaluation |
 | `bello-export-policy` | [export.yaml](../configs/commands/export.yaml) | ONNX/reference deployment bundle |
 | `bello-vast-train` | [vast_train.yaml](../configs/commands/vast_train.yaml) | Bounded remote training |

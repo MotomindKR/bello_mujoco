@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 
 from bello_mujoco.envs.geometry import tree_where
+from bello_mujoco.supermimic.control import motor_limit_flags
 from bello_mujoco.supermimic.replay import ReplayBuffer, Transition
 from bello_mujoco.supermimic.model import state_delta
 from bello_mujoco.supermimic.sampling import completed_return
@@ -238,6 +239,9 @@ def collect_step(runner, env, config):
     commands = jax.vmap(env.mapping.command)(
         action, before.data.ctrl, before.joint_default_offset
     )
+    limit_flags = motor_limit_flags(
+        commands, after.data.actuator_force, env.model.actuator_peak_force
+    )
     finite = jnp.all(
         jnp.stack(
             [
@@ -251,6 +255,7 @@ def collect_step(runner, env, config):
                         learner.output_norm,
                         learner.observation_norm,
                         learner.goal_norm,
+                        after.data.actuator_force,
                     )
                 )
             ]
@@ -264,6 +269,14 @@ def collect_step(runner, env, config):
         "collection/limited_fraction": jnp.mean(
             jnp.any(jnp.abs(commands.requested - commands.accepted) > 1e-6, axis=-1)
         ),
+        **{
+            f"collection/{name}_fraction": jnp.mean(jnp.any(flags, axis=-1))
+            for name, flags in limit_flags.items()
+        },
+        **{
+            f"motor/{name}_fraction": jnp.mean(flags, axis=0)
+            for name, flags in limit_flags.items()
+        },
         "invalid/collection": (jnp.any(info["done/nonfinite"]) | ~finite).astype(
             jnp.float32
         ),

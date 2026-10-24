@@ -9,8 +9,10 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from bello_mujoco.envs.supermimic import BelloSuperMimicEnv
+from bello_mujoco.evaluation.checkpoint_config import CheckpointEvaluationConfig
 from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.repository import (
     capture_repository_commit,
@@ -68,6 +70,9 @@ class SuperMimicTrainingRunConfig:
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
     warp: WarpConfig = field(default_factory=WarpConfig)
     checkpoint_config: CheckpointConfig = field(default_factory=CheckpointConfig)
+    checkpoint_evaluation: CheckpointEvaluationConfig = field(
+        default_factory=CheckpointEvaluationConfig
+    )
     wandb_config: WandbConfig = field(default_factory=WandbConfig)
 
     def __post_init__(self):
@@ -89,6 +94,8 @@ class SuperMimicTrainingRunConfig:
         if self.dataset.max_array_bytes <= 0:
             raise ValueError("dataset.max_array_bytes must be positive")
         validate_checkpoint_options(self.checkpoint_config)
+        if self.checkpoint_evaluation.enabled and not self.checkpoint_config.enabled:
+            raise ValueError("checkpoint evaluation requires enabled checkpoint saving")
         interval = self.checkpoint_config.every_updates
         if interval is not None and (type(interval) is not int or interval <= 0):
             raise ValueError(
@@ -185,11 +192,31 @@ def compile_updates(env, config):
 
 def require_valid_metrics(metrics):
     for name, value in jax.device_get(metrics).items():
-        scalar = float(value)
-        if not math.isfinite(scalar) or (name.startswith("invalid/") and scalar > 0):
+        values = np.asarray(value)
+        if not np.isfinite(values).all() or (
+            name.startswith("invalid/") and np.any(values > 0)
+        ):
             raise RuntimeError(
-                f"SuperMimic rejected {name}={scalar}; no further optimization was run"
+                f"SuperMimic rejected {name}={values}; no further optimization was run"
             )
+
+
+def training_metric_snapshot(metrics, motor_names, *, include_per_motor):
+    """Expand compact device vectors only at the existing console log interval."""
+    result = {}
+    for name, value in jax.device_get(metrics).items():
+        values = np.asarray(value)
+        if name.startswith("motor/"):
+            if values.shape != (len(motor_names),):
+                raise ValueError(f"{name} must contain one value per physical motor")
+            if include_per_motor:
+                for motor, scalar in zip(motor_names, values, strict=True):
+                    result[f"motor/{motor}/{name.removeprefix('motor/')}"] = float(
+                        scalar
+                    )
+        else:
+            result[name] = float(values)
+    return result
 
 
 def publish_checkpoint(path, runner, run_config, *, git_commit, dataset_digest, run):
@@ -257,6 +284,7 @@ def run_training(run_config):
             f"corpus needs {array_bytes} bytes; exceeds dataset.max_array_bytes"
         )
     run = None
+    evaluator = None
     succeeded = False
     try:
         run = create_wandb_run(run_config.wandb_config)
@@ -304,6 +332,16 @@ def run_training(run_config):
             },
         )
         root = checkpoint_path(run_config.checkpoint_config, cfg)
+        if run_config.checkpoint_evaluation.enabled:
+            from bello_mujoco.training.checkpoint_evaluation import CheckpointEvaluator
+
+            evaluator = CheckpointEvaluator(
+                root, run_config, parent_run_url=run.url if run is not None else None
+            )
+            print(
+                json.dumps({"checkpoint_evaluation_worker": str(evaluator.root)}),
+                flush=True,
+            )
         remaining = cfg.total_timesteps // cfg.num_envs
         vector_steps = int(jax.device_get(runner.collector.vector_steps))
         while vector_steps < cfg.warmup_steps:
@@ -356,20 +394,28 @@ def run_training(run_config):
             runner = replace(runner, update=runner.update + 1)
             update += 1
             metrics = jax.block_until_ready(metrics)
+            log_interval = update == 1 or update % 50 == 0
+            logged_metrics = training_metric_snapshot(
+                metrics,
+                env.model.actuator_coordinate_names,
+                include_per_motor=log_interval,
+            )
             track_metric_snapshot(
                 run,
-                metrics,
+                logged_metrics,
                 env_steps=vector_steps * cfg.num_envs,
                 update=update,
                 context={"phase": "train"},
             )
-            if update == 1 or update % 50 == 0:
+            if log_interval:
+                if evaluator is not None:
+                    evaluator.check()
                 print(
                     json.dumps(
                         {
                             "update": update,
                             "env_steps": vector_steps * cfg.num_envs,
-                            **{name: float(value) for name, value in metrics.items()},
+                            **logged_metrics,
                         },
                         sort_keys=True,
                     ),
@@ -390,6 +436,8 @@ def run_training(run_config):
                     dataset_digest=digest,
                     run=run,
                 )
+                if evaluator is not None:
+                    evaluator.submit(path)
         if int(jax.device_get(runner.actor_updates)) == 0:
             raise RuntimeError(
                 "training budget completed without an actor update; increase the budget or reduce model_warmup_updates"
@@ -404,6 +452,15 @@ def run_training(run_config):
                 dataset_digest=digest,
                 run=run,
             )
+            if evaluator is not None:
+                evaluator.submit(final)
         succeeded = True
     finally:
-        close_run(run, exit_code=0 if succeeded else 1)
+        try:
+            if evaluator is not None:
+                evaluator.close(wait=succeeded)
+        except BaseException:
+            succeeded = False
+            raise
+        finally:
+            close_run(run, exit_code=0 if succeeded else 1)

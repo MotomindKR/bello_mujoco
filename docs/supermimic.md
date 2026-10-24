@@ -197,7 +197,15 @@ length. This preserves the reference gradient scale before clipping.
 Metrics include model/actor/critic losses, gradient norm, imagined reward,
 completed episodes, failures, skipped policy updates, and
 `collection/limited_fraction` for projection/slew intervention. Logging uses the
-existing local/W&B path. Collection also logs `physics/max_constraints` and
+existing local/W&B path. Separate `collection/position_projected_fraction`,
+`collection/rate_limited_fraction`, and `collection/torque_saturated_fraction`
+count control steps with any affected motor. Per-motor fractions use physical
+coordinate names under `motor/` and are emitted on update 1 and every 50 updates.
+Projection compares requested and projected targets; rate limiting compares
+projected and accepted targets. Saturation means sampled actuator force reaches
+99% of the configured peak. Forces are sampled at the end of the control step;
+these metrics do not capture every physics-substep peak or certify thermal safety.
+Collection also logs `physics/max_constraints` and
 `physics/contacts`; an `invalid/constraint_capacity` or
 `invalid/contact_capacity` result stops training before further optimization.
 Nonfinite actions, feedback, replay transitions, and normalization statistics
@@ -217,11 +225,16 @@ learning or the curriculum.
 
 Checkpoints include full learner/optimizer state, normalizers, replay, collector
 and feedback memory, PRNG, sampling statistics, counters, corpus manifest, and a
-smaller actor-only state. Files are hashed, staged, fsynced, and published
+smaller actor-only state. `dynamics.eqx` separately stores the world model and its
+input/output normalizers, with its own SHA-256. This permits model audits without
+allocating replay or restoring optimizers; it is not a continuation checkpoint.
+Files are hashed, staged, fsynced, and published
 atomically. Resume requires the same clean source commit, corpus identity, and
 resolved learning/environment/network settings. Only the total timestep budget
-and operational logging/checkpoint destinations may change; the dataset directory
+and operational logging/checkpoint evaluation settings may change; the dataset directory
 may move if its identity is preserved.
+Historical checkpoints require their recorded runtime, including versions that
+predate the dynamics snapshot. New code does not rewrite their identities.
 
 Large checkpoint leaves transfer in row chunks of at most 16 MiB (or one row
 when a row is larger), retaining Equinox's NPY stream format. Full replay and
@@ -391,8 +404,77 @@ normalized return, completion, failure/timeout, root pose error, joint RMS error
 peak actuator effort ratio, and limiting frequency. Summary means weight clips
 equally. Normalized return uses the maximum tracking reward over the full planned
 clip; early failure cannot improve its denominator. A `steps` override retains
-that denominator. Foot-slip/thermal diagnostics, multi-seed learning curves,
+that denominator. Reports separate position projection, rate limiting, and
+sampled torque saturation, including fractions for each physical motor.
+`failure_event` records the first failed control step, reference frame, height
+and projected-gravity errors, and triggered gates. Multi-seed learning curves,
 and a matched PPO comparison remain experiments from the plan.
+
+### Reference and world-model audits
+
+These CPU commands write reports without modifying or rejecting dataset clips:
+
+```bash
+uv run bello-audit-reference motion_dataset=/data/mini \
+  output_path=outputs/reference-dynamics.json
+
+uv run bello-audit-world-model checkpoint_path=checkpoints/RUN/final \
+  motion_dataset=/data/mini output_path=outputs/model-errors.json \
+  windows='[{clip:jumps1_subject1,start_frame:11613,max_steps:400}]'
+```
+
+The reference audit uses `experiment=bello_mini_supermimic_lafan` by default,
+verifies the manifest, and samples all clips every ten source frames. Set
+`clips` or `frame_stride` explicitly for another selection. It reports physical
+motor inverse torque against peak/catalog ratings, differentiated speed and
+acceleration, unexplained free-root wrench, near-ground foot-point speed, and
+COM distance to the available near-foot polygon. Proximity uses
+`contact_distance_m=0.03`; sliding uses `slip_speed_m_s=0.2`.
+Inverse forces include the configured MuJoCo passive and soft-contact law at the
+literal reference pose. Small foot-clearance or acceleration changes can change
+these estimates substantially. A nonzero root wrench or torque exceedance is a
+diagnostic, not proof of infeasibility. The geometric polygon assumes quasi-static
+support, and rated torque depends on duty and cooling. Missing polygons are
+reported explicitly. The report records the clean source commit, verified corpus
+hash, and audit settings.
+
+World-model validation resets a frozen actor at each explicit source-frame
+window and records deterministic native trajectories. It autoregresses 1, 8,
+and 32 control steps using the recorded executed controls and context, with no
+policy actions recomputed from predicted states. Reports include root pose/twist
+and joint position/velocity errors in physical units, with mean, p95, maximum,
+and coverage. Strata distinguish stable ground-contact signatures, any contact
+change within the horizon, and wholly airborne windows. Missing coverage and
+nonfinite predictions are explicit. `anchor_stride=32` and
+`max_windows_per_horizon=32` bound computation. The same trajectories provide
+tracking, motor intervention, and first-failure diagnostics. Window returns use
+the planned window duration as denominator; they are distinct from full-clip
+benchmark scores. Reports label source frames and recorded training/held-out
+membership. This command requires a checkpoint containing `dynamics.eqx`.
+
+### Automatic checkpoint checks
+
+The LAFAN profile enables `checkpoint_evaluation` for four fixed 400-step dance,
+jump, get-up, and sports windows from training recordings. The common and smoke
+profiles leave it disabled. Enabled checks require explicit, unique windows and
+checkpoint saving. They do not evaluate held-out motions during training.
+
+Each saved checkpoint is queued to a separate CPU process, which measures window
+tracking and model errors from the same trajectories without rendering video.
+On Linux, `cpu_cores` (default 1, maximum 4) bounds affinity before JAX imports;
+the worker also lowers its own scheduling priority. Checkpoints are processed
+in update order; an identical periodic/final pair is evaluated once. Source,
+corpus, actor, dynamics, and metadata identities are checked before execution.
+Reports live under `checkpoint-evaluation/results/UPDATE/`. W&B uses a separate
+linked run whose step is the checkpoint update, preserving delayed score timing.
+Full-clip corpus evaluation remains a separate benchmark.
+
+Training polls worker health every 50 updates and drains all queued checks after
+the final checkpoint. A worker failure fails the run. Draining is bounded by
+`finish_timeout_seconds=900`; timeout terminates the worker and fails explicitly.
+A training failure cancels the worker. External Vast deadlines still apply to
+the entire job, including evaluation. These are operational settings and may
+change when resuming an otherwise identical training contract.
 
 Export creates actor-only ONNX with frozen normalization, self-contained physics,
 selected clips, named coordinate/IMU transforms, and history/goal/rotation/timing

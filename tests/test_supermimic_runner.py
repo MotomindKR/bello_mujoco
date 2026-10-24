@@ -29,6 +29,7 @@ class ToyData:
     qpos: jax.Array
     qvel: jax.Array
     ctrl: jax.Array
+    actuator_force: jax.Array
 
 
 @jax.tree_util.register_dataclass
@@ -60,6 +61,13 @@ class ToyEnv:
     action_clip: float = 20.0
     control_timestep: float = 0.02
     maximum_observation_delay_steps: int = 0
+
+    @property
+    def model(self):
+        return SimpleNamespace(
+            actuator_peak_force=jnp.full(self.action_size, 4.0),
+            actuator_coordinate_names=self.mapping.joint_names,
+        )
 
     @property
     def max_episode_steps(self):
@@ -106,7 +114,9 @@ class ToyEnv:
 
     def reset_batch(self, count, rng):
         qpos = jnp.broadcast_to(self.reference_bank.qpos[0], (count, 8))
-        data = ToyData(qpos, jnp.zeros((count, 7)), jnp.zeros((count, 1)))
+        data = ToyData(
+            qpos, jnp.zeros((count, 7)), jnp.zeros((count, 1)), jnp.zeros((count, 1))
+        )
         physical = jax.vmap(self.kinematics.from_qpos)(data.qpos, data.qvel)
         state = ToyState(
             data,
@@ -128,7 +138,7 @@ class ToyEnv:
         )
         qpos = state.data.qpos.at[:, 7:].add(self.control_timestep * command.accepted)
         qvel = state.data.qvel.at[:, 6:].set(command.accepted)
-        data = ToyData(qpos, qvel, command.accepted)
+        data = ToyData(qpos, qvel, command.accepted, command.accepted)
         physical = jax.vmap(self.kinematics.from_qpos)(qpos, qvel)
         stepped = replace(
             state,

@@ -1,0 +1,12 @@
+motion_dataset: null
+output_path: null
+experiment: bello_mini_supermimic_lafan
+clips: []  # Empty selects every clip in the verified manifest.
+frame_stride: 10
+contact_distance_m: 0.03
+slip_speed_m_s: 0.2
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/audit_reference/${now:%Y-%m-%d}/${now:%H-%M-%S}

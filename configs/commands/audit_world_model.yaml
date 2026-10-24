@@ -1,0 +1,12 @@
+checkpoint_path: null
+motion_dataset: null
+output_path: null
+windows: []  # Explicit clip/start_frame/max_steps records, with max_steps in control steps.
+horizons: [1, 8, 32]
+anchor_stride: 32
+max_windows_per_horizon: 32
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/audit_world_model/${now:%Y-%m-%d}/${now:%H-%M-%S}

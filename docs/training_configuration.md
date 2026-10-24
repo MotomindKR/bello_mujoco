@@ -87,7 +87,7 @@ the separate training/held-out evaluation reports.
 The [full profile](../configs/profiles/train/bello_mini_supermimic.yaml) owns
 `config` (learning/replay), `environment` (control, feedback, and randomization),
 `observations`, `tracking`, `networks`, `sampling`, `dataset`, `warp`,
-`checkpoint_config`, and `wandb_config`. These decode into
+`checkpoint_config`, `checkpoint_evaluation`, and `wandb_config`. These decode into
 `SuperMimicTrainingRunConfig`; there is no PPO config in this task. The profile
 inherits only the Mini motion asset configuration, preserving its tuned gains
 and joint target restrictions. The
@@ -96,6 +96,12 @@ overrides model widths and learning sizes for a compiled-loop check.
 The [pilot profile](../configs/profiles/train/bello_mini_supermimic_pilot.yaml)
 retains the full networks and 32-step imagination, while reducing environment,
 replay, and optimizer batch sizes for initial single-GPU learning measurements.
+`checkpoint_evaluation` owns isolated CPU window checks: `enabled`, `cpu_cores`,
+`finish_timeout_seconds`, and explicit `windows` containing `clip`, `start_frame`,
+and `max_steps`. The LAFAN profile enables four fixed dynamic training windows;
+the common profile disables checks. These operational settings may change on
+resume. Reports contain tracking and contact-stratified model errors, with a
+separate W&B update clock; see [automatic checkpoint checks](supermimic.md#automatic-checkpoint-checks).
 The [AMASS profile](../configs/profiles/train/bello_mini_supermimic_amass.yaml)
 uses 1,024 environments with the full networks. Its `max_training_seconds` stops
 training after 75 minutes, including setup and compilation, and saves the full

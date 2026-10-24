@@ -32,6 +32,8 @@ Maintained experiments are `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
 `bello_mini_supermimic_amass`, and `bello_mini_supermimic_lafan`.
 SuperMimic trains Mini from scratch with learned
 dynamics and imagined policy gradients; see [the workflow](docs/supermimic.md).
+`bello-audit-reference` reports literal-reference dynamics diagnostics;
+`bello-audit-world-model` compares learned predictions with native rollouts.
 SONIC transfer is an explicit pretrained-only
 workflow; see [SONIC transfer](docs/sonic_transfer.md). Values live in YAML, not documentation tables.
 Checkpoints require their exact clean root Git commit and pinned dependencies.

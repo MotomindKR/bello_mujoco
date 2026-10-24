@@ -19,6 +19,7 @@ from bello_mujoco.supermimic.config import ControlConfig
 class MotorCommand:
     action: jax.Array
     requested: jax.Array
+    projected: jax.Array
     accepted: jax.Array
 
 
@@ -86,5 +87,17 @@ class ActionMapping:
         )
         projected = project_motor_target(requested, self.neutral_motor, self)
         return MotorCommand(
-            action, requested, limit_motor_step(projected, previous_motor_target, self)
+            action,
+            requested,
+            projected,
+            limit_motor_step(projected, previous_motor_target, self),
         )
+
+
+def motor_limit_flags(command, actuator_force, peak_force):
+    """Separate command position/rate interventions from observed force clipping."""
+    return {
+        "position_projected": jnp.abs(command.projected - command.requested) > 1e-6,
+        "rate_limited": jnp.abs(command.accepted - command.projected) > 1e-6,
+        "torque_saturated": jnp.abs(actuator_force) >= 0.99 * peak_force,
+    }

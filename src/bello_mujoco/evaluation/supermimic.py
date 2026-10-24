@@ -25,6 +25,7 @@ from bello_mujoco.evaluation.render import (
 )
 from bello_mujoco.supermimic import rotations as rot
 from bello_mujoco.supermimic.checkpoint import load_actor
+from bello_mujoco.supermimic.control import motor_limit_flags
 from bello_mujoco.training.supermimic import load_environment
 from bello_mujoco.sonic.corpus import MANIFEST
 
@@ -96,6 +97,7 @@ def render_supermimic_checkpoint(
         native_step = make_native_motion_step(env, **capacities)
         goal_at = jax.jit(env.goal)
         command_at = jax.jit(env.mapping.command)
+        flags_at = jax.jit(motor_limit_flags)
 
         measure_at = jax.jit(partial(_tracking_errors, env))
         planned_steps = math.ceil(
@@ -127,6 +129,12 @@ def render_supermimic_checkpoint(
         total, failed, timed_out, completed = 0.0, False, False, 0
         root_errors, orientation_errors, joint_errors = [], [], []
         peak_effort, limited = 0.0, 0
+        motor_counts = {
+            name: np.zeros(env.action_size, dtype=np.int64)
+            for name in ("position_projected", "rate_limited", "torque_saturated")
+        }
+        intervention_steps = dict.fromkeys(motor_counts, 0)
+        failure_event = None
         try:
             for _ in range(limit):
                 action = infer(history, goal_at(state.reference_time))
@@ -146,6 +154,13 @@ def render_supermimic_checkpoint(
                     raise RuntimeError(
                         "SuperMimic native evaluation encountered nonfinite state"
                     )
+                flags = flags_at(
+                    proposal, data.actuator_force, env.model.actuator_peak_force
+                )
+                for diagnostic, values in flags.items():
+                    values = np.asarray(values)
+                    motor_counts[diagnostic] += values
+                    intervention_steps[diagnostic] += int(values.any())
                 position_error, orientation_error, joint_error = measure_at(state)
                 root_errors.append(float(position_error))
                 orientation_errors.append(float(orientation_error))
@@ -163,6 +178,19 @@ def render_supermimic_checkpoint(
                 history = env.codec.advance_history(history, observation)
                 failed |= bool(info["done/terminal"])
                 timed_out |= bool(info["done/timeout"])
+                if bool(info["done/terminal"]) and failure_event is None:
+                    reference = env.reference_state(
+                        state.reference_time, state.alignment_xy, state.alignment_yaw
+                    )
+                    height, tilt = env.mdp.errors(env.physical_state(state), reference)
+                    failure_event = {
+                        "step": completed,
+                        "reference_frame": float(state.reference_time),
+                        "height_error_m": float(height),
+                        "gravity_projection_error": float(tilt),
+                        "height_failed": bool(info["done/height"]),
+                        "tilt_failed": bool(info["done/orientation"]),
+                    }
                 if name in videos:
                     write_video_frame(
                         renderer,
@@ -194,6 +222,18 @@ def render_supermimic_checkpoint(
             "joint_position_rms_rad": float(np.sqrt(np.mean(np.square(joint_errors)))),
             "motor_peak_effort_ratio": peak_effort,
             "limited_step_fraction": limited / completed,
+            **{
+                f"{name}_step_fraction": count / completed
+                for name, count in intervention_steps.items()
+            },
+            "motor_diagnostics": {
+                motor: {
+                    f"{name}_step_fraction": float(counts[index] / completed)
+                    for name, counts in motor_counts.items()
+                }
+                for index, motor in enumerate(env.model.actuator_coordinate_names)
+            },
+            "failure_event": failure_event,
         }
         print(
             json.dumps(
@@ -237,6 +277,9 @@ def _evaluation_report(results, *, split="held_out"):
         "joint_position_rms_rad",
         "motor_peak_effort_ratio",
         "limited_step_fraction",
+        "position_projected_step_fraction",
+        "rate_limited_step_fraction",
+        "torque_saturated_step_fraction",
     )
     if any(
         not math.isfinite(row[field]) for row in results.values() for field in fields

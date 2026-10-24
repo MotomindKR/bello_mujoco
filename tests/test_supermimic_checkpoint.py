@@ -145,12 +145,59 @@ def test_checkpoint_rejects_changed_contract_or_corrupted_state(continuation, tm
         )
 
 
-def test_profiles_decode_frozen_task_configs_and_preserve_motion_gains():
+def test_dynamics_snapshot_loads_without_replay_and_checks_its_own_hash(
+    continuation, tmp_path, monkeypatch
+):
+    runner, config, digest = continuation
+    path = tmp_path / "diagnostic-checkpoint"
+    checkpoint.save_checkpoint(
+        path, runner, config, git_commit="0" * 40, dataset_digest=digest
+    )
+    document = checkpoint.checkpoint_metadata(path)
+    monkeypatch.setattr(
+        checkpoint,
+        "_evaluation_environment",
+        lambda *a, **k: (document, config, SimpleNamespace(action_size=1)),
+    )
+    (path / "state.eqx").unlink()
+    _, model, inputs, outputs, _ = checkpoint.load_dynamics(
+        path, dataset_directory=config.dataset.directory, reference_clips=("fixture",)
+    )
+    for actual, expected in zip(
+        jax.tree.leaves((model, inputs, outputs)),
+        jax.tree.leaves(
+            (
+                runner.learner.model,
+                runner.learner.input_norm,
+                runner.learner.output_norm,
+            )
+        ),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(actual, expected)
+    with (path / "dynamics.eqx").open("ab") as stream:
+        stream.write(b"corrupt")
+    with pytest.raises(ValueError, match="dynamics checksum"):
+        checkpoint.load_dynamics(
+            path,
+            dataset_directory=config.dataset.directory,
+            reference_clips=("fixture",),
+        )
+
+
+def test_profiles_preserve_stiffness_and_motor_contract_with_damping_overrides():
     from bello_mujoco.configuration import motion_training_profile
 
     run = supermimic_training_profile(Path("motions/local"))
     motion = motion_training_profile(name="bello_mini_motion")
-    assert run.asset_config.actuator_config == motion.asset_config.actuator_config
+    changed = False
+    for name, actuator in run.asset_config.actuator_config.joints.items():
+        baseline = motion.asset_config.actuator_config.joints[name]
+        assert actuator.gains[0] == baseline.gains[0]
+        assert 0 < actuator.gains[1] <= baseline.gains[1]
+        assert replace(actuator, gains=baseline.gains) == baseline
+        changed |= actuator.gains != baseline.gains
+    assert changed
     smoke = supermimic_training_profile(
         Path("motions/local"), name="bello_mini_supermimic_smoke"
     )
