@@ -1,4 +1,6 @@
 # Asset gains come from the canonical bello_mini_motion profile.
+asset_config:
+  self_collisions: false
 dataset:
   directory: motions/local
   evaluation_clips: []

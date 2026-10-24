@@ -75,6 +75,9 @@ command delay and feedback filtering/latency for reference comparison, inherited
 from the common SuperMimic recipe. Hardware filtering/delay commissioning uses
 separate explicitly configured settings. The return sampler
 uses alpha 0.2 and a 0.001 historical-difficulty EMA.
+The common SuperMimic recipe sets `asset_config.self_collisions: false`, matching
+the unofficial reproduction. Robot-ground contacts remain enabled. Other tasks
+retain the model's default self-collision setting.
 SuperMimic allocates a shared contact pool of 128 contacts per environment and
 1,024 constraint rows per environment. Collection reports usage and rejects an
 update if either physics capacity overflows.

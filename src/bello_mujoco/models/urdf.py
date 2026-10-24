@@ -4,6 +4,7 @@ import math
 import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 
 import mujoco
@@ -60,6 +61,7 @@ def compile_urdf_to_mjcf(
     viewer_mjcf_path: Path,
     *,
     neighbor_exclusion_depth: int = 2,
+    self_collisions: bool = True,
     actuator_config: ActuatorConfig,
     actuated_joint_order: tuple[str, ...],
     enforce_policy_effort_limits: bool = True,
@@ -76,7 +78,10 @@ def compile_urdf_to_mjcf(
     ensure_free_root_joint(root, robot)
     ensure_acceleration_stage_sensor(root, robot)
     keep_fixed_link_geoms_massless(root, massless_fixed_urdf_link_names(urdf_path))
-    ensure_neighbor_collision_excludes(root, depth=neighbor_exclusion_depth)
+    if self_collisions:
+        ensure_neighbor_collision_excludes(root, depth=neighbor_exclusion_depth)
+    else:
+        exclude_robot_self_collisions(root)
     ensure_position_actuators(
         root,
         actuator_config,
@@ -448,6 +453,16 @@ def ensure_neighbor_collision_excludes(root: ET.Element, *, depth: int) -> None:
         graph[parent].add(child)
         graph[child].add(parent)
 
+    _add_collision_excludes(root, nearby_body_pairs(names, graph, depth))
+
+
+def exclude_robot_self_collisions(root: ET.Element) -> None:
+    """Exclude robot-body pairs while preserving contacts with the world."""
+    names, _ = body_graph(root)
+    _add_collision_excludes(root, combinations(names, 2))
+
+
+def _add_collision_excludes(root, pairs):
     contact = root.find("contact")
     if contact is None:
         contact = ET.SubElement(root, "contact")
@@ -456,7 +471,7 @@ def ensure_neighbor_collision_excludes(root: ET.Element, *, depth: int) -> None:
         for exclude in contact.findall("exclude")
     }
 
-    for body1, body2 in nearby_body_pairs(names, graph, depth):
+    for body1, body2 in pairs:
         key = tuple(sorted((body1, body2)))
         if key in existing:
             continue

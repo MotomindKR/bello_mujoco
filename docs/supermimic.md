@@ -241,7 +241,10 @@ the reference-sized prediction window to the compiler without changing its loss.
 Checkpoint start/completion records include save and publication times so a
 slow save is visible separately from training throughput.
 
-All maintained SuperMimic recipes disable command transport delay and feedback
+All maintained SuperMimic recipes disable robot self-collisions, preserving
+robot-ground contacts, to match the unofficial reproduction. This choice is
+recorded in `asset_config.self_collisions` and applies to both generated models.
+They also disable command transport delay and feedback
 filtering/latency, matching the reference comparison. The generic smoke now
 exercises that same control path. A CUDA audit found nonfinite feedback with the
 optional filtered hardware path; that configuration remains unvalidated for

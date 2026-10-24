@@ -26,6 +26,12 @@ home keyframe. Physics and visual MJCF files are process-local. Physics omits
 non-colliding visuals; both models share inertials and dynamics. There is no
 preparation command, persistent cache, manifest, lease, or embedded-wheel fallback.
 
+`asset_config.self_collisions` defaults to true. Setting it to false excludes
+contacts between robot bodies in both generated models; robot-ground contacts,
+geometry, inertials, joint stops, and actuators are preserved. The SuperMimic
+comparison recipes disable self-collisions to match the pinned unofficial
+implementation. This is an experiment setting, not a canonical URDF change.
+
 Initialization checks required links/joints, primitive collision geometry,
 actuator coverage, limits, and nominal-pose self-collisions. Collision errors name the shapes and penetration;
 correct the nominal actuator pose or canonical collision geometry. The actual

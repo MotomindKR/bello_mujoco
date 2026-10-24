@@ -25,6 +25,7 @@ class ModelConfig:
     target_total_mass_kg: float | None = None
     end_effector_payload_mass_kg: float = 0.0
     neighbor_exclusion_depth: int = 2
+    self_collisions: bool = True
     enforce_policy_effort_limits: bool = True
     imu_config: ImuSensorConfig = ImuSensorConfig()
     actuator_mode: ActuatorMode | None = None
@@ -33,6 +34,8 @@ class ModelConfig:
     joint_gains: dict[str, tuple[float, float]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if type(self.self_collisions) is not bool:
+            raise ValueError("self_collisions must be a boolean")
         definition = robot_definition(self.asset)
         limits = FrozenDict(
             {name: tuple(bounds) for name, bounds in self.joint_soft_limits.items()}
@@ -121,6 +124,7 @@ def compile_robot(config: ModelConfig) -> CompiledRobot:
         physics,
         visual,
         neighbor_exclusion_depth=config.neighbor_exclusion_depth,
+        self_collisions=config.self_collisions,
         actuator_config=config.actuator_config,
         actuated_joint_order=joint_order,
         enforce_policy_effort_limits=config.enforce_policy_effort_limits,
