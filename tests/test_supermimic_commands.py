@@ -26,6 +26,7 @@ def command(name, overrides):
         "bello_mini_supermimic_smoke",
         "bello_mini_supermimic_pilot",
         "bello_mini_supermimic_amass",
+        "bello_mini_supermimic_lafan",
     ],
 )
 def test_training_cli_routes_dataset_seed_and_resume_without_pretrained(
@@ -69,7 +70,8 @@ def test_training_cli_rejects_irrelevant_supermimic_flags(invalid, monkeypatch):
         cli._train_hydra.__wrapped__(command("train", overrides))
 
 
-def test_evaluation_cli_routes_held_out_clips_and_first_frame_options(monkeypatch):
+@pytest.mark.parametrize("split", ["held_out", "training"])
+def test_evaluation_cli_routes_split_and_first_frame_options(monkeypatch, split):
     from bello_mujoco.evaluation import supermimic
 
     captured = []
@@ -83,6 +85,7 @@ def test_evaluation_cli_routes_held_out_clips_and_first_frame_options(monkeypatc
         "checkpoint_path=checkpoints/test",
         "motion_dataset=/tmp/corpus",
         "evaluation_clips=[held_out]",
+        f"evaluation_split={split}",
         "output_path=outputs/test",
         "stop_on_done=true",
     ]
@@ -90,7 +93,7 @@ def test_evaluation_cli_routes_held_out_clips_and_first_frame_options(monkeypatc
     cli._eval_hydra.__wrapped__(command("eval", overrides))
     args, kwargs = captured[0]
     assert args[2] == ("held_out",)
-    assert kwargs == {"steps": None, "stop_on_terminal": True}
+    assert kwargs == {"steps": None, "stop_on_terminal": True, "split": split}
 
 
 @pytest.mark.parametrize(

@@ -25,6 +25,7 @@ def main():
         tuple(request["selected"]),
         request["output"],
         video_clips=tuple(request["videos"]),
+        split=request["split"],
     )
 
 

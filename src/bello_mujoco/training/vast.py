@@ -72,6 +72,7 @@ class VastTrainConfig:
     evaluation_clips: tuple[str, ...] = ()
     evaluation_video_clips: tuple[str, ...] | None = None
     evaluation_workers: int = 1
+    evaluate_training_split: bool = False
     total_timesteps: int | None = None
     num_envs: int | None = None
     learning_rate: float | None = None
@@ -125,10 +126,12 @@ def validate_config(config: VastTrainConfig) -> None:
     if type(config.evaluation_workers) is not int or config.evaluation_workers <= 0:
         raise ValueError("evaluation_workers must be a positive integer")
     if not is_supermimic_experiment(config.experiment) and (
-        config.evaluation_workers != 1 or config.evaluation_video_clips is not None
+        config.evaluation_workers != 1
+        or config.evaluation_video_clips is not None
+        or config.evaluate_training_split
     ):
         raise ValueError(
-            "evaluation_workers and evaluation_video_clips require SuperMimic"
+            "evaluation_workers, evaluation_video_clips and evaluate_training_split require SuperMimic"
         )
     if config.evaluation_video_clips is not None and (
         len(set(config.evaluation_video_clips)) != len(config.evaluation_video_clips)

@@ -39,7 +39,23 @@ class RunnerState:
 def maximum_return(env, config):
     if config.gamma < 1:
         return 5.0 * env.control_timestep / (1.0 - config.gamma)
-    return 5.0 * env.control_timestep * env.max_episode_steps
+    return 5.0 * env.control_timestep * episode_horizon(env, config)
+
+
+def episode_horizon(env, config):
+    return (
+        env.max_episode_steps
+        if config.max_episode_steps is None
+        else min(env.max_episode_steps, config.max_episode_steps)
+    )
+
+
+def collection_termination(episode_length, done, info, config):
+    if config.max_episode_steps is None:
+        return done, info
+    timeout = info["done/timeout"] | (episode_length >= config.max_episode_steps)
+    done = done | timeout
+    return done, {**info, "done/timeout": timeout, "done/any": done}
 
 
 def make_transition(env, before, after, observation, action, episode_ids, reward, info):
@@ -140,6 +156,7 @@ def collect_step(runner, env, config):
     after, observation, reward, done, info = env.step_batch(
         before, action, physics_key, reset=False
     )
+    done, info = collection_termination(after.episode_length, done, info, config)
     transition = make_transition(
         env,
         before,
@@ -163,7 +180,7 @@ def collect_step(runner, env, config):
             info["done/terminal"],
             info["done/timeout"],
             gamma=config.gamma,
-            max_episode_steps=env.max_episode_steps,
+            max_episode_steps=episode_horizon(env, config),
         ),
         done,
         maximum_return(env, config),

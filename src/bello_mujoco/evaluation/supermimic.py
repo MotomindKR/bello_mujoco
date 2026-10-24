@@ -26,6 +26,25 @@ from bello_mujoco.evaluation.render import (
 from bello_mujoco.supermimic import rotations as rot
 from bello_mujoco.supermimic.checkpoint import load_actor
 from bello_mujoco.training.supermimic import load_environment
+from bello_mujoco.sonic.corpus import MANIFEST
+
+
+def validate_evaluation_split(config, selected_clips, split):
+    if split not in ("held_out", "training"):
+        raise ValueError("evaluation split must be held_out or training")
+    document = json.loads((config.dataset.directory / MANIFEST).read_text())
+    expected = "train" if split == "training" else "evaluation"
+    members = {
+        Path(entry["file"]).stem
+        for entry in document["clips"]
+        if entry["split"] == expected
+    }
+    if not set(selected_clips).issubset(members):
+        raise ValueError(f"selected clips must belong to the recorded {split} split")
+    if split == "held_out" and not set(selected_clips).issubset(
+        config.dataset.evaluation_clips
+    ):
+        raise ValueError("selected clips must belong to the recorded held-out split")
 
 
 def render_supermimic_checkpoint(
@@ -37,9 +56,10 @@ def render_supermimic_checkpoint(
     steps=None,
     stop_on_terminal=True,
     video_clips=None,
+    split="held_out",
 ):
     if not selected_clips or len(set(selected_clips)) != len(selected_clips):
-        raise ValueError("SuperMimic evaluation requires unique held-out clip names")
+        raise ValueError("SuperMimic evaluation requires unique clip names")
     if steps is not None and (type(steps) is not int or steps <= 0):
         raise ValueError("steps must be a positive integer or null")
     videos = set(selected_clips if video_clips is None else video_clips)
@@ -56,8 +76,7 @@ def render_supermimic_checkpoint(
         reference_clips=(selected_clips[0],),
         use_viewer_model=bool(videos),
     )
-    if any(name not in config.dataset.evaluation_clips for name in selected_clips):
-        raise ValueError("selected clips must belong to the recorded held-out split")
+    validate_evaluation_split(config, selected_clips, split)
     infer = jax.jit(lambda h, goal: actor(h, goal, obs_norm, goal_norm))
     results = {}
     for index, name in enumerate(selected_clips):
@@ -185,7 +204,7 @@ def render_supermimic_checkpoint(
             ),
             flush=True,
         )
-    report = _evaluation_report(results)
+    report = _evaluation_report(results, split=split)
     (output / "summary.json").write_text(
         json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
     )
@@ -208,7 +227,7 @@ def _tracking_errors(env, state):
     )
 
 
-def _evaluation_report(results):
+def _evaluation_report(results, *, split="held_out"):
     fields = (
         "episode_return",
         "normalized_return",
@@ -225,6 +244,8 @@ def _evaluation_report(results):
         raise RuntimeError("nonfinite SuperMimic evaluation results")
     summary = {
         "clip_count": len(results),
+        "split": split,
+        "measures_held_out_generalization": split == "held_out",
         "weighting": "equal_per_clip",
         "start": "first_frame",
         "actions": "deterministic",
@@ -238,7 +259,7 @@ def _evaluation_report(results):
 
 
 def _evaluate_partition(arguments):
-    checkpoint, dataset, selected, output, videos, index, workers = arguments
+    checkpoint, dataset, selected, output, videos, index, workers, split = arguments
     subprocess.run(
         [sys.executable, "-m", "bello_mujoco.evaluation.supermimic_worker"],
         input=json.dumps(
@@ -250,6 +271,7 @@ def _evaluate_partition(arguments):
                 "videos": videos,
                 "index": index,
                 "workers": workers,
+                "split": split,
             }
         ),
         text=True,
@@ -266,8 +288,11 @@ def evaluate_supermimic_corpus(
     *,
     video_clips=None,
     workers=1,
+    split="held_out",
 ):
-    """Evaluate every selected held-out clip, rendering only the explicit video subset."""
+    """Evaluate complete selected clips with explicitly labelled split semantics."""
+    if split not in ("held_out", "training"):
+        raise ValueError("evaluation split must be held_out or training")
     if type(workers) is not int or workers <= 0:
         raise ValueError("workers must be a positive integer")
     if not selected_clips or len(set(selected_clips)) != len(selected_clips):
@@ -277,7 +302,12 @@ def evaluate_supermimic_corpus(
         raise ValueError("video_clips must be a unique subset of selected_clips")
     if workers == 1:
         return render_supermimic_checkpoint(
-            checkpoint, dataset, selected_clips, output_directory, video_clips=videos
+            checkpoint,
+            dataset,
+            selected_clips,
+            output_directory,
+            video_clips=videos,
+            split=split,
         )
     output = Path(output_directory)
     count = min(workers, len(selected_clips))
@@ -293,6 +323,7 @@ def evaluate_supermimic_corpus(
                 tuple(name for name in videos if name in selected),
                 index,
                 count,
+                split,
             )
         )
     results = {}
@@ -306,7 +337,9 @@ def evaluate_supermimic_corpus(
                 video.replace(output / video.name)
             (partition / "summary.json").unlink()
             partition.rmdir()
-    report = _evaluation_report(results)
+    if set(results) != set(selected_clips):
+        raise RuntimeError("evaluation workers returned a different clip set")
+    report = _evaluation_report(results, split=split)
     (output / "summary.json").write_text(
         json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n"
     )

@@ -16,6 +16,7 @@ import types
 from typing import Any, Protocol
 
 import mujoco
+import mink
 import numpy as np
 
 from bello_mujoco.envs.torso import (
@@ -569,6 +570,17 @@ def import_pinned_gmr_retargeter() -> type[Any]:
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
+        # Pinned GMR supplies limits as argument six; Mink 1.2 uses that slot
+        # for safety_break. Keep the ABI translation local to this vendor module.
+        module.mink = types.SimpleNamespace(
+            Configuration=mink.Configuration,
+            ConfigurationLimit=mink.ConfigurationLimit,
+            VelocityLimit=mink.VelocityLimit,
+            FrameTask=mink.FrameTask,
+            SE3=mink.SE3,
+            SO3=mink.SO3,
+            solve_ik=_solve_pinned_gmr_ik,
+        )
     except BaseException:
         sys.modules.pop(module_name, None)
         sys.modules.pop(package_name, None)
@@ -579,6 +591,12 @@ def import_pinned_gmr_retargeter() -> type[Any]:
     except ValueError as error:
         raise RuntimeError("GMR retargeter was not imported from deps/GMR") from error
     return module.GeneralMotionRetargeting
+
+
+def _solve_pinned_gmr_ik(configuration, tasks, dt, solver, damping, limits):
+    return mink.solve_ik(
+        configuration, tasks, dt, solver, damping=damping, limits=limits
+    )
 
 
 def _validate_model_identity(

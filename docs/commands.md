@@ -7,6 +7,7 @@ The YAML files linked below are the authoritative field/default reference.
 | Command | Configuration | Purpose |
 | --- | --- | --- |
 | `bello-train` | [train.yaml](../configs/commands/train.yaml) | PPO tasks or Mini SuperMimic model-based learning |
+| `bello-prepare-lafan` | [prepare_lafan.yaml](../configs/commands/prepare_lafan.yaml) | Whole human BVH sequences to validated Mini clips |
 | `bello-eval` | [eval.yaml](../configs/commands/eval.yaml) | Linux CPU evaluation |
 | `bello-export-policy` | [export.yaml](../configs/commands/export.yaml) | ONNX/reference deployment bundle |
 | `bello-vast-train` | [vast_train.yaml](../configs/commands/vast_train.yaml) | Bounded remote training |
@@ -129,6 +130,12 @@ The public `offer` tree exposes `gpu_name`, `min_gpu_ram_gb`, `min_cpu_ram_gb`,
 `disk_gb` and the existing marketplace filters.
 Training supports exactly one GPU per instance. Use `dry_run=true` to inspect
 selection without renting.
+SuperMimic evaluation accepts `evaluation_split=held_out` (default) or
+`evaluation_split=training`, with manifest membership checked in both cases.
+Training-motion reports are explicitly labelled as reconstruction rather than
+held-out generalization. SuperMimic remote jobs accept
+`evaluate_training_split=true` to additionally evaluate all training motions.
+
 SuperMimic remote jobs accept `evaluation_workers` for isolated native CPU
 evaluation processes and `evaluation_video_clips` as a unique subset of the full
 held-out `evaluation_clips`. The default `null` renders all selected clips;

@@ -62,6 +62,7 @@ class EvalCommandConfig:
     checkpoint_path: Path | None
     motion_dataset: Path | None
     evaluation_clips: tuple[str, ...]
+    evaluation_split: Literal["held_out", "training"]
     end_effector_payload_mass_kg: float | None
     output_path: Path
     command: tuple[float, float, float]
@@ -82,6 +83,7 @@ class VastTrainCommandConfig:
     evaluation_clips: tuple[str, ...]
     evaluation_video_clips: tuple[str, ...] | None
     evaluation_workers: int
+    evaluate_training_split: bool
     total_timesteps: int | None
     num_envs: int | None
     offer: VastOfferConfig
@@ -340,6 +342,8 @@ def _export_hydra(config: DictConfig) -> None:
 )
 def _eval_hydra(config: DictConfig) -> None:
     command = command_config(EvalCommandConfig, config)
+    if command.task != "supermimic":
+        _reject_explicit_fields(("evaluation_split",), context=f"task={command.task}")
     checkpoint = _required_path(command.checkpoint_path, "checkpoint_path")
     if command.task == "supermimic":
         _reject_explicit_fields(
@@ -362,6 +366,7 @@ def _eval_hydra(config: DictConfig) -> None:
             command.output_path,
             steps=command.steps,
             stop_on_terminal=command.stop_on_done,
+            split=command.evaluation_split,
         )
         print(json.dumps(stats, indent=2, sort_keys=True))
         return
@@ -524,6 +529,7 @@ def _vast_train_hydra(config: DictConfig) -> None:
         evaluation_clips=command.evaluation_clips,
         evaluation_video_clips=command.evaluation_video_clips,
         evaluation_workers=command.evaluation_workers,
+        evaluate_training_split=command.evaluate_training_split,
         total_timesteps=command.total_timesteps,
         num_envs=command.num_envs,
         offer=command.offer,

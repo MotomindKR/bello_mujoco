@@ -8,6 +8,7 @@ config:
   seed: 0
   total_timesteps: 3276800000
   num_envs: 4096
+  max_episode_steps: null
   replay_steps: 1000
   max_replay_bytes: 17179869184
   warmup_steps: 64
@@ -78,6 +79,7 @@ networks:
   actor_widths: [2048, 1024, 512, 256]
   critic_widths: [256, 128]
   latent_size: 32
+  matmul_precision: float32
 sampling:
   uniform_weight: 0.5
   difficult_weight: 0.4

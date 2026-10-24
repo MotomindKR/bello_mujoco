@@ -68,6 +68,36 @@ loaded as Mini references: retarget the human source to Mini and validate the
 resulting motion clips. Do not apply the AMASS preparation's 2-30 second whole
 sequence filter to LAFAN1.
 
+Prepare the original human BVHs directly for Mini:
+
+```bash
+uv run bello-prepare-lafan \
+  source_directory=outputs/lafan1-source/bvh \
+  output_directory=outputs/lafan1-mini
+```
+
+The [preparation config](../configs/commands/prepare_lafan.yaml) lists the same
+40 whole training sequences as the unofficial retargeting cohort: dance,
+fall/get-up, fighting/sports, jumps, running, sprinting and walking. Nine separate
+ground/multiple-action recordings form an additional evaluation split. These
+are sequence-disjoint, not subject-disjoint. Local rotations are resampled at
+50 Hz before forward kinematics, and named LAFAN frames are converted to the
+pinned Mini SMPL-X target convention. Foot targets use the toe joints.
+
+Preparation applies coupled motor/joint bounds, each joint's canonical URDF
+speed bound, and linearized floor/self-contact constraints within IK. A final
+minimum-displacement IK projection repairs nonlinear contact residuals. This
+does not apply independent root-height corrections or reject airborne phases.
+The pinned GMR solver's six-argument call is translated explicitly to Mink's
+keyword `limits` at the module boundary; its sixth positional slot otherwise
+selects `safety_break`, leaving additional constraints unused. Vendor files
+remain unchanged. Cached body twists use `mjOBJ_XBODY` link origins.
+
+Every requested sequence must succeed before the immutable corpus manifest is
+published. The new output directory contains `settings.json`, per-sequence
+`preparation.jsonl` diagnostics, and the checked `corpus/`. Source datasets stay
+read-only. Passing these kinematic checks does not establish dynamic trackability.
+
 ## Train and resume
 
 Use a clean checkout and initialized pinned dependencies on a Linux x86 CUDA
@@ -93,6 +123,24 @@ Edit the [full profile](../configs/profiles/train/bello_mini_supermimic.yaml)
 or [smoke overrides](../configs/profiles/train/bello_mini_supermimic_smoke.yaml)
 for nested settings. Public overrides include seed, environment count, total
 timesteps, learning rate, contact budget, logging, and checkpoint destinations.
+
+The [LAFAN profile](../configs/profiles/train/bello_mini_supermimic_lafan.yaml)
+samples starts across the full recordings and caps collection episodes at 500
+control steps (ten seconds). The cap is a timeout with a preserved successor and
+curriculum bootstrap; failures remain terminal. Full-clip native evaluation
+does not use this training cap. Network-only `matmul_precision: tensorfloat32`
+requests JAX `Precision.HIGH`; geometry and controller math keep their existing
+precision. Parameters and replay stay float32. `float32` uses `Precision.HIGHEST`.
+Per-update collection, dynamics fitting, and actor/critic timings are logged.
+This bounded profile retains the full profile's learning-rate decay schedule;
+it does not reproduce the paper's full training budget.
+
+Native evaluation defaults to `evaluation_split=held_out`. To measure tracking
+on training motions, explicitly select `evaluation_split=training`; selected
+names must belong to the immutable manifest's training split. Reports label the
+split and whether they measure held-out generalization. On Vast,
+`evaluate_training_split=true` adds a separate numerical report for every
+training motion under `results/training/`, alongside the usual held-out report.
 Training rejects single-motion paths, pretrained inputs, payload overrides, and
 `video_enabled`. Evaluate checkpoints separately for videos.
 
@@ -623,3 +671,16 @@ These measurements cover one short held-out walking clip and one seed. They do
 not establish long-horizon recovery, corpus-wide generalization, target-device
 50 Hz timing, or physical operation. Larger screened corpora, longer held-out
 motions, multiple seeds, and matched PPO comparisons are the next experiments.
+## Validated LAFAN corpus
+
+The complete 40-motion cohort was prepared at 50 Hz without activity or duration
+exclusions: 2.4504 training hours, plus nine sequence-disjoint evaluation motions
+(0.4043 hours). All 49 passed floor, self-contact, coupled position, joint speed,
+and clip-format checks. Worst floor penetration was zero; worst self-penetration
+was 10.278 mm, within the explicit 10 mm allowance plus 1 mm numerical tolerance.
+The maximum joint speed/URDF-bound ratio was 1.0000015.
+
+Immutable dataset: `gyungmin/bello-mujoco/mini-supermimic-lafan40-20261024:v0`.
+Manifest SHA-256:
+`ed5a5c36cf1408ba16695c95ed98bb89688a91e73800da7842416e47812228c3`.
+The corpus contains retargeted references, not evidence of learned skill.

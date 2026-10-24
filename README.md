@@ -29,7 +29,7 @@ Maintained experiments are `smoke`, `bello_locomotion`, `bello_mini_locomotion`,
 `bello_mini_standing`, `motion`, `bello_mini_motion`,
 `bello_mini_sonic_transfer`, `bello_mini_supermimic`,
 `bello_mini_supermimic_smoke`, `bello_mini_supermimic_pilot`, and
-`bello_mini_supermimic_amass`.
+`bello_mini_supermimic_amass`, and `bello_mini_supermimic_lafan`.
 SuperMimic trains Mini from scratch with learned
 dynamics and imagined policy gradients; see [the workflow](docs/supermimic.md).
 SONIC transfer is an explicit pretrained-only

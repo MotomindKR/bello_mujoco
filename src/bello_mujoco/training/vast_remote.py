@@ -183,12 +183,13 @@ pretrained_revision="${PRETRAINED_REVISION:-}"
 evaluation_clips="${EVALUATION_CLIPS:-[]}"
 evaluation_video_clips="${EVALUATION_VIDEO_CLIPS:-null}"
 evaluation_workers="${EVALUATION_WORKERS:-1}"
+evaluate_training_split="${EVALUATE_TRAINING_SPLIT:-false}"
 job_dir="${BELLO_JOB_DIR:-}"
 dataset_experiment=false
 supermimic_experiment=false
 case "$experiment" in
   bello_mini_sonic_transfer) dataset_experiment=true ;;
-  bello_mini_supermimic|bello_mini_supermimic_smoke|bello_mini_supermimic_pilot|bello_mini_supermimic_amass)
+  bello_mini_supermimic|bello_mini_supermimic_smoke|bello_mini_supermimic_pilot|bello_mini_supermimic_amass|bello_mini_supermimic_lafan)
     dataset_experiment=true
     supermimic_experiment=true
     ;;
@@ -582,7 +583,7 @@ uv run --no-sync bello-train \
 
 if [ "$supermimic_experiment" = true ]; then
   JAX_PLATFORMS=cpu uv run --no-sync python - \
-    "$run_name" "$job_dir/motion_dataset" "$job_dir/results" "$evaluation_clips" "$evaluation_video_clips" "$evaluation_workers" <<'PY'
+    "$run_name" "$job_dir/motion_dataset" "$job_dir/results" "$evaluation_clips" "$evaluation_video_clips" "$evaluation_workers" "$evaluate_training_split" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -596,7 +597,7 @@ from bello_mujoco.deployment import ExportConfig, export_checkpoint
 from bello_mujoco.evaluation.supermimic import evaluate_supermimic_corpus
 from bello_mujoco.supermimic.checkpoint import checkpoint_metadata
 
-run_name, dataset_path, output_path, evaluation_json, videos_json, workers = sys.argv[1:]
+run_name, dataset_path, output_path, evaluation_json, videos_json, workers, evaluate_training = sys.argv[1:]
 dataset, output = Path(dataset_path), Path(output_path)
 paths = list(Path("checkpoints").glob(f"{run_name}_*/final"))
 if len(paths) != 1:
@@ -609,6 +610,14 @@ report = None
 if selected:
     report = evaluate_supermimic_corpus(
         checkpoint, dataset, selected, output, video_clips=json.loads(videos_json), workers=int(workers)
+    )
+training_report = None
+if evaluate_training == "true":
+    manifest = json.loads((dataset / "sonic-corpus.json").read_text())
+    training = tuple(Path(entry["file"]).stem for entry in manifest["clips"] if entry["split"] == "train")
+    training_report = evaluate_supermimic_corpus(
+        checkpoint, dataset, training, output / "training", video_clips=(),
+        workers=int(workers), split="training",
     )
 videos = json.loads(videos_json)
 clips = (selected if videos is None else tuple(videos)) or (sorted(dataset.glob("*.npz"))[0].stem,)
@@ -625,6 +634,9 @@ with wandb.init(
 ) as run:
     if report is not None:
         run.log({f"evaluation/{key}": value for key, value in report["summary"].items()
+                 if isinstance(value, (float, int))})
+    if training_report is not None:
+        run.log({f"training_evaluation/{key}": value for key, value in training_report["summary"].items()
                  if isinstance(value, (float, int))})
     artifact = wandb.Artifact(f"{run_name}-evaluation", type="evaluation", metadata={
         "source_commit": metadata["git_commit"],
@@ -672,6 +684,7 @@ def run_remote_training(
                 "evaluation_clips": json.dumps(config.evaluation_clips),
                 "evaluation_video_clips": json.dumps(config.evaluation_video_clips),
                 "evaluation_workers": config.evaluation_workers,
+                "evaluate_training_split": config.evaluate_training_split,
                 "job_dir": f"/workspace/.bello-vast/{run_name}",
             },
             "script": REMOTE_TRAIN_SCRIPT,
@@ -898,6 +911,7 @@ env.update({
     "EVALUATION_CLIPS": str(dataset_training.get("evaluation_clips", "[]")),
     "EVALUATION_VIDEO_CLIPS": str(dataset_training.get("evaluation_video_clips", "null")),
     "EVALUATION_WORKERS": str(dataset_training.get("evaluation_workers", 1)),
+    "EVALUATE_TRAINING_SPLIT": json.dumps(dataset_training.get("evaluate_training_split", False)),
     "BELLO_JOB_DIR": str(dataset_training.get("job_dir", "")),
 })
 script = payload["script"]

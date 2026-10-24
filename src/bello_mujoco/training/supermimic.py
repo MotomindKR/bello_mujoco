@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, replace
 import json
 import math
 import time
+from time import perf_counter
 from pathlib import Path
 
 import jax
@@ -296,17 +297,29 @@ def run_training(run_config):
             before = math.floor(update / cfg.update_to_data_ratio)
             after = math.floor((update + 1) / cfg.update_to_data_ratio)
             metrics = {}
+            collection_started = perf_counter()
             for _ in range(min(after - before, remaining - vector_steps)):
                 runner, metrics = collect(runner, bank)
                 require_valid_metrics(metrics)
                 vector_steps += 1
+            collection_seconds = perf_counter() - collection_started
+            model_started = perf_counter()
             runner, model_metrics = fit(runner)
             require_valid_metrics(model_metrics)
+            model_seconds = perf_counter() - model_started
             metrics = {**metrics, **model_metrics}
+            actor_started = perf_counter()
             if update >= cfg.model_warmup_updates:
                 runner, actor_metrics = improve(runner, bank)
                 require_valid_metrics(actor_metrics)
                 metrics.update(actor_metrics)
+            metrics.update(
+                {
+                    "timing/collection_seconds": collection_seconds,
+                    "timing/model_seconds": model_seconds,
+                    "timing/actor_seconds": perf_counter() - actor_started,
+                }
+            )
             runner = replace(runner, update=runner.update + 1)
             update += 1
             metrics = jax.block_until_ready(metrics)

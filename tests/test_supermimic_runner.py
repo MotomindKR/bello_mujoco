@@ -11,7 +11,7 @@ from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.models.target_limits import TargetLimits
 from bello_mujoco.motion.clip import MotionClip
 from bello_mujoco.sonic.reference import ReferenceBank
-from bello_mujoco.supermimic.collection import initialize_collection
+from bello_mujoco.supermimic.collection import initialize_collection, maximum_return
 from bello_mujoco.supermimic.config import LearningConfig, ObservationConfig
 from bello_mujoco.supermimic.control import ActionMapping
 from bello_mujoco.supermimic.kinematics import Kinematics
@@ -224,6 +224,27 @@ def toy_runner():
     learner = initialize_learner(env, config, networks, 6, jax.random.PRNGKey(0))
     runner = initialize_collection(env, config, learner, jax.random.PRNGKey(1))
     return env, config, runner
+
+
+def test_collection_episode_cap_preserves_timeout_successor_and_resets(toy_runner):
+    env, config, runner = toy_runner
+    config = replace(config, max_episode_steps=1, gamma=1.0)
+    collect, _, _ = compile_updates(env, config)
+    result, metrics = collect(runner, env.reference_bank)
+    require_valid_metrics(metrics)
+    stored = result.replay.data
+    assert np.asarray(stored.timeout[0]).all()
+    assert not np.asarray(stored.terminal[0]).any()
+    np.testing.assert_array_equal(result.collector.environment.episode_length, 0)
+    np.testing.assert_array_equal(result.collector.episode_ids, 1)
+    np.testing.assert_array_equal(stored.episode_step[0], 0)
+    assert maximum_return(env, config) == pytest.approx(5 * env.control_timestep)
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5])
+def test_episode_cap_rejects_invalid_steps(value):
+    with pytest.raises(ValueError, match="max_episode_steps"):
+        LearningConfig(max_episode_steps=value)
 
 
 def test_compiled_collect_fit_imagine_loop_preserves_terminal_successors(toy_runner):

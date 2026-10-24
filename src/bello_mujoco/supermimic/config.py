@@ -62,6 +62,7 @@ class LearningConfig:
     seed: int = 0
     total_timesteps: int = 3276800000
     num_envs: int = 4096
+    max_episode_steps: int | None = None
     replay_steps: int = 1000
     max_replay_bytes: int = 16 * 1024**3
     warmup_steps: int = 64
@@ -84,6 +85,10 @@ class LearningConfig:
     actor_gradient_clip: float = 0.1
 
     def __post_init__(self):
+        if self.max_episode_steps is not None and (
+            type(self.max_episode_steps) is not int or self.max_episode_steps <= 0
+        ):
+            raise ValueError("max_episode_steps must be a positive integer or null")
         for name in (
             "total_timesteps",
             "num_envs",

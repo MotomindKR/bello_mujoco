@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import mujoco
+import mink
 import numpy as np
 import pytest
 
@@ -95,6 +96,31 @@ def frame(sequence=1, timestamp=1_000_000_000):
         source_age_ms=0,
         received_at=0.0,
     )
+
+
+def test_pinned_solver_forwards_real_constraints_without_modifying_mink():
+    from bello_mujoco.motion.retarget_limits import RetargetContactLimit
+
+    model = mujoco.MjModel.from_xml_string(
+        '<mujoco><worldbody><geom type="plane" size="1 1 .01"/>'
+        '<body name="base" pos="0 0 .05"><freejoint/>'
+        '<geom type="sphere" size=".1"/></body></worldbody></mujoco>'
+    )
+    original_solve = mink.solve_ik
+    backend = module.import_pinned_gmr_retargeter().__new__(
+        module.import_pinned_gmr_retargeter()
+    )
+    backend.configuration = mink.Configuration(model)
+    task = mink.FrameTask("base", "body", position_cost=1, orientation_cost=1)
+    task.set_target_from_configuration(backend.configuration)
+    backend.tasks1 = [task]
+    backend.ik_limits = [RetargetContactLimit(model)]
+    backend.solver, backend.damping, backend.max_iter = "daqp", 0.5, 0
+    backend.use_ik_match_table1, backend.use_ik_match_table2 = True, False
+    backend.update_targets = lambda *args: None
+    result = backend.retarget({})
+    assert result[2] == pytest.approx(0.101, abs=1e-7)
+    assert mink.solve_ik is original_solve
 
 
 def test_one_solve_and_one_time_seed_without_ground_or_posture_correction(boundary):

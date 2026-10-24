@@ -59,6 +59,14 @@ in [SONIC transfer](sonic_transfer.md).
 
 ## SuperMimic configuration
 
+The `bello_mini_supermimic_lafan` recipe uses whole LAFAN sequences. Its
+`config.max_episode_steps` caps collection episodes, while reference arrays and
+native full-clip evaluation retain the complete recording. A null cap preserves
+the reference-end timeout behavior. `networks.matmul_precision` explicitly
+selects `float32` or `tensorfloat32` matrix multiplication for the networks.
+See [LAFAN preparation and training](supermimic.md) for corpus constraints and
+the separate training/held-out evaluation reports.
+
 The [full profile](../configs/profiles/train/bello_mini_supermimic.yaml) owns
 `config` (learning/replay), `environment` (control, feedback, and randomization),
 `observations`, `tracking`, `networks`, `sampling`, `dataset`, `warp`,

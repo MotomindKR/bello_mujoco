@@ -1,6 +1,7 @@
 """Native JAX deterministic dynamics, goal-conditioned actor, and value model."""
 
 from dataclasses import dataclass
+from typing import Literal
 
 import equinox as eqx
 import jax
@@ -58,6 +59,7 @@ class NetworkConfig:
     actor_widths: tuple[int, ...] = (2048, 1024, 512, 256)
     critic_widths: tuple[int, ...] = (256, 128)
     latent_size: int = 32
+    matmul_precision: Literal["float32", "tensorfloat32"] = "float32"
 
     def __post_init__(self):
         for widths in (self.dynamics_widths, self.actor_widths, self.critic_widths):
@@ -65,15 +67,25 @@ class NetworkConfig:
                 raise ValueError("network widths must be positive integer tuples")
         if type(self.latent_size) is not int or self.latent_size <= 0:
             raise ValueError("latent_size must be a positive integer")
+        if self.matmul_precision not in ("float32", "tensorfloat32"):
+            raise ValueError("matmul_precision must be float32 or tensorfloat32")
 
 
 class MLP(eqx.Module):
     layers: tuple[eqx.nn.Linear, ...]
     norms: tuple[eqx.nn.LayerNorm, ...]
     activation: str = eqx.field(static=True)
+    matmul_precision: str = eqx.field(static=True)
 
     def __init__(
-        self, sizes, *, key, activation="elu", layer_norm=False, output_scale=1.0
+        self,
+        sizes,
+        *,
+        key,
+        activation="elu",
+        layer_norm=False,
+        output_scale=1.0,
+        matmul_precision="float32",
     ):
         keys = jax.random.split(key, len(sizes) - 1)
         self.layers = tuple(
@@ -84,6 +96,9 @@ class MLP(eqx.Module):
             tuple(eqx.nn.LayerNorm(n) for n in sizes[1:-1]) if layer_norm else ()
         )
         self.activation = activation
+        if matmul_precision not in ("float32", "tensorfloat32"):
+            raise ValueError("invalid MLP matmul precision")
+        self.matmul_precision = matmul_precision
         last = self.layers[-1]
         self.layers = self.layers[:-1] + (
             eqx.tree_at(
@@ -96,7 +111,15 @@ class MLP(eqx.Module):
     def __call__(self, value):
         for i, layer in enumerate(self.layers):
             value = (
-                jnp.matmul(value, layer.weight.T, precision=jax.lax.Precision.HIGHEST)
+                jnp.matmul(
+                    value,
+                    layer.weight.T,
+                    precision=(
+                        jax.lax.Precision.HIGHEST
+                        if self.matmul_precision == "float32"
+                        else jax.lax.Precision.HIGH
+                    ),
+                )
                 + layer.bias
             )
             if i < len(self.layers) - 1:
@@ -174,6 +197,7 @@ class WorldModel(eqx.Module):
             activation="silu",
             layer_norm=True,
             output_scale=0.0,
+            matmul_precision=config.matmul_precision,
         )
 
     @staticmethod
@@ -205,7 +229,9 @@ class Actor(eqx.Module):
     ):
         enc, dec = jax.random.split(key)
         self.encoder = MLP(
-            (goal_size,) + config.actor_widths + (config.latent_size,), key=enc
+            (goal_size,) + config.actor_widths + (config.latent_size,),
+            key=enc,
+            matmul_precision=config.matmul_precision,
         )
         self.decoder = MLP(
             (sample_size * history_frames + config.latent_size,)
@@ -213,6 +239,7 @@ class Actor(eqx.Module):
             + (joint_count,),
             key=dec,
             output_scale=0.01,
+            matmul_precision=config.matmul_precision,
         )
 
     def __call__(self, history, goal, observation_norm, goal_norm):
@@ -226,7 +253,11 @@ class Critic(eqx.Module):
     network: MLP
 
     def __init__(self, size, *, config=NetworkConfig(), key):
-        self.network = MLP((size,) + config.critic_widths + (1,), key=key)
+        self.network = MLP(
+            (size,) + config.critic_widths + (1,),
+            key=key,
+            matmul_precision=config.matmul_precision,
+        )
 
     def __call__(self, features, normalizer):
         return self.network(normalizer.normalize(features))[..., 0]

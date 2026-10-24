@@ -5,6 +5,7 @@ pretrained_revision: null
 evaluation_clips: []
 evaluation_video_clips: null  # SuperMimic: null renders all; [] renders none.
 evaluation_workers: 1  # SuperMimic native CPU evaluation processes.
+evaluate_training_split: false  # Additional labelled training-motion reconstruction report.
 total_timesteps: null
 num_envs: null
 offer:

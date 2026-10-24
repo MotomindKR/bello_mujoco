@@ -45,6 +45,7 @@ bello-run-hands = "bello_mujoco.cli:hands_entrypoint"
 bello-eval-barbell = "bello_mujoco.cli:barbell_eval_entrypoint"
 bello-run-reference = "bello_mujoco.cli:reference_entrypoint"
 bello-validate-sonic = "bello_mujoco.tools.validate_sonic_parity:main"
+bello-prepare-lafan = "bello_mujoco.motion.lafan:main"
 
 [dependency-groups]
 training = [
