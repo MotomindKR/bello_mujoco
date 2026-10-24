@@ -732,9 +732,10 @@ the held-out split. All 513,900 reference frames fit the static action range;
 the largest required normalized action was 15.88 against a clip of 20.
 At exact reference poses, the soft joint-limit cost reduces normalized score
 by approximately 2-5% before action-rate penalties. These checks do not prove
-dynamic feasibility. One remaining difference from the unofficial learner is
-the critic's history/goal inputs instead of explicit per-body position-error
-features; this run did not isolate its effect.
+dynamic feasibility. Both this learner and the unofficial implementation give
+future goals to the critic. This critic additionally receives actor history and
+previous motor targets, while omitting the unofficial critic's 42 per-body
+position-error features. This run did not isolate the effect of those differences.
 
 All 932 CPU tests, formatting, lint, lock, and generated-protocol checks passed.
 The exported four-reference bundle passed Rust validation and 256-frame
