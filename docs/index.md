@@ -8,6 +8,7 @@
 - [Bello Mini policy console](policy_console.md)
 - [SONIC LoRA transfer](sonic_transfer.md)
 - [SuperMimic learning and deployment](supermimic.md)
+- [Mini motor and world-model audit](supermimic_implementation_audit.md)
 - [SuperMimic port plan for Bello Mini](supermimic_plan.md)
 - [Hardware](hardware.md), [emulator](emulator.md), and [Lima](macos_vcan.md)
 - [PICO tracking and hand-control startup](pico_startup.md)

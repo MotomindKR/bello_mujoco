@@ -131,9 +131,10 @@ The [LAFAN profile](../configs/profiles/train/bello_mini_supermimic_lafan.yaml)
 samples starts across the full recordings and caps collection episodes at 500
 control steps (ten seconds). The cap is a timeout with a preserved successor and
 curriculum bootstrap; failures remain terminal. Full-clip native evaluation
-does not use this training cap. Network-only `matmul_precision: tensorfloat32`
-requests JAX `Precision.HIGH`; geometry and controller math keep their existing
-precision. Parameters and replay stay float32. `float32` uses `Precision.HIGHEST`.
+does not use this training cap. The current LAFAN profile uses network-only
+`matmul_precision: bfloat16`; geometry and controller math keep their existing
+precision. Parameters and replay stay float32. The `tensorfloat32` option
+requests JAX `Precision.HIGH`; `float32` uses `Precision.HIGHEST`.
 Per-update collection, dynamics fitting, and actor/critic timings are logged.
 The LAFAN comparison profile uses the full unofficial batch sizes: 4,096
 environments, 1,000 replay steps, ten dynamics batches of 2,048 windows, and
@@ -475,6 +476,9 @@ the final checkpoint. A worker failure fails the run. Draining is bounded by
 A training failure cancels the worker. External Vast deadlines still apply to
 the entire job, including evaluation. These are operational settings and may
 change when resuming an otherwise identical training contract.
+
+See the [measured motor and world-model audit](supermimic_implementation_audit.md)
+for results from the existing trained checkpoint and all 49 reference clips.
 
 Export creates actor-only ONNX with frozen normalization, self-contained physics,
 selected clips, named coordinate/IMU transforms, and history/goal/rotation/timing
