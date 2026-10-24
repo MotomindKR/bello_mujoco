@@ -8,7 +8,7 @@ import jax.numpy as jnp
 
 from bello_mujoco.supermimic import rotations as rot
 from bello_mujoco.supermimic.kinematics import Kinematics
-from bello_mujoco.supermimic.model import invariant_features
+from bello_mujoco.supermimic.model import invariant_features, normalized_context
 
 
 @dataclass(frozen=True)
@@ -153,20 +153,28 @@ class TrackingMDP:
         return 1.0 - alive
 
 
-def critic_features(state, reference, goal, context, previous_motor, history):
+def critic_features(state, reference, goal, context, kinematics):
     heading_inverse = rot.conjugate(rot.heading(state.quaternion))
+    bodies, targets = kinematics.forward(state), kinematics.forward(reference)
+    alignment = rot.heading(
+        rot.multiply(state.quaternion, rot.conjugate(reference.quaternion))
+    )
+    origin = state.position.at[2].set(reference.position[2])
+    target_position = origin + rot.rotate(
+        alignment, targets.position - reference.position
+    )
+    body_error = rot.rotate(heading_inverse, target_position - bodies.position)
     return jnp.concatenate(
         (
             invariant_features(state),
+            reference.joint_position - state.joint_position,
+            body_error.reshape(-1),
             rot.rotate(heading_inverse, reference.position - state.position),
             rot.rotation_6d(
                 rot.multiply(rot.conjugate(state.quaternion), reference.quaternion)
             ),
-            reference.joint_position - state.joint_position,
-            previous_motor,
-            context,
+            normalized_context(context),
             goal,
-            history.reshape(-1),
         )
     )
 

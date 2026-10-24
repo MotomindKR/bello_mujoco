@@ -68,16 +68,29 @@ fn checked(q: DQuat) -> Result<DQuat> {
     Ok(q.normalize())
 }
 
-fn columns(q: DQuat) -> [f64; 6] {
+fn rotation_6d(q: DQuat) -> [f64; 6] {
     let matrix = DMat3::from_quat(q.normalize());
     [
         matrix.x_axis.x,
-        matrix.x_axis.y,
-        matrix.x_axis.z,
         matrix.y_axis.x,
+        matrix.x_axis.y,
         matrix.y_axis.y,
+        matrix.x_axis.z,
         matrix.y_axis.z,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotation_encoding_matches_reference_row_major_columns() {
+        let values = rotation_6d(DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2));
+        for (actual, expected) in values.into_iter().zip([0., -1., 1., 0., 0., 0.]) {
+            assert!((actual - expected).abs() < 1e-12);
+        }
+    }
 }
 
 fn heading(q: DQuat) -> DQuat {
@@ -273,7 +286,7 @@ impl SuperMimic {
                 && settings.goal_joint_velocity_scale > 0.
                 && settings.action_clip.is_finite()
                 && settings.action_clip > 0.
-                && settings.rotation_6d_layout == "columns",
+                && settings.rotation_6d_layout == "first_two_columns_row_major",
             "invalid SuperMimic codec settings"
         );
         let mut sample_layout = vec![
@@ -390,7 +403,7 @@ impl SuperMimic {
         sample.extend((orientation.conjugate() * DVec3::NEG_Z).to_array());
         sample.extend(self.last_action.iter().map(|v| f64::from(*v)));
         if self.settings.reference_orientation {
-            sample.extend(columns(
+            sample.extend(rotation_6d(
                 orientation.conjugate() * alignment * reference_orientation,
             ));
         }
@@ -414,7 +427,7 @@ impl SuperMimic {
                     .to_array()
                     .map(|v| v as f32),
             );
-            observation.extend(columns(inverse_heading * quaternion).map(|v| v as f32));
+            observation.extend(rotation_6d(inverse_heading * quaternion).map(|v| v as f32));
             observation.extend(
                 (quaternion.conjugate() * linear)
                     .to_array()

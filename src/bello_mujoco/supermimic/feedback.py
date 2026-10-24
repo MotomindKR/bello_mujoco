@@ -78,10 +78,23 @@ def actor_sample(
     filtering,
 ):
     sample = codec.sample(feedback, previous_action, reference_quaternion, calibration)
+    return add_actor_noise(
+        sample,
+        key,
+        joint_count=previous_action.shape[0],
+        reference_orientation=codec.config.reference_orientation,
+        noise=noise,
+        filtering=filtering,
+    )
+
+
+def add_actor_noise(
+    sample, key, *, joint_count, reference_orientation, noise, filtering
+):
     if key is None or not noise.enabled:
         return sample
     scale = filtering.residual_noise_scale if filtering.noise_before_filter else 1.0
-    n = previous_action.shape[0]
+    n = joint_count
     magnitude = jnp.concatenate(
         (
             jnp.full(n, noise.joint_position * scale),
@@ -89,9 +102,7 @@ def actor_sample(
             jnp.full(3, noise.base_angular_velocity * scale),
             jnp.full(3, noise.anchor_orientation),
             jnp.zeros(n),
-            jnp.full(
-                6 if codec.config.reference_orientation else 0, noise.anchor_orientation
-            ),
+            jnp.full(6 if reference_orientation else 0, noise.anchor_orientation),
         )
     )
     return sample + jax.random.uniform(

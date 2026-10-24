@@ -5,7 +5,11 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 
-from bello_mujoco.supermimic.feedback import actor_sample, advance_feedback
+from bello_mujoco.supermimic.feedback import (
+    actor_sample,
+    add_actor_noise,
+    advance_feedback,
+)
 from bello_mujoco.supermimic.mdp import critic_features, imagined_return
 
 
@@ -26,17 +30,26 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
     def single(start, history, feedback_history, noise_key):
         context, xy, yaw = start.context, start.alignment_xy, start.alignment_yaw
         delay = context[-1].astype(jnp.int32)
+        noise_key, history_key = jax.random.split(noise_key)
+        history = add_actor_noise(
+            history,
+            history_key,
+            joint_count=count,
+            reference_orientation=env.codec.config.reference_orientation,
+            noise=env.config.observation_noise,
+            filtering=env.config.observation_low_pass_filter,
+        )
 
-        def value_input(state, motor, observations, frame):
+        def value_input(state, frame):
             reference = env.reference_state(frame, xy, yaw)
             return critic_features(
-                state, reference, env.goal(frame), context, motor, observations
+                state, reference, env.goal(frame), context, env.kinematics
             )
 
         def step(carry, _):
             state, motor, previous_action, observations, feedback, frame, rng = carry
             rng, feedback_key, observation_key = jax.random.split(rng, 3)
-            features = value_input(state, motor, observations, frame)
+            features = value_input(state, frame)
             action = actor(observations, env.goal(frame), observation_norm, goal_norm)
             command = env.mapping.command(action, motor, context[:count])
             successor = model.step(
@@ -97,7 +110,7 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
         final, (rewards, terminals, features) = jax.lax.scan(
             step, initial, None, length=horizon
         )
-        final_features = value_input(final[0], final[1], final[3], final[5])
+        final_features = value_input(final[0], final[5])
         return ImaginedRollout(
             rewards, terminals, jnp.concatenate((features, final_features[None]))
         )

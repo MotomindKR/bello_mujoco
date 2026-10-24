@@ -603,7 +603,7 @@ class BelloMotionTrackingEnv:
         data = self.model.make_data().replace(
             qpos=qpos,
             qvel=qvel,
-            ctrl=self._initial_ctrl(joint_default_offset),
+            ctrl=self._initial_ctrl(joint_default_offset, qpos),
         )
         data = mjx.forward(self.model.mjx_model, data)
         actor_feedback = self._noisy_actor_feedback(data, latency_key)
@@ -1266,7 +1266,10 @@ class BelloMotionTrackingEnv:
             target, jnp.asarray(self.model.default_ctrl), self.model.target_limits
         )
 
-    def _initial_ctrl(self, joint_default_offset: jax.Array) -> jax.Array:
+    def _initial_ctrl(
+        self, joint_default_offset: jax.Array, qpos: jax.Array
+    ) -> jax.Array:
+        del qpos
         logical_target = jnp.asarray(self.model.default_joint_target)
         policy = jnp.asarray(self.model.policy_ctrl_indices)
         logical_target = logical_target.at[policy].add(joint_default_offset)

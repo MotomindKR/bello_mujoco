@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from bello_mujoco.models.target_limits import TargetLimits
-from bello_mujoco.motion.lafan import clip_from_poses, project_contacts
+from bello_mujoco.motion.lafan import clip_from_poses, pose_velocities, project_contacts
 from bello_mujoco.motion.retarget_limits import RetargetContactLimit, RetargetJointLimit
 
 
@@ -41,6 +41,39 @@ def test_cached_body_twists_are_at_link_origins_with_offset_centres_of_mass():
     com = np.zeros(6)
     mujoco.mj_objectVelocity(mj_model, data, mujoco.mjtObj.mjOBJ_BODY, 2, com, 0)
     assert abs(com[4]) > 0.1
+
+
+def test_reference_velocities_use_central_differences_in_the_current_root_frame():
+    model = mujoco.MjModel.from_xml_string(
+        '<mujoco><worldbody><body><freejoint/><geom size=".1"/>'
+        '<body><joint name="joint"/><geom size=".1"/></body></body></worldbody></mujoco>'
+    )
+    poses = np.tile(model.qpos0, (3, 1))
+    poses[:, 0] = [0.0, 0.02, 0.08]
+    poses[:, 7] = [0.0, 0.04, 0.16]
+    quaternions = np.empty((3, 4))
+    for index, angles in enumerate(
+        ([0.2, -0.3, 0.1], [-0.1, 0.5, 0.2], [0.4, 0.1, -0.2])
+    ):
+        axis = np.asarray(angles)
+        mujoco.mju_axisAngle2Quat(
+            quaternions[index], axis / np.linalg.norm(axis), np.linalg.norm(axis)
+        )
+    poses[:, 3:7] = quaternions
+    velocity = pose_velocities(model, poses, 50)
+    np.testing.assert_allclose(velocity[:, 0], [1.0, 2.0, 3.0])
+    np.testing.assert_allclose(velocity[:, 6], [2.0, 4.0, 6.0])
+    # Compare the world angular twist against log(R_right R_left^T) / dt.
+    from scipy.spatial.transform import Rotation
+
+    rotations = Rotation.from_quat(quaternions, scalar_first=True)
+    for frame, (left, right) in enumerate(((0, 1), (0, 2), (1, 2))):
+        expected = (rotations[right] * rotations[left].inv()).as_rotvec() / (
+            (right - left) / 50
+        )
+        np.testing.assert_allclose(
+            rotations[frame].apply(velocity[frame, 3:6]), expected, atol=1e-12
+        )
 
 
 def test_contact_projection_repairs_penetration_without_target_tasks():

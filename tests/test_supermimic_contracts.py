@@ -15,6 +15,16 @@ from bello_mujoco.supermimic.observations import ObservationCodec
 from bello_mujoco.supermimic.state import PhysicalState
 
 
+def test_rotation_encoding_matches_reference_row_major_columns():
+    quaternion = rot.exp(jnp.array([0.0, 0.0, np.pi / 2]))
+    np.testing.assert_allclose(
+        rot.rotation_6d(quaternion), [0, -1, 1, 0, 0, 0], atol=1e-6
+    )
+    np.testing.assert_array_equal(
+        rot.rotation_6d(jnp.array([1.0, 0.0, 0.0, 0.0])), [1, 0, 0, 1, 0, 0]
+    )
+
+
 def test_coupled_commands_respect_limits_and_differentiate_the_executed_target():
     transform = np.array([[1.0, -1.0], [1.0, 1.0]])
     limits = TargetLimits(

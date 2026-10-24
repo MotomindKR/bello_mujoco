@@ -85,7 +85,7 @@ sampling:
   difficult_weight: 0.4
   past_weight: 0.1
   temperature: 25.0
-  return_alpha: 0.1
+  return_alpha: 0.2
 checkpoint_config:
   enabled: true
   directory: checkpoints

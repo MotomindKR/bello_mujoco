@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import pytest
 
 from bello_mujoco.supermimic import rotations as rot
 from bello_mujoco.supermimic.model import (
@@ -39,7 +40,7 @@ def transition(time, *, terminal=False, episode=0, step=None):
         jnp.zeros((2, 1)),
         jnp.zeros((2, 1)),
         jnp.tile(jnp.array([float(episode), float(time)]), (2, 1)),
-        jnp.zeros((2, 1)),
+        jnp.zeros((2, 6)),
         jnp.zeros((2, 2)),
         jnp.zeros(2),
         jnp.full(2, time),
@@ -84,13 +85,16 @@ def test_replay_wrap_and_history_do_not_cross_episodes_or_evicted_records():
     )(replay, jax.random.key(3))
     assert starts.valid
     times = np.asarray(starts.transition.reference_frame)
-    assert np.all(times >= 6)
-    expected = np.maximum(times[:, None] - np.arange(2, -1, -1), 6)
+    assert np.all(times >= 4)
+    boundary = np.where(times >= 6, 6, 4)
+    expected = np.maximum(times[:, None] - np.arange(2, -1, -1), boundary[:, None])
     np.testing.assert_array_equal(starts.history[..., 1], expected)
-    np.testing.assert_array_equal(starts.history[..., 0], np.ones_like(expected))
+    np.testing.assert_array_equal(
+        starts.history[..., 0], np.broadcast_to((times >= 6)[:, None], expected.shape)
+    )
     np.testing.assert_array_equal(
         starts.feedback_history.position[..., 0],
-        np.maximum(times[:, None] - np.arange(2), 6),
+        np.maximum(times[:, None] - np.arange(2), boundary[:, None]),
     )
     exhausted = replace(
         replay,
@@ -108,7 +112,7 @@ def test_replay_masks_context_changes_even_without_a_terminal_flag():
     for time in range(4):
         tr = transition(time)
         if time >= 2:
-            tr = replace(tr, context=jnp.ones((2, 1)))
+            tr = replace(tr, context=jnp.ones_like(tr.context))
         replay = replay.insert(tr)
     windows = replay.sample_windows(jax.random.key(5), 3, 4)
     np.testing.assert_array_equal(windows.mask, [[1, 1, 0, 0]] * 3)
@@ -122,6 +126,12 @@ def test_weighted_moments_and_local_deltas_are_consistent():
     updated = state.update(jnp.array([[5.0, 6.0]]))
     np.testing.assert_allclose(updated.mean, [3.0, 4.0])
     np.testing.assert_allclose(updated.variance, [8 / 3, 8 / 3])
+    np.testing.assert_allclose(updated.std(), np.sqrt(np.array([8 / 3, 8 / 3]) + 1e-4))
+    frozen = replace(updated, count=jnp.asarray(2e8))
+    for actual, expected in zip(
+        jax.tree.leaves(frozen.update(values)), jax.tree.leaves(frozen), strict=True
+    ):
+        np.testing.assert_array_equal(actual, expected)
     original = jax.tree.map(lambda x: x[0], transition(0).state)
     original = replace(original, quaternion=rot.exp(jnp.array([0.1, -0.2, 0.4])))
     delta = jnp.linspace(-0.02, 0.02, 14)
@@ -141,7 +151,7 @@ def test_dynamics_fits_logged_motor_transitions_with_finite_gradients():
     config = NetworkConfig(
         dynamics_widths=(32, 32), actor_widths=(16,), critic_widths=(16,), latent_size=4
     )
-    model = WorldModel(1, 1, config=config, key=keys[0])
+    model = WorldModel(1, 6, config=config, key=keys[0])
     tr = transition(0)
     tr = jax.tree.map(lambda x: jnp.repeat(x, 16, axis=0), tr)
     commands = jax.random.uniform(keys[1], (32, 1), minval=-1, maxval=1)
@@ -183,3 +193,19 @@ def test_dynamics_fits_logged_motor_transitions_with_finite_gradients():
     assert actions.shape == (3, 1)
     critic = Critic(7, config=config, key=keys[2])
     assert critic(jnp.ones((3, 7)), Moments.empty(7)).shape == (3,)
+
+
+def test_world_model_sums_time_errors_and_masks_resets_without_reweighting_windows():
+    class IdentityModel:
+        def step(self, state, *args):
+            return state
+
+    tr = transition(0)
+    tr = replace(tr, successor=replace(tr.state, joint_position=jnp.ones((2, 1))))
+    transitions = jax.tree.map(lambda x: jnp.repeat(x[:, None], 3, axis=1), tr)
+    window = ReplayWindow(transitions, jnp.array([[1, 1, 1], [1, 0, 0]], dtype=float))
+    loss = world_model_loss(
+        IdentityModel(), window, Moments.empty(1), Moments.empty(14), error_floor=1.0
+    )
+    # Four unit joint errors, fourteen state channels, two sampled windows.
+    assert float(loss) == pytest.approx(4 / 14 / 2, rel=1e-6)

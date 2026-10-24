@@ -124,13 +124,7 @@ class ReplayBuffer:
             raise ValueError("replay cannot reconstruct the requested history")
         ages = jnp.arange(self.capacity)[:, None]
         rows = self.rows(ages[:, 0])
-        steps = self.data.episode_step[rows]
-        needed = jnp.minimum(steps, max(history_frames, feedback_frames) - 1)
-        eligible = (
-            (ages < self.size)
-            & (ages >= needed)
-            & (self.data.remaining_steps[rows] >= horizon)
-        )
+        eligible = (ages < self.size) & (self.data.remaining_steps[rows] >= horizon)
         counts = jnp.cumsum(eligible.reshape(-1), dtype=jnp.int32)
         count = counts[-1]
         draw = jax.random.randint(key, (batch_size,), 0, jnp.maximum(1, count))
@@ -145,6 +139,7 @@ class ReplayBuffer:
                 jnp.arange(length) if newest_first else jnp.arange(length - 1, -1, -1)
             )
             back = jnp.minimum(offsets[None], transition.episode_step[:, None])
+            back = jnp.minimum(back, age[:, None])
             return self.rows(age[:, None] - back)
 
         history = self.data.observation[history_indices(history_frames), env[:, None]]

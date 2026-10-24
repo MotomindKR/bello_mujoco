@@ -88,6 +88,12 @@ def test_return_sampler_excludes_held_out_bins_and_preserves_final_bin_width():
         10.0,
     )
     probabilities = sampler.probabilities(state, 10.0)
+    np.testing.assert_allclose(state.returns, [2.0, 0.2, 0.0, 0.0])
+    expected_past = (
+        0.999 * sampler.initial_state().past_weights
+        + 0.001 * jax.nn.softmax(jnp.array([-5.0, -0.5, -jnp.inf, -jnp.inf]))
+    )
+    np.testing.assert_allclose(state.past_weights, expected_past)
     assert probabilities[1] > probabilities[0]
     np.testing.assert_array_equal(probabilities[2:], [0.0, 0.0])
     draws = jax.jit(jax.vmap(lambda k: sampler.sample(k, probabilities)))(
@@ -95,6 +101,10 @@ def test_return_sampler_excludes_held_out_bins_and_preserves_final_bin_width():
     )
     assert draws.max() <= 61 and draws.min() >= 0
     assert np.unique(np.asarray(draws)[np.asarray(draws) >= 50]).size == 12
+    unchanged = sampler.update(
+        state, jnp.array([0]), jnp.array([0.0]), jnp.array([False]), 10.0
+    )
+    np.testing.assert_array_equal(unchanged.past_weights, state.past_weights)
 
 
 @pytest.fixture
@@ -129,6 +139,27 @@ def mini_corpus(tmp_path):
     path = tmp_path / "standing.npz"
     save_motion_clip(path, clip)
     return asset, path
+
+
+@pytest.mark.integration
+def test_mini_reset_motor_target_tracks_the_constrained_reference_pose(mini_corpus):
+    asset, path = mini_corpus
+    env = BelloSuperMimicEnv.load_corpus(
+        asset, MotionTrackingEnvConfig(), (path,), load_mjx=False
+    )
+    command = env.mapping.command(
+        jnp.full(env.action_size, 0.02),
+        env.mapping.neutral_motor,
+        jnp.zeros(env.action_size),
+    )
+    qpos = (
+        jnp.asarray(env.model.default_qpos)
+        .at[env.model.actuator_qpos_indices]
+        .set(jnp.asarray(env.model.target_limits.joint_from_motor) @ command.accepted)
+    )
+    target = jax.jit(env._initial_ctrl)(jnp.zeros(env.action_size), qpos)
+    np.testing.assert_allclose(target, command.accepted, atol=1e-6)
+    assert np.max(np.abs(np.asarray(target - env.mapping.neutral_motor))) > 1e-6
 
 
 @pytest.mark.integration
@@ -411,7 +442,7 @@ def test_mini_checkpoint_actor_restores_exports_and_evaluates_held_out_clip(
     assert headless_row["rendered_steps"] == 0
     assert headless_row == pytest.approx(row | {"rendered_steps": 0})
     assert source_checks and all(value == commit for value in source_checks)
-    with pytest.raises(ValueError, match="held-out"):
+    with pytest.raises(ValueError, match="recorded held_out split"):
         evaluation.render_supermimic_checkpoint(
             saved,
             path.parent,

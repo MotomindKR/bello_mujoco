@@ -233,7 +233,7 @@ def reset_native_motion_rollout(
     mj_data.qpos[:] = np.asarray(reference.qpos)
     mj_data.qvel[:] = np.asarray(reference.qvel)
     mj_data.ctrl[:] = np.asarray(
-        env._initial_ctrl(joint_default_offset), dtype=np.float64
+        env._initial_ctrl(joint_default_offset, reference.qpos), dtype=np.float64
     )
     mujoco.mj_forward(env.model.mj_model, mj_data)
     state = native_motion_state(

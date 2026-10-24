@@ -233,16 +233,15 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         return ObservationLayout(
             (
                 ("invariant_physical_state", 13 + 2 * n),
-                ("reference_error", 9 + n),
-                ("previous_motor_target", n),
+                ("joint_position_error", n),
+                ("body_position_error", 3 * len(self.kinematics.body_names)),
+                ("root_error", 9),
                 ("physical_context", n + 5),
                 ("future_reference", self.codec.goal_size),
-                ("current_actor_sample", self.codec.sample_size),
             )
         )
 
     def critic_observation(self, state, world_id=0):
-        # The model-based learner adds its recorded history to these state terms.
         return critic_features(
             self.physical_state(state),
             self.reference_state(
@@ -250,8 +249,7 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             ),
             self.goal(state.reference_time),
             self.context(state, world_id),
-            state.data.ctrl,
-            self.observation(state)[None],
+            self.kinematics,
         )
 
     def critic_observation_batch(self, state, rng=None):
@@ -323,6 +321,39 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         return self.mapping.command(
             action, state.data.ctrl, state.joint_default_offset
         ).accepted
+
+    def _initial_ctrl(self, joint_default_offset, qpos):
+        del joint_default_offset
+        return self._logical_target_to_ctrl(qpos[self.model.actuator_qpos_indices])
+
+    def _perturb_root(self, qpos, qvel, key):
+        keys = jax.random.split(key, 4)
+
+        def noise(rng, magnitude):
+            bound = jnp.asarray(magnitude)
+            return jax.random.uniform(rng, (3,), minval=-bound, maxval=bound)
+
+        cfg = self.config.reset
+        state = self.kinematics.from_qpos(qpos, qvel)
+        state = replace(
+            state,
+            position=state.position + noise(keys[0], cfg.root_position_noise),
+            quaternion=rot.multiply(
+                rot.exp(noise(keys[1], cfg.root_rotation_noise)), state.quaternion
+            ),
+            linear_velocity=state.linear_velocity
+            + noise(keys[2], cfg.root_linear_velocity_noise),
+            angular_velocity=state.angular_velocity
+            + noise(keys[3], cfg.root_angular_velocity_noise),
+        )
+        qpos, qvel = self.kinematics.to_qpos(state, qpos, qvel)
+        target = self._initial_ctrl(jnp.zeros(self.action_size), qpos)
+        joints = jnp.matmul(
+            jnp.asarray(self.model.target_limits.joint_from_motor),
+            target,
+            precision=jax.lax.Precision.HIGHEST,
+        )
+        return qpos.at[self.model.actuator_qpos_indices].set(joints), qvel
 
     def physical_state(self, state):
         return self.kinematics.from_qpos(state.data.qpos, state.data.qvel)

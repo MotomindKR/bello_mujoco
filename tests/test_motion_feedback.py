@@ -74,7 +74,7 @@ def env():
                 enabled=True, delay_steps=(1, 1)
             ),
         ),
-        _initial_ctrl=lambda _: jnp.zeros(1),
+        _initial_ctrl=lambda _offset, _qpos: jnp.zeros(1),
     ).items():
         object.__setattr__(result, name, value)
     return result

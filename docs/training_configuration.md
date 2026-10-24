@@ -64,6 +64,12 @@ The `bello_mini_supermimic_lafan` recipe uses whole LAFAN sequences. Its
 native full-clip evaluation retain the complete recording. A null cap preserves
 the reference-end timeout behavior. `networks.matmul_precision` explicitly
 selects `float32` or `tensorfloat32` matrix multiplication for the networks.
+The LAFAN comparison uses the full 4,096-environment, ten-by-2,048 dynamics,
+and 4,096-imagination batches. Its transition target covers exactly 14,000
+update cycles after collection warmup with no wall-time cutoff. It disables
+command delay and feedback filtering/latency for reference comparison; the
+base hardware-oriented recipe retains those controls. The return sampler
+uses alpha 0.2 and a 0.001 historical-difficulty EMA.
 See [LAFAN preparation and training](supermimic.md) for corpus constraints and
 the separate training/held-out evaluation reports.
 

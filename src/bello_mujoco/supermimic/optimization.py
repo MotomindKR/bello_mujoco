@@ -14,7 +14,6 @@ from bello_mujoco.supermimic.model import (
     Critic,
     Moments,
     WorldModel,
-    state_delta,
     world_model_loss,
 )
 
@@ -60,11 +59,7 @@ def initialize_learner(env, config, networks, context_size, key):
     )
     model = WorldModel(n, context_size, config=networks, key=model_key)
     critic_size = (
-        22
-        + 4 * n
-        + context_size
-        + codec.goal_size
-        + codec.sample_size * codec.config.history_frames
+        22 + 3 * n + 3 * len(env.kinematics.body_names) + context_size + codec.goal_size
     )
     critic = Critic(critic_size, config=networks, key=critic_key)
     actor_opt, model_opt, critic_opt = optimizers(config)
@@ -114,11 +109,7 @@ def apply_optimizer(network, gradient, state, optimizer, rate):
 
 
 def update_world_model(learner, window, config, update):
-    tr = window.transitions
-    inputs = learner.model.features(tr.state, tr.previous_motor, tr.motor, tr.context)
-    targets = state_delta(tr.state, tr.successor)
-    input_norm = learner.input_norm.update(inputs, window.mask)
-    output_norm = learner.output_norm.update(targets, window.mask)
+    input_norm, output_norm = learner.input_norm, learner.output_norm
     n = learner.model.joint_count
     floor = jnp.concatenate(
         (
@@ -150,7 +141,7 @@ def update_world_model(learner, window, config, update):
     )
     result = jax.lax.cond(valid, lambda: candidate, lambda: learner)
     return result, {
-        "model/loss": loss,
+        "model/loss": loss / config.window_length,
         "model/gradient_norm": optax.global_norm(gradient),
         "invalid/model_update": (~valid).astype(jnp.float32),
     }

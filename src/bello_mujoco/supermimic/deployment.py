@@ -198,7 +198,7 @@ def export_supermimic_checkpoint(config, output):
         "future_frames": codec.config.future_frames,
         "reference_orientation": codec.config.reference_orientation,
         "goal_joint_velocity_scale": codec.config.goal_joint_velocity_scale,
-        "rotation_6d_layout": "columns",
+        "rotation_6d_layout": "first_two_columns_row_major",
         "reference_root_body": env.config.anchor_body_name,
         "coordinates": model.actuator_coordinate_names,
         "actuators": model.actuator_names,

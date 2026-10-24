@@ -46,9 +46,11 @@ def continuation(tmp_path, monkeypatch):
     )
     observations = ObservationConfig(history_frames=2, future_frames=2)
     env = SimpleNamespace(
-        action_size=1, codec=ObservationCodec(observations, jnp.zeros(1))
+        action_size=1,
+        codec=ObservationCodec(observations, jnp.zeros(1)),
+        kinematics=SimpleNamespace(body_names=("root",)),
     )
-    learner = initialize_learner(env, config, networks, 1, jax.random.PRNGKey(0))
+    learner = initialize_learner(env, config, networks, 6, jax.random.PRNGKey(0))
     collector = CollectorState(
         jnp.ones(2),
         jnp.zeros((2, env.codec.sample_size)),
@@ -144,3 +146,22 @@ def test_profiles_decode_frozen_task_configs_and_preserve_motion_gains():
         == run.environment.control.command_delay_seconds
     )
     assert smoke.environment.randomization.joint_origin_range == (0.0, 0.0)
+    lafan = supermimic_training_profile(
+        Path("motions/local"), name="bello_mini_supermimic_lafan"
+    )
+    for name in (
+        "num_envs",
+        "replay_steps",
+        "model_batches",
+        "model_batch_size",
+        "imagined_batch_size",
+    ):
+        assert getattr(lafan.config, name) == getattr(run.config, name)
+    vector_steps = lafan.config.total_timesteps // lafan.config.num_envs
+    assert (
+        vector_steps - lafan.config.warmup_steps
+    ) * lafan.config.update_to_data_ratio == 14000
+    assert lafan.max_training_seconds is None
+    assert lafan.environment.control.command_delay_seconds == 0
+    assert not lafan.environment.filtering.enabled
+    assert not lafan.environment.latency.enabled

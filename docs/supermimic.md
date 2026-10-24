@@ -92,6 +92,9 @@ The pinned GMR solver's six-argument call is translated explicitly to Mink's
 keyword `limits` at the module boundary; its sixth positional slot otherwise
 selects `safety_break`, leaving additional constraints unused. Vendor files
 remain unchanged. Cached body twists use `mjOBJ_XBODY` link origins.
+Velocities use central pose differences, with one-sided differences at clip
+endpoints. Free-joint angular velocities are transformed into the current pose's
+local frame before FK, matching the unofficial world-frame differentiation.
 
 Every requested sequence must succeed before the immutable corpus manifest is
 published. The new output directory contains `settings.json`, per-sequence
@@ -132,8 +135,19 @@ does not use this training cap. Network-only `matmul_precision: tensorfloat32`
 requests JAX `Precision.HIGH`; geometry and controller math keep their existing
 precision. Parameters and replay stay float32. `float32` uses `Precision.HIGHEST`.
 Per-update collection, dynamics fitting, and actor/critic timings are logged.
-This bounded profile retains the full profile's learning-rate decay schedule;
-it does not reproduce the paper's full training budget.
+The LAFAN comparison profile uses the full unofficial batch sizes: 4,096
+environments, 1,000 replay steps, ten dynamics batches of 2,048 windows, and
+4,096 imagined starts. Its 143,622,144-transition target covers 64 warmup vector
+steps and exactly 14,000 update cycles, including 500 dynamics-only cycles.
+There is no profile wall-time cutoff. This matches the unofficial successful
+checkpoint's update budget, not the paper's much larger BONES run.
+
+For this comparison, command delay, feedback filtering, and observation latency
+are disabled. Reset perturbations, calibration resampling, friction range,
+ten-frame history/goals, optimizer schedule, and gradient clipping follow the
+unofficial recipe. Mini geometry, actuator gains, coupled target/step limits,
+self-contacts, and the Mini-scale torso-COM range remain explicit departures.
+This simulation baseline requires separate hardware robustness validation.
 
 Native evaluation defaults to `evaluation_split=held_out`. To measure tracking
 on training motions, explicitly select `evaluation_split=training`; selected
@@ -157,10 +171,14 @@ their ranges have not been established by Mini system identification.
 
 Collection adds Gaussian action noise and stores the actual clipped action,
 previous/new accepted motor targets, physical successor before reset, measured
-observation, filter state, reference clock/alignment, episode identity, context,
+observation before residual noise, filter state, reference clock/alignment, episode identity, context,
 reward, and distinct terminal/timeout flags. Dynamics windows cannot cross
 episode, clip, or context boundaries. Imagination reconstructs causal actor and
-feedback histories. Ineligible starts skip policy improvement with a metric.
+feedback histories and draws fresh residual sensor noise for imagined histories.
+Missing history before the oldest replay record is padded with that record;
+history never crosses a reset. Ineligible starts skip policy improvement with
+a metric. Reset motor targets start at the constrained reset pose rather than
+the neutral pose in collection and native evaluation.
 
 At the default update-to-data ratio, each outer update collects alternating
 two/three vector steps, fits ten dynamics batches, then updates actor/critic
@@ -169,6 +187,12 @@ differentiates 32 imagined steps through fixed world-model and critic parameters
 preserving input derivatives. The critic learns detached lambda-return targets.
 Invalid optimization updates are rejected and stop the run. The learning-rate
 schedule uses the outer-update clock. Total timesteps count real transitions.
+Observation/goal moments update before collection actions. Dynamics moments
+update once from each real transition, never from repeated replay samples.
+Moments use `sqrt(variance + epsilon**2)` and freeze after their count reaches
+200 million. The dynamics objective sums masked errors over the prediction
+window and averages over sampled windows; logged loss is divided by window
+length. This preserves the reference gradient scale before clipping.
 
 Metrics include model/actor/critic losses, gradient norm, imagined reward,
 completed episodes, failures, skipped policy updates, and
@@ -180,8 +204,10 @@ the episode's mean step reward estimates the discounted continuation; terminal
 failures receive no continuation, including failures on the final frame. This
 keeps successful short clip tails from appearing harder solely because they
 contain fewer steps. With gamma equal to one, continuation uses the bank's
-maximum episode length. Historical weights
-accumulate previous difficulty distributions. Held-out clips never enter
+maximum episode length. Return estimates use alpha 0.2 starting from zero.
+Historical weights use a 0.001 EMA on reset events. Simultaneous returns for the
+same bin are averaged before the EMA, avoiding the unofficial duplicate-index
+assignment ambiguity. Held-out clips never enter
 learning or the curriculum.
 
 Checkpoints include full learner/optimizer state, normalizers, replay, collector
@@ -234,16 +260,21 @@ The separate goal concatenates ten future frames at 1-10 control steps. Each
 frame contains displacement and orientation in the current reference heading
 frame, future root-local linear/angular velocities, absolute logical joint
 positions, and scaled joint velocities. Its size is `K*(15+2N)`. Futures clamp
-to the selected clip end. Six-dimensional rotations concatenate the first two
-rotation-matrix columns, separately from SONIC's historical reshape convention.
+to the selected clip end. Six-dimensional rotations flatten the first two
+rotation-matrix columns in row-major order, matching the unofficial code:
+`[R00, R01, R10, R11, R20, R21]`. Rust uses the same ordering; bundle metadata
+requires `rotation_6d_layout: first_two_columns_row_major`. Historical policies
+with the previous ordering require their original checkout.
 
 Persisted running moments normalize history and goals. The actor's ELU motion
 encoder produces a tanh latent, concatenated with normalized history for the ELU
 decoder. The SiLU/LayerNorm world model consumes heading-invariant physical
 state, previous/new motor targets, and context, predicting normalized root-local
-increments. The privileged critic additionally receives reference error, goal,
-context, and actor history. The collector's single-sample critic protocol is
-separate from the model-based learner's history-bearing critic. The SuperMimic
+increments. The privileged critic receives invariant state, joint-position
+errors, heading-local re-anchored body-position errors, root position/orientation
+errors, normalized context, and future goals. Actor history and previous motor
+targets are not critic inputs. Collection and imagined rollouts share this
+feature codec. The SuperMimic
 profile does not route through shared PPO.
 
 Commands use `neutral_joint + calibration + scale*clipped_action`, with
@@ -732,8 +763,8 @@ the held-out split. All 513,900 reference frames fit the static action range;
 the largest required normalized action was 15.88 against a clip of 20.
 At exact reference poses, the soft joint-limit cost reduces normalized score
 by approximately 2-5% before action-rate penalties. These checks do not prove
-dynamic feasibility. Both this learner and the unofficial implementation give
-future goals to the critic. This critic additionally receives actor history and
+dynamic feasibility. Both that learner and the unofficial implementation gave
+future goals to the critic. That run's critic additionally received actor history and
 previous motor targets, while omitting the unofficial critic's 42 per-body
 position-error features. This run did not isolate the effect of those differences.
 
@@ -753,5 +784,41 @@ Immutable artifacts:
 Instance `57471104` was automatically destroyed; Vast inventory confirmed its
 absence at 07:19:08 UTC on 2026-10-24. The observed rental interval was 113.71
 minutes at $0.72222/hour, approximately $1.37 before billing adjustments.
-Restore this checkpoint from a clean checkout at `3f02989`; the local
+Restore that checkpoint from a clean checkout at `3f02989`; the local
 `outputs/supermimic-lafan-20261023/training-runtime` preserves that exact source.
+
+## Reference alignment after the LAFAN result
+
+The poor broader-motion result above prompted a fresh comparison against
+unofficial source `a1508d42c9d1699a52e8233ab16d08c488441ab9`. The learner now
+aligns window-loss reduction, real-transition normalization timing, normalizer
+epsilon/count limits, critic body errors, context scaling, reset targets and
+perturbations, fresh imagined-history noise, replay padding, rotation layout,
+and return/historical sampling EMAs. The LAFAN profile restores the full batches
+and 14,000-update target described above. These are verified implementation
+differences; their individual effects on learned tracking have not been isolated.
+
+The replacement dataset is
+`gyungmin/bello-mujoco/mini-supermimic-lafan40-central-reference-20261024:v0`,
+with manifest SHA-256
+`be67dbd47dc6b3535c96f2743c2ae7fe2c77f217e5ca619ccac49d249d3b738b`.
+All 513,900 poses across the same 40 training and nine additional evaluation
+recordings are byte-identical to the previous corpus. Velocities and cached
+link twists were regenerated with central differences. The prior artifact
+remains unchanged.
+
+A differential CPU fixture executes the pinned upstream goal/observation,
+reward/termination, critic-feature, dynamics-loss, and imagined-step functions.
+It uses the same synthetic 29-joint/14-body skeleton on both sides, reduced
+network widths, copied weights, and disabled observation noise. Extra Mini
+motor-memory/latency inputs have zero weights for this comparison. Across 22
+checks, maximum absolute differences were `1.19e-7` for critic features,
+`7.63e-6` for dynamics loss, `2.87e-6` for a dynamics weight gradient, `6.68e-6`
+for the 32-step actor objective, and `2.73e-12` for an encoder weight gradient.
+This checks shared mathematical behavior, not simulator equivalence or tracking
+quality on Mini.
+
+Validation passed 941 default CPU tests, seven native/ONNX/Rust integration
+checks, the Rust rotation-layout unit test, formatting, lint, lock and generated
+protocol checks. The CUDA integration case remains pending a GPU host. The new
+full-budget run has not started; the results above belong to the earlier code.

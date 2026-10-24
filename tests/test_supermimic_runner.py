@@ -95,6 +95,9 @@ class ToyEnv:
             state.joint_default_offset,
         )
 
+    def observation(self, state):
+        return self.observe(state)
+
     def reset_batch(self, count, rng):
         qpos = jnp.broadcast_to(self.reference_bank.qpos[0], (count, 8))
         data = ToyData(qpos, jnp.zeros((count, 7)), jnp.zeros((count, 1)))
@@ -260,6 +263,12 @@ def test_compiled_collect_fit_imagine_loop_preserves_terminal_successors(toy_run
     np.testing.assert_array_equal(runner.collector.environment.data.qpos[:, 7:], 0.0)
     runner, metrics = fit(runner)
     require_valid_metrics(metrics)
+    assert int(runner.learner.input_norm.count) == config.num_envs * 2
+    assert int(runner.learner.output_norm.count) == config.num_envs * 2
+    runner, metrics = fit(runner)
+    require_valid_metrics(metrics)
+    assert int(runner.learner.input_norm.count) == config.num_envs * 2
+    assert int(runner.learner.output_norm.count) == config.num_envs * 2
     runner, metrics = improve(runner, env.reference_bank)
     require_valid_metrics(metrics)
     assert runner.actor_updates == 1
@@ -278,6 +287,31 @@ def test_nonfinite_metrics_stop_training():
         require_valid_metrics({"model/loss": jnp.nan})
     with pytest.raises(RuntimeError, match="invalid/collection"):
         require_valid_metrics({"invalid/collection": 1.0})
+
+
+def test_critic_has_reanchored_body_errors_without_actor_history(toy_runner):
+    from bello_mujoco.supermimic.mdp import critic_features
+
+    env, _, runner = toy_runner
+    state = env.reference_state(jnp.asarray(0.0), jnp.zeros(2), 0.0)
+    reference = replace(state, position=state.position + jnp.array([1.0, 2.0, 0.2]))
+    context = jnp.array([0.0, 0.75, 0.0, 0.0, 0.0, 0.0])
+    goal = env.goal(jnp.asarray(0.0))
+    features = critic_features(state, reference, goal, context, env.kinematics)
+    np.testing.assert_allclose(features[16:22], [0, 0, 0.2, 0, 0, 0.2], atol=1e-7)
+    np.testing.assert_allclose(features[22:25], [1, 2, 0.2], atol=1e-7)
+    np.testing.assert_allclose(features[31:37], 0)
+    assert features.size == runner.learner.critic_norm.mean.size
+    derivative = jax.grad(
+        lambda z: critic_features(
+            replace(state, position=state.position.at[2].set(z)),
+            reference,
+            goal,
+            context,
+            env.kinematics,
+        )[16:22].sum()
+    )(state.position[2])
+    assert float(derivative) == pytest.approx(-2.0)
 
 
 def test_collector_bootstraps_timeout_curriculum_but_preserves_replay_flags(
@@ -299,7 +333,9 @@ def test_collector_bootstraps_timeout_curriculum_but_preserves_replay_flags(
     expected = (rewards[0] + config.gamma * rewards[1]) + (
         config.gamma**2 * rewards.mean(axis=0) / (1 - config.gamma)
     )
-    assert float(runner.sampling.returns[0]) == pytest.approx(expected.mean(), rel=1e-5)
+    assert float(runner.sampling.returns[0]) == pytest.approx(
+        env.sampler.config.return_alpha * expected.mean(), rel=1e-5
+    )
     assert np.all(runner.replay.data.timeout[1])
     assert not np.any(runner.replay.data.terminal[1])
 

@@ -33,7 +33,7 @@ class SamplingConfig:
     difficult_weight: float = 0.4
     past_weight: float = 0.1
     temperature: float = 25.0
-    return_alpha: float = 0.1
+    return_alpha: float = 0.2
 
     def __post_init__(self):
         values = (self.uniform_weight, self.difficult_weight, self.past_weight)
@@ -132,11 +132,7 @@ class ReturnSampler:
             .add(jnp.where(completed, returns, 0.0))
         )
         means = totals / jnp.maximum(counts, 1)
-        updated = jnp.where(
-            state.visits == 0,
-            means,
-            state.returns + self.config.return_alpha * (means - state.returns),
-        )
+        updated = state.returns + self.config.return_alpha * (means - state.returns)
         updated = jnp.where(counts > 0, updated, state.returns)
         current = jax.nn.softmax(
             jnp.where(
@@ -145,6 +141,9 @@ class ReturnSampler:
                 -jnp.inf,
             )
         )
-        return SamplingState(
-            updated, state.visits + counts, state.past_weights + current
+        past = jnp.where(
+            jnp.any(completed),
+            0.999 * state.past_weights + 0.001 * current,
+            state.past_weights,
         )
+        return SamplingState(updated, state.visits + counts, past)

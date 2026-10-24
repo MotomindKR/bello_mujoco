@@ -40,14 +40,15 @@ class Moments:
             + batch_var * batch_count
             + delta**2 * self.count * batch_count / jnp.maximum(total, 1)
         ) / jnp.maximum(total, 1)
-        return Moments(
+        updated = Moments(
             jnp.where(batch_count > 0, mean, self.mean),
             jnp.where(batch_count > 0, var, self.variance),
             total,
         )
+        return jax.lax.cond(self.count < 2e8, lambda: updated, lambda: self)
 
     def std(self, floor=1e-2):
-        return jnp.sqrt(jnp.maximum(self.variance, floor**2))
+        return jnp.sqrt(self.variance + floor**2)
 
     def normalize(self, values, floor=1e-2):
         return (values - self.mean) / self.std(floor)
@@ -104,7 +105,10 @@ class MLP(eqx.Module):
             eqx.tree_at(
                 lambda layer: (layer.weight, layer.bias),
                 last,
-                (last.weight * output_scale, jnp.zeros_like(last.bias)),
+                (
+                    last.weight * output_scale,
+                    last.bias if output_scale == 1.0 else jnp.zeros_like(last.bias),
+                ),
             ),
         )
 
@@ -152,6 +156,23 @@ def invariant_features(state):
     )
 
 
+def normalized_context(context):
+    n = context.shape[-1] - 5
+    if n <= 0:
+        raise ValueError(
+            "context requires joint offsets, friction, torso COM, and latency"
+        )
+    return jnp.concatenate(
+        (
+            context[..., :n] / 0.01,
+            (context[..., n : n + 1] - 0.75) / 0.45,
+            context[..., n + 1 : n + 4] / 0.05,
+            context[..., -1:] / 2.0,
+        ),
+        axis=-1,
+    )
+
+
 def state_delta(start, end):
     inverse = rot.conjugate(start.quaternion)
     return jnp.concatenate(
@@ -188,6 +209,10 @@ class WorldModel(eqx.Module):
     joint_count: int = eqx.field(static=True)
 
     def __init__(self, joint_count, context_size, *, config=NetworkConfig(), key):
+        if joint_count <= 0 or context_size != joint_count + 5:
+            raise ValueError(
+                "world-model context must match the controlled joint layout"
+            )
         self.joint_count = joint_count
         self.network = MLP(
             (13 + 4 * joint_count + context_size,)
@@ -203,7 +228,13 @@ class WorldModel(eqx.Module):
     @staticmethod
     def features(state, previous_motor, motor, context):
         return jnp.concatenate(
-            (invariant_features(state), previous_motor, motor, context), axis=-1
+            (
+                invariant_features(state),
+                previous_motor,
+                motor,
+                normalized_context(context),
+            ),
+            axis=-1,
         )
 
     def step(self, state, previous_motor, motor, context, input_norm, output_norm):
@@ -275,6 +306,7 @@ def world_model_loss(model, window, input_norm, output_norm, *, error_floor):
 
     _, predicted = jax.lax.scan(step, initial, controls)
     predicted = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), predicted)
-    error = state_delta(tr.successor, predicted) / output_norm.std(error_floor)
+    scale = jnp.maximum(output_norm.std(1e-4), error_floor)
+    error = state_delta(tr.successor, predicted) / scale
     squared = jnp.mean(error**2, axis=-1)
-    return (squared * window.mask).sum() / jnp.maximum(window.mask.sum(), 1)
+    return (squared * window.mask).sum() / window.mask.shape[0]

@@ -154,6 +154,14 @@ in separate CPU processes with partitioned Linux CPU affinity. The profile stops
 training at 75 minutes and saves its final checkpoint, reserving the rest of a
 two-hour job for evaluation and uploads. The host supervisor still owns teardown.
 
+The `bello_mini_supermimic_lafan` comparison instead uses the full unofficial
+batches to 14,000 update cycles without a profile time cap. Do not assume a
+two-hour rental fits this workload. Budget setup, full training, native
+training/held-out evaluation, and uploads before launching. A single
+high-memory GPU is the initial candidate. This trainer does not yet distribute
+replay or gradients across devices; multiple cards do not automatically pool
+memory or accelerate this code.
+
 Non-dry execution reads:
 
 - `VAST_API_KEY` or keyring `vast/api_key`;

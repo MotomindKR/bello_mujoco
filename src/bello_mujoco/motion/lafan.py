@@ -79,6 +79,27 @@ class LafanPreparationConfig:
             )
 
 
+def pose_velocities(model, qpos, fps):
+    """Central pose differences, with free-joint angular velocities at the current pose."""
+    qvel = np.zeros((len(qpos), model.nv))
+    free_joints = np.flatnonzero(model.jnt_type == mujoco.mjtJoint.mjJNT_FREE)
+    for frame in range(len(qpos)):
+        left, right = max(0, frame - 1), min(len(qpos) - 1, frame + 1)
+        mujoco.mj_differentiatePos(
+            model, qvel[frame], (right - left) / fps, qpos[left], qpos[right]
+        )
+        for joint in free_joints:
+            p, v = model.jnt_qposadr[joint], model.jnt_dofadr[joint]
+            world, inverse, local = np.empty(3), np.empty(4), np.empty(3)
+            mujoco.mju_rotVecQuat(
+                world, qvel[frame, v + 3 : v + 6], qpos[left, p + 3 : p + 7]
+            )
+            mujoco.mju_negQuat(inverse, qpos[frame, p + 3 : p + 7])
+            mujoco.mju_rotVecQuat(local, world, inverse)
+            qvel[frame, v + 3 : v + 6] = local
+    return qvel
+
+
 def clip_from_poses(model, body_names, qpos, fps, contact_height_m):
     """Differentiate poses and cache link-origin FK/twists, never COM twists."""
     mj_model = model.mj_model
@@ -96,12 +117,7 @@ def clip_from_poses(model, body_names, qpos, fps, contact_height_m):
         constrained > bounds[:, 1] + 1e-4
     ):
         raise ValueError("retarget violates canonical motor/joint limits")
-    qvel = np.zeros((len(qpos), mj_model.nv))
-    for frame in range(len(qpos) - 1):
-        mujoco.mj_differentiatePos(
-            mj_model, qvel[frame], 1 / fps, qpos[frame], qpos[frame + 1]
-        )
-    qvel[-1] = qvel[-2]
+    qvel = pose_velocities(mj_model, qpos, fps)
     data = mujoco.MjData(mj_model)
     body_ids = [mj_model.body(name).id for name in body_names]
     foot_ids = [mj_model.body(name).id for name in model.robot.foot_body_names]

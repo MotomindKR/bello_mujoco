@@ -8,6 +8,7 @@ import jax.numpy as jnp
 
 from bello_mujoco.envs.geometry import tree_where
 from bello_mujoco.supermimic.replay import ReplayBuffer, Transition
+from bello_mujoco.supermimic.model import state_delta
 from bello_mujoco.supermimic.sampling import completed_return
 from bello_mujoco.supermimic.state import PhysicalState
 
@@ -145,6 +146,11 @@ def collect_step(runner, env, config):
     learner, collector = runner.learner, runner.collector
     before = collector.environment
     goals = jax.vmap(env.goal)(before.reference_time)
+    learner = replace(
+        learner,
+        observation_norm=learner.observation_norm.update(collector.observation),
+        goal_norm=learner.goal_norm.update(goals),
+    )
     action = learner.actor(
         collector.history, goals, learner.observation_norm, learner.goal_norm
     )
@@ -161,7 +167,7 @@ def collect_step(runner, env, config):
         env,
         before,
         after,
-        collector.observation,
+        jax.vmap(env.observation)(before),
         action,
         collector.episode_ids,
         reward,
@@ -209,8 +215,17 @@ def collect_step(runner, env, config):
     )
     learner = replace(
         learner,
-        observation_norm=learner.observation_norm.update(collector.observation),
-        goal_norm=learner.goal_norm.update(goals),
+        input_norm=learner.input_norm.update(
+            learner.model.features(
+                transition.state,
+                transition.previous_motor,
+                transition.motor,
+                transition.context,
+            )
+        ),
+        output_norm=learner.output_norm.update(
+            state_delta(transition.state, transition.successor)
+        ),
     )
     result = replace(
         runner,

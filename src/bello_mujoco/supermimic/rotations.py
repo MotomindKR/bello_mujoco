@@ -72,10 +72,11 @@ def heading(quaternion):
 
 
 def rotation_6d(quaternion):
-    return jnp.concatenate(
+    columns = jnp.stack(
         (
             rotate(quaternion, jnp.asarray([1.0, 0.0, 0.0])),
             rotate(quaternion, jnp.asarray([0.0, 1.0, 0.0])),
         ),
         axis=-1,
     )
+    return columns.reshape(columns.shape[:-2] + (6,))

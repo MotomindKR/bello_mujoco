@@ -145,7 +145,7 @@ def exported(tmp_path):
         "future_frames": 2,
         "reference_orientation": True,
         "goal_joint_velocity_scale": 0.1,
-        "rotation_6d_layout": "columns",
+        "rotation_6d_layout": "first_two_columns_row_major",
         "sample_frame": [
             ["joint_position", 2],
             ["joint_velocity", 2],
