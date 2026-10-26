@@ -276,9 +276,7 @@ def make_native_motion_step(
     )
 
     def step(mj_data, state, action, *, rng=None):
-        action = jax.numpy.clip(
-            jax.numpy.asarray(action), -env.action_clip, env.action_clip
-        )
+        action = env.prepare_action(action)
         requested_ctrl = target(state, action)
         for index in range(env.decimation):
             last_substep_qvel = np.asarray(mj_data.qvel).copy()

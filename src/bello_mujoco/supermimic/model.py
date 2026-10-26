@@ -224,9 +224,7 @@ class WorldModel(eqx.Module):
             )
         self.joint_count = joint_count
         self.network = MLP(
-            (13 + 4 * joint_count + context_size,)
-            + config.dynamics_widths
-            + (12 + 2 * joint_count,),
+            (self.input_size,) + config.dynamics_widths + (12 + 2 * joint_count,),
             key=key,
             activation="silu",
             layer_norm=True,
@@ -234,20 +232,24 @@ class WorldModel(eqx.Module):
             matmul_precision=config.matmul_precision,
         )
 
+    @property
+    def input_size(self):
+        return 17 + 4 * self.joint_count
+
     @staticmethod
-    def features(state, previous_motor, motor, context):
+    def features(state, action, context):
+        # Sensor latency affects the policy, not action-conditioned physical dynamics.
         return jnp.concatenate(
             (
                 invariant_features(state),
-                previous_motor,
-                motor,
-                normalized_context(context),
+                action,
+                normalized_context(context)[..., :-1],
             ),
             axis=-1,
         )
 
-    def step(self, state, previous_motor, motor, context, input_norm, output_norm):
-        features = self.features(state, previous_motor, motor, context)
+    def step(self, state, action, context, input_norm, output_norm):
+        features = self.features(state, action, context)
         normalized = self.network(input_norm.normalize(features))
         delta = normalized * output_norm.std(1e-4) + output_norm.mean
         return apply_delta(state, delta)
@@ -311,7 +313,7 @@ class Critic(eqx.Module):
 def world_model_loss(model, window, input_norm, output_norm, *, error_floor):
     tr = window.transitions
     initial = jax.tree.map(lambda x: x[:, 0], tr.state)
-    controls = (tr.previous_motor, tr.motor, tr.context)
+    controls = (tr.action, tr.context)
     controls = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), controls)
 
     def step(state, inputs):

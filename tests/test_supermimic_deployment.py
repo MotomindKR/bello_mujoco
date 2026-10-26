@@ -11,6 +11,7 @@ from onnx.reference import ReferenceEvaluator
 import pytest
 
 from bello_mujoco.deployment import multi_clip_deployment_bundle
+from bello_mujoco.envs.actions import limit_motor_step, project_motor_target
 from bello_mujoco.models.target_limits import TargetLimits
 from bello_mujoco.motion.clip import MotionClip, save_motion_clip
 from bello_mujoco.sonic.reference import ReferenceBank
@@ -82,18 +83,14 @@ def exported(tmp_path, request):
     )
     mapping = ActionMapping(
         names,
-        2.0,
         codec.neutral_joint,
         codec.neutral_joint,
         jnp.eye(2),
         jnp.array([0.2, 0.3]),
-        jnp.asarray(limits.matrix),
-        jnp.asarray(limits.bounds),
-        jnp.asarray(limits.membership),
-        jnp.asarray(limits.groups),
-        jnp.asarray(limits.position_step),
     )
-    env = SimpleNamespace(codec=codec, mapping=mapping, action_clip=2.0)
+    env = SimpleNamespace(
+        codec=codec, mapping=mapping, action_clip=2.0, target_limits=limits
+    )
     networks = NetworkConfig(
         actor_widths=(8,),
         dynamics_widths=(8,),
@@ -146,7 +143,8 @@ def exported(tmp_path, request):
         "motor_limits": limits.motor.tolist(),
         "joint_limits": limits.joint.tolist(),
         "position_step_limits": limits.position_step.tolist(),
-        "action_clip": 2.0,
+        "collection_action_clip": 2.0,
+        "simulation_control": "unprojected_pd",
         "reference_clips": ["motion"],
         "reference_root_body": "root",
         "hardware_imu_frame": "imu",
@@ -217,7 +215,15 @@ def trace(exported, *, vertical=False):
         future = jax.vmap(kin.from_qpos)(future_samples.qpos, future_samples.qvel)
         goal = env.codec.goal(current, future)
         action = actor(history, goal, obs_norm, goal_norm)
-        command = env.mapping.command(action, previous_motor, jnp.zeros(2))
+        command = env.mapping.command(action, jnp.zeros(2))
+        projected = project_motor_target(
+            command.requested, env.mapping.neutral_motor, env.target_limits
+        )
+        command = replace(
+            command,
+            projected=projected,
+            accepted=limit_motor_step(projected, previous_motor, env.target_limits),
+        )
         rows.append(
             {
                 "motor_position": position.tolist(),

@@ -20,7 +20,7 @@ from bello_mujoco.supermimic.state import PhysicalState
 class DriftModel(eqx.Module):
     timestep: float = eqx.field(static=True, default=0.02)
 
-    def step(self, state, previous, motor, context, input_norm, output_norm):
+    def step(self, state, action, context, input_norm, output_norm):
         return replace(
             state, position=state.position + self.timestep * state.linear_velocity
         )
@@ -36,9 +36,7 @@ def test_open_loop_prediction_and_errors_have_correct_horizon_and_units():
         jnp.zeros((2, 1)),
     )
     controls = jnp.zeros((2, 8, 1))
-    predicted = rollout_predictions(
-        DriftModel(), state, controls, controls, controls, None, None
-    )
+    predicted = rollout_predictions(DriftModel(), state, controls, controls, None, None)
     np.testing.assert_allclose(predicted.position[:, 0], [0.16, 0.32], atol=1e-6)
     errors = {k: np.asarray(v) for k, v in prediction_errors(predicted, state).items()}
     np.testing.assert_allclose(errors["root_position_m"], [0.16, 0.32], atol=1e-6)

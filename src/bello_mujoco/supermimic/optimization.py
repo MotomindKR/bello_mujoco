@@ -70,7 +70,7 @@ def initialize_learner(env, config, networks, context_size, key):
         actor_opt.init(eqx.filter(actor, eqx.is_inexact_array)),
         model_opt.init(eqx.filter(model, eqx.is_inexact_array)),
         critic_opt.init(eqx.filter(critic, eqx.is_inexact_array)),
-        Moments.empty(13 + 4 * n + context_size),
+        Moments.empty(model.input_size),
         Moments.empty(12 + 2 * n),
         Moments.empty(codec.sample_size),
         Moments.empty(codec.goal_size),

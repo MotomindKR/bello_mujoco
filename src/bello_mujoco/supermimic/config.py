@@ -16,6 +16,8 @@ from bello_mujoco.sim import ModelRandomizationConfig, SimulationPhysicsConfig
 
 @dataclass(frozen=True)
 class ControlConfig:
+    """Simulation timing and the action bound applied only during collection."""
+
     physics_timestep: float = 0.005
     decimation: int = 4
     command_delay_seconds: float = 0.0
@@ -161,6 +163,12 @@ class EnvironmentConfig:
     randomization: ModelRandomizationConfig = field(
         default_factory=ModelRandomizationConfig
     )
+
+    def __post_init__(self):
+        if self.control.command_delay_seconds != 0:
+            raise ValueError(
+                "SuperMimic raw-action dynamics requires zero command delay"
+            )
 
     def motion_config(self):
         return MotionTrackingEnvConfig(

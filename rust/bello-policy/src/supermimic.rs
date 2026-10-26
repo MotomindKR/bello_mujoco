@@ -13,7 +13,8 @@ struct Settings {
     joint_names: Vec<String>,
     joint_from_motor: Vec<Vec<f64>>,
     default_joint_position: Vec<f64>,
-    action_clip: f32,
+    collection_action_clip: f32,
+    simulation_control: String,
     reference_clips: Vec<String>,
     reference_root_body: String,
     hardware_imu_frame: String,
@@ -284,8 +285,9 @@ impl SuperMimic {
                 && settings.future_frames <= 1000
                 && settings.goal_joint_velocity_scale.is_finite()
                 && settings.goal_joint_velocity_scale > 0.
-                && settings.action_clip.is_finite()
-                && settings.action_clip > 0.
+                && settings.collection_action_clip.is_finite()
+                && settings.collection_action_clip > 0.
+                && settings.simulation_control == "unprojected_pd"
                 && settings.rotation_6d_layout == "first_two_columns_row_major",
             "invalid SuperMimic codec settings"
         );
@@ -454,11 +456,7 @@ impl SuperMimic {
             .policy
             .target_limits
             .constrain(&proposal, &feedback.previous_motor_target)?;
-        self.last_action = output
-            .action
-            .iter()
-            .map(|v| v.clamp(-self.settings.action_clip, self.settings.action_clip))
-            .collect();
+        self.last_action = output.action.clone();
         self.last_step = Some(step);
         Ok(Step {
             observation,

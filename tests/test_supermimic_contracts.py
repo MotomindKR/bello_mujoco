@@ -7,9 +7,15 @@ import numpy as np
 import pytest
 
 from bello_mujoco.envs.feedback import delayed_ctrl
+from bello_mujoco.envs.motion_tracking import BelloMotionTrackingEnv
+from bello_mujoco.envs.supermimic import BelloSuperMimicEnv
 from bello_mujoco.models.target_limits import TargetLimits
 from bello_mujoco.supermimic import rotations as rot
-from bello_mujoco.supermimic.config import ControlConfig, ObservationConfig
+from bello_mujoco.supermimic.config import (
+    ControlConfig,
+    EnvironmentConfig,
+    ObservationConfig,
+)
 from bello_mujoco.supermimic.control import ActionMapping
 from bello_mujoco.supermimic.observations import ObservationCodec
 from bello_mujoco.supermimic.state import PhysicalState
@@ -25,7 +31,7 @@ def test_rotation_encoding_matches_reference_row_major_columns():
     )
 
 
-def test_coupled_commands_respect_limits_and_differentiate_the_executed_target():
+def test_direct_pd_commands_preserve_gradients_outside_target_envelopes():
     transform = np.array([[1.0, -1.0], [1.0, 1.0]])
     limits = TargetLimits(
         np.array([[-2.0, 2.0]] * 2),
@@ -48,40 +54,49 @@ def test_coupled_commands_respect_limits_and_differentiate_the_executed_target()
         }
     )
     mapping = ActionMapping.from_model(model, actuators)
-    command = jax.jit(mapping.command)(
-        jnp.array([1.0, 1.0]), jnp.zeros(2), jnp.zeros(2)
-    )
+    command = jax.jit(mapping.command)(jnp.array([1.0, 1.0]), jnp.zeros(2))
     np.testing.assert_allclose(command.requested, [0.0, 2.0])
-    assert np.all(np.abs(command.accepted) <= 0.1)
-    values = limits.matrix @ command.accepted
-    assert np.all(values >= limits.bounds[:, 0]) and np.all(
-        values <= limits.bounds[:, 1]
-    )
+    np.testing.assert_array_equal(command.accepted, command.requested)
+    np.testing.assert_array_equal(command.projected, command.requested)
 
     def target(a):
-        return mapping.command(a, jnp.zeros(2), jnp.zeros(2)).accepted
+        return mapping.command(a, jnp.zeros(2)).accepted
 
     a = jnp.array([0.01, 0.02])
     np.testing.assert_allclose(jax.jacfwd(target)(a), transform, atol=1e-6)
-    jac = jax.jacfwd(target)(jnp.array([0.3, 0.8]))
+    jac = jax.jacfwd(target)(jnp.array([30.0, 80.0]))
+    np.testing.assert_allclose(jac, transform, atol=1e-6)
     h = 1e-3
     finite = jnp.stack(
         [
             (
-                target(jnp.array([0.3, 0.8]) + h * d)
-                - target(jnp.array([0.3, 0.8]) - h * d)
+                target(jnp.array([30.0, 80.0]) + h * d)
+                - target(jnp.array([30.0, 80.0]) - h * d)
             )
             / (2 * h)
             for d in jnp.eye(2)
         ],
         axis=1,
     )
-    np.testing.assert_allclose(jac, finite, atol=1e-5)
-    bad = replace(ControlConfig(), action_clip=0.5)
-    clipped = ActionMapping.from_model(model, actuators, bad).command(
-        jnp.ones(2), jnp.zeros(2), jnp.zeros(2)
+    np.testing.assert_allclose(jac, finite, atol=5e-3)
+    calibrated = mapping.command(jnp.zeros(2), jnp.array([0.1, -0.2]))
+    np.testing.assert_allclose(calibrated.accepted, transform @ [0.1, -0.2], atol=1e-7)
+
+
+def test_raw_action_dynamics_rejects_hidden_command_memory():
+    with pytest.raises(ValueError, match="zero command delay"):
+        EnvironmentConfig(control=ControlConfig(command_delay_seconds=0.005))
+
+
+def test_only_supermimic_preserves_raw_policy_actions_at_environment_boundary():
+    env = SimpleNamespace(action_clip=1.0)
+    action = jnp.array([3.0, -2.0])
+    np.testing.assert_array_equal(
+        BelloMotionTrackingEnv.prepare_action(env, action), [1, -1]
     )
-    np.testing.assert_array_equal(clipped.action, [0.5, 0.5])
+    np.testing.assert_array_equal(
+        BelloSuperMimicEnv.prepare_action(env, action), action
+    )
 
 
 def test_observation_and_goal_are_mini_native_and_heading_invariant():

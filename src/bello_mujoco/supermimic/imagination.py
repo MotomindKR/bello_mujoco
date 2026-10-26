@@ -51,14 +51,11 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
         latents = actor.encode_goal(goals[:-1], goal_norm)
 
         def step(carry, inputs):
-            state, motor, observations, feedback, rng = carry
+            state, observations, feedback, rng = carry
             latent, reference_quaternion = inputs
             rng, feedback_key, observation_key = jax.random.split(rng, 3)
             action = actor.decode(observations, latent, observation_norm)
-            command = env.mapping.command(action, motor, context[:count])
-            successor = model.step(
-                state, motor, command.accepted, context, input_norm, output_norm
-            )
+            successor = model.step(state, action, context, input_norm, output_norm)
             feedback = advance_feedback(
                 feedback,
                 successor,
@@ -71,7 +68,7 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
             sample = actor_sample(
                 env.codec,
                 measured,
-                command.action,
+                action,
                 reference_quaternion,
                 context[:count],
                 observation_key,
@@ -81,15 +78,13 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
             observations = env.codec.advance_history(observations, sample)
             return (
                 successor,
-                command.accepted,
                 observations,
                 feedback,
                 rng,
-            ), (successor, command.action)
+            ), (successor, action)
 
         initial = (
             start.state,
-            start.previous_motor,
             history,
             feedback_history,
             noise_key,

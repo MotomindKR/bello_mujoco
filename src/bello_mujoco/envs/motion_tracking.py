@@ -673,13 +673,16 @@ class BelloMotionTrackingEnv:
 
         return jax.lax.fori_loop(0, self.decimation, substep, (data, data.qvel))
 
+    def prepare_action(self, action):
+        return jnp.clip(jnp.asarray(action), -self.action_clip, self.action_clip)
+
     def step(
         self, state: MotionTrackingState, action: jax.Array
     ) -> tuple[
         MotionTrackingState, jax.Array, jax.Array, jax.Array, dict[str, jax.Array]
     ]:
         self._require_mjx()
-        action = jnp.clip(jnp.asarray(action), -self.action_clip, self.action_clip)
+        action = self.prepare_action(action)
         data = state.data.replace(ctrl=self.action_target(state, action))
         data, last_substep_qvel = self._step_physics(data, state.data.ctrl, data.ctrl)
         stepped = state.replace(
@@ -730,7 +733,7 @@ class BelloMotionTrackingEnv:
         reset_rng = push_rng = obs_rng = feedback_rng = rng
         if rng is not None:
             reset_rng, push_rng, obs_rng, feedback_rng = jax.random.split(rng, 4)
-        action = jnp.clip(jnp.asarray(action), -self.action_clip, self.action_clip)
+        action = self.prepare_action(action)
         ctrl = jax.vmap(self.action_target)(state, action)
         data = state.data.replace(
             ctrl=ctrl, _impl=state.data._impl.replace(nworld=batch_size)

@@ -74,12 +74,8 @@ class WorldModelAuditConfig:
 
 
 @eqx.filter_jit
-def rollout_predictions(
-    model, initial, previous_motor, motor, context, input_norm, output_norm
-):
-    controls = jax.tree.map(
-        lambda x: jnp.swapaxes(x, 0, 1), (previous_motor, motor, context)
-    )
+def rollout_predictions(model, initial, action, context, input_norm, output_norm):
+    controls = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), (action, context))
 
     def step(state, values):
         predicted = model.step(state, *values, input_norm, output_norm)
@@ -201,7 +197,7 @@ def collect_validation_trace(env, actor, observation_norm, goal_norm, window):
     flags_at = jax.jit(motor_limit_flags)
     measure = jax.jit(lambda state: _tracking_errors(env, state))
     states = [env.physical_state(state)]
-    previous, motors, contexts = [], [], []
+    actions, contexts = [], []
     signatures = [ground_contact_bodies(native, data, env.model.terrain_geom_ids)]
     planned = min(
         window.max_steps,
@@ -217,14 +213,13 @@ def collect_validation_trace(env, actor, observation_norm, goal_norm, window):
     peak_effort, failure_event = 0.0, None
     failed = timed_out = False
     for _ in range(planned):
-        previous.append(state.data.ctrl)
         contexts.append(env.context(state, 0))
         action = infer(history, goal(state.reference_time))
-        command = command_at(action, state.data.ctrl, state.joint_default_offset)
+        command = command_at(action, state.joint_default_offset)
         state, observation, reward, done, info = step(data, state, action)
         if bool(info["done/nonfinite"]):
             raise RuntimeError("nonfinite native state in model validation")
-        motors.append(state.data.ctrl)
+        actions.append(action)
         states.append(env.physical_state(state))
         signatures.append(
             ground_contact_bodies(native, data, env.model.terrain_geom_ids)
@@ -250,7 +245,7 @@ def collect_validation_trace(env, actor, observation_norm, goal_norm, window):
             )
             height, tilt = env.mdp.errors(env.physical_state(state), reference)
             failure_event = {
-                "step": len(motors),
+                "step": len(actions),
                 "source_frame": window.start_frame + float(state.reference_time),
                 "height_error_m": float(height),
                 "gravity_projection_error": float(tilt),
@@ -263,11 +258,11 @@ def collect_validation_trace(env, actor, observation_norm, goal_norm, window):
         np.asarray, zip(*errors, strict=True)
     )
     tracking = {
-        "evaluated_steps": len(motors),
+        "evaluated_steps": len(actions),
         "planned_steps": planned,
         "episode_return": sum(rewards),
         "normalized_return": sum(rewards) / (5 * env.control_timestep * planned),
-        "completion_fraction": len(motors) / planned,
+        "completion_fraction": len(actions) / planned,
         "terminal": failed,
         "timeout": timed_out,
         "root_position_rms_m": float(np.sqrt(np.mean(root_error**2))),
@@ -277,12 +272,12 @@ def collect_validation_trace(env, actor, observation_norm, goal_norm, window):
         "joint_position_rms_rad": float(np.sqrt(np.mean(joint_error**2))),
         "motor_peak_effort_ratio": peak_effort,
         **{
-            f"{name}_step_fraction": count / len(motors)
+            f"{name}_step_fraction": count / len(actions)
             for name, count in flags_count.items()
         },
         "motor_diagnostics": {
             motor: {
-                f"{name}_step_fraction": float(count[index] / len(motors))
+                f"{name}_step_fraction": float(count[index] / len(actions))
                 for name, count in motor_counts.items()
             }
             for index, motor in enumerate(env.model.actuator_coordinate_names)
@@ -291,8 +286,7 @@ def collect_validation_trace(env, actor, observation_norm, goal_norm, window):
     }
     return (
         jax.tree.map(lambda *x: jnp.stack(x), *states),
-        jnp.stack(previous),
-        jnp.stack(motors),
+        jnp.stack(actions),
         jnp.stack(contexts),
         signatures,
         tracking,
@@ -317,7 +311,7 @@ def audit_world_model(config):
         "checkpoint_update": metadata["update"],
         "dynamics_sha256": metadata["dynamics_sha256"],
         "dataset_manifest_sha256": metadata["dataset_manifest_sha256"],
-        "scope": "Native deterministic frozen-policy trajectories. Autoregressive world-model predictions use recorded executed controls, not actions recomputed from predicted states. Ground-contact strata use active native contact-body signatures. Zero samples are reported explicitly; nonfinite predictions are counted separately. Window resets and training/held-out membership are labelled.",
+        "scope": "Native deterministic frozen-policy trajectories. Autoregressive world-model predictions use recorded raw actions, not actions recomputed from predicted states. Ground-contact strata use active native contact-body signatures. Zero samples are reported explicitly; nonfinite predictions are counted separately. Window resets and training/held-out membership are labelled.",
         "windows": {},
     }
     for window in config.windows:
@@ -326,20 +320,20 @@ def audit_world_model(config):
             dataset_directory=config.motion_dataset,
             reference_clips=(window.clip,),
         )
-        states, previous, motor, context, signatures, tracking = (
-            collect_validation_trace(env, actor, obs_norm, goal_norm, window)
+        states, action, context, signatures, tracking = collect_validation_trace(
+            env, actor, obs_norm, goal_norm, window
         )
         result = {
             "clip": window.clip,
             "start_frame": window.start_frame,
             "recorded_split": splits[window.clip],
-            "observed_steps": len(motor),
+            "observed_steps": len(action),
             "native_failed": tracking["terminal"],
             "tracking": tracking,
             "horizons": {},
         }
         for horizon in config.horizons:
-            anchors = np.arange(0, len(motor) - horizon + 1, config.anchor_stride)
+            anchors = np.arange(0, len(action) - horizon + 1, config.anchor_stride)
             if len(anchors) > config.max_windows_per_horizon:
                 anchors = anchors[
                     np.linspace(
@@ -351,8 +345,7 @@ def audit_world_model(config):
                 predicted = rollout_predictions(
                     model,
                     jax.tree.map(lambda x, indices=anchors: x[indices], states),
-                    previous[indices],
-                    motor[indices],
+                    action[indices],
                     context[indices],
                     input_norm,
                     output_norm,
@@ -382,7 +375,7 @@ def audit_world_model(config):
                 {
                     "model_audit_window": window.clip,
                     "start_frame": window.start_frame,
-                    "observed_steps": len(motor),
+                    "observed_steps": len(action),
                     "native_failed": tracking["terminal"],
                 }
             ),

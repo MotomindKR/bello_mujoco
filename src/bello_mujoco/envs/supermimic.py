@@ -115,6 +115,12 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             )
         if self.config.observation_mode != "proprioceptive":
             raise ValueError("SuperMimic actor uses proprioceptive feedback")
+        if self.config.command_delay_seconds != 0:
+            raise ValueError(
+                "SuperMimic raw-action dynamics requires zero command delay"
+            )
+        if self.model.mj_model.actuator_ctrllimited.any():
+            raise ValueError("SuperMimic requires unprojected PD actuator setpoints")
 
     @classmethod
     def load_corpus(
@@ -162,7 +168,7 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             env_config.command_delay_seconds,
             env_config.action_clip,
         )
-        mapping = ActionMapping.from_model(model, asset_config.actuator_config, control)
+        mapping = ActionMapping.from_model(model, asset_config.actuator_config)
         mdp = TrackingMDP(
             kin,
             jnp.asarray(model.target_limits.joint[:, 0]),
@@ -337,9 +343,10 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         return self.codec.goal(current, future)
 
     def action_target(self, state, action):
-        return self.mapping.command(
-            action, state.data.ctrl, state.joint_default_offset
-        ).accepted
+        return self.mapping.command(action, state.joint_default_offset).accepted
+
+    def prepare_action(self, action):
+        return jnp.asarray(action)
 
     def _initial_ctrl(self, joint_default_offset, qpos):
         del joint_default_offset

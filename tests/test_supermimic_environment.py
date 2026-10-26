@@ -165,7 +165,6 @@ def test_mini_reset_motor_target_tracks_the_constrained_reference_pose(mini_corp
     )
     command = env.mapping.command(
         jnp.full(env.action_size, 0.02),
-        env.mapping.neutral_motor,
         jnp.zeros(env.action_size),
     )
     qpos = (
@@ -176,6 +175,28 @@ def test_mini_reset_motor_target_tracks_the_constrained_reference_pose(mini_corp
     target = jax.jit(env._initial_ctrl)(jnp.zeros(env.action_size), qpos)
     np.testing.assert_allclose(target, command.accepted, atol=1e-6)
     assert np.max(np.abs(np.asarray(target - env.mapping.neutral_motor))) > 1e-6
+
+
+@pytest.mark.integration
+def test_native_raw_pd_targets_keep_physical_force_limits(mini_corpus):
+    asset, path = mini_corpus
+    env = BelloSuperMimicEnv.load_corpus(
+        asset, MotionTrackingEnvConfig(), (path,), load_mjx=False
+    )
+    data = mujoco.MjData(env.model.mj_model)
+    capacities = {"contact_capacity": 4096, "force_capacity": 65536}
+    state, _ = reset_native_motion_rollout(env, data, **capacities)
+    action = jnp.full(env.action_size, 2 * env.action_clip)
+    expected = env.mapping.command(action, state.joint_default_offset).accepted
+    state, _, _, _, info = make_native_motion_step(env, **capacities)(
+        data, state, action
+    )
+    np.testing.assert_array_equal(state.last_action, action)
+    np.testing.assert_allclose(data.ctrl, expected, atol=1e-6)
+    assert not bool(info["done/nonfinite"])
+    assert np.all(
+        np.abs(data.actuator_force) <= env.model.actuator_peak_force * (1 + 1e-6)
+    )
 
 
 @pytest.mark.integration

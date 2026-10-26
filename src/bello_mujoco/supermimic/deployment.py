@@ -126,21 +126,12 @@ def actor_onnx(actor, observation_norm, goal_norm, *, env, metadata):
     latent = op("Tanh", [mlp(normalized_goal, actor.encoder, "encoder")], "latent")
     decoder = op("Concat", [latent, normalized_history], "decoder_input", axis=1)
     action = op("Identity", [mlp(decoder, actor.decoder, "decoder")], "action")
-    applied = op(
-        "Clip",
-        [
-            action,
-            constant("action_low", -env.action_clip),
-            constant("action_high", env.action_clip),
-        ],
-        "applied_action",
-    )
     logical = op(
         "Add",
         [
             op(
                 "Mul",
-                [applied, constant("action_scale", env.mapping.scale)],
+                [action, constant("action_scale", env.mapping.scale)],
                 "joint_delta",
             ),
             constant("neutral_joint", env.mapping.neutral_joint),
@@ -236,7 +227,8 @@ def export_supermimic_checkpoint(config, output):
         "motor_from_joint": model.actuator_coordinate_transform.tolist(),
         "motor_limits": model.mj_model.actuator_ctrlrange.tolist(),
         "environment": to_builtin(env.config),
-        "action_clip": env.action_clip,
+        "collection_action_clip": env.action_clip,
+        "simulation_control": "unprojected_pd",
         "hardware_imu_frame": model.robot.default_imu_body_name,
         "root_from_hardware_imu_xyzw": np.roll(root_from_imu, -1).tolist(),
         "reference_clips": list(config.reference_clips),

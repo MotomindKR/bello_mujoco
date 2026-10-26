@@ -44,7 +44,7 @@ environment:
     physics_timestep: 0.005
     decimation: 4
     command_delay_seconds: 0.0
-    action_clip: 20.0
+    action_clip: 20.0  # Collection exploration only; evaluation and imagination use raw actions.
   filtering:
     enabled: false
     cutoff_hz: 10.0

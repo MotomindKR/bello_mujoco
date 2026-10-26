@@ -146,7 +146,7 @@ checkpoint's update budget, not the paper's much larger BONES run.
 For this comparison, command delay, feedback filtering, and observation latency
 are disabled. Reset perturbations, calibration resampling, friction range,
 ten-frame history/goals, optimizer schedule, and gradient clipping follow the
-unofficial recipe. Mini geometry, actuator gains, coupled target/step limits,
+unofficial recipe. Mini geometry, actuator gains, the physical ankle transmission,
 and the Mini-scale torso-COM range remain explicit departures.
 This simulation baseline requires separate hardware robustness validation.
 
@@ -165,13 +165,23 @@ and 2,097,152 real transitions. Use it after the smoke check for initial GPU
 memory, throughput, stability, and tracking measurements. It is a pilot recipe,
 not a demonstrated convergence budget.
 
-The full recipe uses 50 Hz control, four 5 ms substeps, 10 ms command delay,
-friction/calibration/torso-COM context, noisy feedback, low-pass filtering, and
-0-2 control steps of observation latency. These are initial simulation choices;
-their ranges have not been established by Mini system identification.
+The full recipe uses 50 Hz control, four 5 ms substeps, zero command delay,
+friction/calibration/torso-COM context and noisy feedback. Command delay is
+rejected because the raw-action dynamics state does not include delayed motor
+commands. Physical randomization ranges have not been established by Mini
+system identification.
+
+Simulation PD targets follow the reference controller:
+`motor_from_joint @ (neutral_joint + calibration_offset + action_scale * action)`.
+SuperMimic does not project these setpoints into position envelopes or slew-limit
+them. MuJoCo joint constraints, actuator force limits and the ankle transmission
+remain enabled. Reset poses still satisfy the canonical target limits.
+`environment.control.action_clip` bounds exploration actions during collection
+only. Imagination, deterministic evaluation and ONNX proposals preserve raw
+policy actions, including their gradients outside that collection bound.
 
 Collection adds Gaussian action noise and stores the actual clipped action,
-previous/new accepted motor targets, physical successor before reset, measured
+previous/new motor targets for diagnostics, physical successor before reset, measured
 observation before residual noise, filter state, reference clock/alignment, episode identity, context,
 reward, and distinct terminal/timeout flags. Dynamics windows cannot cross
 episode, clip, or context boundaries. Imagination reconstructs causal actor and
@@ -185,7 +195,9 @@ At the default update-to-data ratio, each outer update collects alternating
 two/three vector steps, fits ten dynamics batches, then updates actor/critic
 after model warmup. Dynamics fitting autoregresses eight steps. Actor improvement
 differentiates 32 imagined steps through fixed world-model and critic parameters,
-preserving input derivatives. The critic learns detached lambda-return targets.
+preserving input derivatives. The dynamics inputs are invariant physical state,
+raw action and normalized physical context; previous motor targets and sensor
+latency are not dynamics inputs. The critic learns detached lambda-return targets.
 Invalid optimization updates are rejected and stop the run. The learning-rate
 schedule uses the outer-update clock. Total timesteps count real transitions.
 Observation/goal moments update before collection actions. Dynamics moments
@@ -206,6 +218,8 @@ Projection compares requested and projected targets; rate limiting compares
 projected and accepted targets. Saturation means sampled actuator force reaches
 99% of the configured peak. Forces are sampled at the end of the control step;
 these metrics do not capture every physics-substep peak or certify thermal safety.
+Position-projection and slew-intervention fractions are zero for the direct PD
+simulation controller; they do not measure physical joint-limit contacts.
 Collection also logs `physics/max_constraints` and
 `physics/contacts`; an `invalid/constraint_capacity` or
 `invalid/contact_capacity` result stops training before further optimization.
@@ -267,8 +281,10 @@ hip roll and the ankle differential motors:
 | Ankle differential, each motor | 20 | 1 | 1.5 |
 
 These task-specific overrides live in `asset_config.joint_gains` in the common
-SuperMimic profile. Stiffness and its action scaling, torque limits, command
-position/rate limits, and all other gains retain their inherited values.
+SuperMimic profile. Stiffness and its action scaling, torque limits, and all
+other gains retain their inherited values. Position/rate command limits apply
+to reset targets and the separate Rust hardware controller, not simulation PD
+setpoints.
 With the current unit-reduction differential, the effective ankle gains are
 Kp 40 and Kd 2 per logical axis before saturation; pitch and roll still share
 the two motors' torque budget. The physical reduction magnitudes require
@@ -320,7 +336,8 @@ For `N` joints, the default actor sample is `3N+12` values:
 2. Joint velocity (`N`).
 3. Root-local angular velocity (`3`).
 4. Root-local projected gravity (`3`).
-5. Previous clipped policy action (`N`).
+5. Previous transition action (`N`): exploration-clipped in collection and raw
+   in imagination/evaluation.
 6. Current aligned reference orientation relative to measured root (`6`).
 
 History contains ten samples, oldest first; resets repeat the first valid
@@ -338,7 +355,7 @@ with the previous ordering require their original checkout.
 Persisted running moments normalize history and goals. The actor's ELU motion
 encoder produces a tanh latent, concatenated with normalized history for the ELU
 decoder. The SiLU/LayerNorm world model consumes heading-invariant physical
-state, previous/new motor targets, and context, predicting normalized root-local
+state, raw actions, and physical context, predicting normalized root-local
 increments. The privileged critic receives invariant state, joint-position
 errors, heading-local re-anchored body-position errors, root position/orientation
 errors, normalized context, and future goals. Actor history and previous motor
@@ -346,12 +363,14 @@ targets are not critic inputs. Collection and imagined rollouts share this
 feature codec. The SuperMimic
 profile does not route through shared PPO.
 
-Commands use `neutral_joint + calibration + scale*clipped_action`, with
-`scale=0.25*effort/stiffness` in logical joint order. Transform to motors,
-ray-project into the joint/motor envelope, then apply connected motor step
-limits from the previous accepted target. Collection, imagination, native
-evaluation, and Rust telemetry share this order and real piecewise derivatives.
-Previous action means clipped policy action, not an accepted motor target.
+Commands use `neutral_joint + calibration + scale*action`, with
+`scale=0.25*effort/stiffness` in logical joint order, transformed to motor
+coordinates. Collection, imagination and native evaluation share this direct
+mapping. The separate hardware controller ray-projects proposals into the
+canonical envelope and applies connected motor step limits from the previous
+accepted target. Previous action is the action used for the transition:
+exploration-clipped during collection and raw during imagination/evaluation.
+The Rust codec retains raw previous actions separately from bounded motor targets.
 
 Tracking reward uses analytic FK: four body pose/twist exponential terms of
 weight one, root pose terms of weight one-half, action-rate regularization, and
@@ -441,7 +460,7 @@ hash, and audit settings.
 
 World-model validation resets a frozen actor at each explicit source-frame
 window and records deterministic native trajectories. It autoregresses 1, 8,
-and 32 control steps using the recorded executed controls and context, with no
+and 32 control steps using the recorded raw actions and physical context, with no
 policy actions recomputed from predicted states. Reports include root pose/twist
 and joint position/velocity errors in physical units, with mean, p95, maximum,
 and coverage. Strata distinguish stable ground-contact signatures, any contact
@@ -480,10 +499,49 @@ change when resuming an otherwise identical training contract.
 See the [measured motor and world-model audit](supermimic_implementation_audit.md)
 for results from the existing trained checkpoint and all 49 reference clips.
 
+### Reference learning checks
+
+The optional `reference-validation` group supplies PyTorch for differential
+checks. `tools/check_supermimic_reference.py` requires a clean vibed checkout at
+`a1508d42c9d1699a52e8233ab16d08c488441ab9`, its prepared G1 MJCF and motion CSVs,
+a matching `evaluate.py --record` trajectory, and a G1 checkpoint:
+
+```bash
+uv run --group reference-validation python tools/check_supermimic_reference.py \
+  --reference-checkout /path/to/supermimic_vibed \
+  --recording /path/to/heldout-trajectories.npz \
+  --checkpoint /path/to/ckpt_014000.pt \
+  --output outputs/reference-update-check.json
+uv run --group reference-validation pytest -q tests/test_supermimic_precision.py
+```
+
+The checker uses recorded poses with differentiated velocities and recomputed
+checkpoint actions. Each of three independent full-width cases starts from
+identical weights/normalizers and fresh Adam states, then fits two dynamics
+batches, differentiates 32 imagined steps, and trains the critic for five epochs
+of four matched minibatches. Noise is disabled. It checks losses, network outputs,
+Adam moments/counts and normalization statistics. Actor-output tolerance is
+0.002 radians in G1 PD-target coordinates. Parameter differences are reported
+separately because tiny gradient differences can be amplified by Adam near its
+epsilon. The unit test also compares repeated optimizer steps using identical
+supplied gradients, including tiny and zero gradients.
+
+These are learning-arithmetic checks; they do not establish simulator equivalence
+or training quality. Source/data hashes, versions and tolerances are recorded.
+
 Export creates actor-only ONNX with frozen normalization, self-contained physics,
 selected clips, named coordinate/IMU transforms, and history/goal/rotation/timing
 metadata. ONNX emits raw action and proposed motor target; the runtime applies
-final projection and slew limits. No world model or critic is deployed.
+final projection and slew limits. The exported codec retains raw previous
+actions, while accepted hardware targets remain bounded. Bundle metadata uses
+`simulation_control: unprojected_pd` and `collection_action_clip`; the collection
+bound does not clip deterministic actor outputs. No world model or critic is
+deployed. Evaluation in the training simulator and bounded hardware playback are
+different control contracts and require separate commissioning.
+
+Raw-action dynamics changes the model shape and learning contract. Start a fresh
+training run; historical checkpoints require their recorded clean checkout.
+Existing checkpoint files are not converted or overwritten.
 
 ```bash
 nix develop .#rust-runtime --command cargo run --locked -p bello-policy -- \

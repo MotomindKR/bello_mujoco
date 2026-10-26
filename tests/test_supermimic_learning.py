@@ -160,8 +160,14 @@ def test_dynamics_fits_logged_motor_transitions_with_finite_gradients():
         joint_position=tr.state.joint_position + 0.02 * commands,
         joint_velocity=commands,
     )
-    tr = replace(tr, successor=successor, motor=commands)
-    inputs = model.features(tr.state, tr.previous_motor, tr.motor, tr.context)
+    tr = replace(
+        tr,
+        successor=successor,
+        action=commands,
+        previous_motor=jnp.full_like(commands, 100),
+        motor=jnp.full_like(commands, 200),
+    )
+    inputs = model.features(tr.state, tr.action, tr.context)
     targets = state_delta(tr.state, tr.successor)
     input_norm = Moments.empty(inputs.shape[-1]).update(inputs)
     output_norm = Moments.empty(targets.shape[-1]).update(targets)
@@ -193,6 +199,24 @@ def test_dynamics_fits_logged_motor_transitions_with_finite_gradients():
     assert actions.shape == (3, 1)
     critic = Critic(7, config=config, key=keys[2])
     assert critic(jnp.ones((3, 7)), Moments.empty(7)).shape == (3,)
+
+
+def test_dynamics_conditions_on_raw_action_and_excludes_sensor_latency():
+    model = WorldModel(
+        1, 6, config=NetworkConfig(dynamics_widths=(8,)), key=jax.random.key(0)
+    )
+    tr = transition(0)
+    action = jnp.full((2, 1), 25.0)
+    context = tr.context.at[:, 1].set(1.0)
+    first = model.features(tr.state, action, context)
+    second = model.features(tr.state, action, context.at[:, -1].set(2.0))
+    assert first.shape == (2, model.input_size)
+    np.testing.assert_array_equal(first[:, 15], action[:, 0])
+    np.testing.assert_array_equal(first, second)
+    jac = jax.jacfwd(
+        lambda a: model.features(jax.tree.map(lambda x: x[0], tr.state), a, context[0])
+    )(action[0])
+    assert jac[15, 0] == 1
 
 
 def test_world_model_sums_time_errors_and_masks_resets_without_reweighting_windows():

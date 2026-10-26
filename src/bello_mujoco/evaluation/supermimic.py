@@ -138,9 +138,7 @@ def render_supermimic_checkpoint(
         try:
             for _ in range(limit):
                 action = infer(history, goal_at(state.reference_time))
-                proposal = command_at(
-                    action, state.data.ctrl, state.joint_default_offset
-                )
+                proposal = command_at(action, state.joint_default_offset)
                 limited += int(
                     np.any(
                         np.abs(np.asarray(proposal.accepted - proposal.requested))

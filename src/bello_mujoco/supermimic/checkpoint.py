@@ -264,9 +264,12 @@ def load_dynamics(path, *, dataset_directory, reference_clips):
     if file_sha256(path / "dynamics.eqx") != document["dynamics_sha256"]:
         raise ValueError("checkpoint dynamics checksum mismatch")
     n, context_size = env.action_size, env.action_size + 5
+    model = WorldModel(
+        n, context_size, config=config.networks, key=jax.random.PRNGKey(0)
+    )
     template = (
-        WorldModel(n, context_size, config=config.networks, key=jax.random.PRNGKey(0)),
-        Moments.empty(13 + 4 * n + context_size),
+        model,
+        Moments.empty(model.input_size),
         Moments.empty(12 + 2 * n),
     )
     model, input_norm, output_norm = eqx.tree_deserialise_leaves(

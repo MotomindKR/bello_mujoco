@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import jax
 import jax.numpy as jnp
+import equinox as eqx
 import mujoco
 import numpy as np
 import pytest
@@ -12,6 +13,7 @@ from bello_mujoco.models.target_limits import TargetLimits
 from bello_mujoco.motion.clip import MotionClip
 from bello_mujoco.sonic.reference import ReferenceBank
 from bello_mujoco.supermimic.collection import initialize_collection, maximum_return
+from bello_mujoco.supermimic.imagination import actor_loss
 from bello_mujoco.supermimic.config import LearningConfig, ObservationConfig
 from bello_mujoco.supermimic.control import ActionMapping
 from bello_mujoco.supermimic.kinematics import Kinematics
@@ -133,9 +135,7 @@ class ToyEnv:
         return state, jax.vmap(self.observe)(state)
 
     def step_batch(self, state, action, rng, *, reset):
-        command = jax.vmap(self.mapping.command)(
-            action, state.data.ctrl, state.joint_default_offset
-        )
+        command = jax.vmap(self.mapping.command)(action, state.joint_default_offset)
         qpos = state.data.qpos.at[:, 7:].add(self.control_timestep * command.accepted)
         qvel = state.data.qvel.at[:, 6:].set(command.accepted)
         data = ToyData(qpos, qvel, command.accepted, command.accepted)
@@ -258,6 +258,72 @@ def test_collection_episode_cap_preserves_timeout_successor_and_resets(toy_runne
     np.testing.assert_array_equal(result.collector.episode_ids, 1)
     np.testing.assert_array_equal(stored.episode_step[0], 0)
     assert maximum_return(env, config) == pytest.approx(5 * env.control_timestep)
+
+
+def test_exploration_clip_is_recorded_without_projecting_the_pd_setpoint(toy_runner):
+    env, config, runner = toy_runner
+    actor = eqx.tree_at(
+        lambda a: a.decoder.layers[-1].bias,
+        runner.learner.actor,
+        jnp.full(env.action_size, 2 * env.action_clip),
+    )
+    runner = replace(runner, learner=replace(runner.learner, actor=actor))
+    collect, _, _ = compile_updates(env, replace(config, action_noise=0.0))
+    result, metrics = collect(runner, env.reference_bank)
+    require_valid_metrics(metrics)
+    np.testing.assert_array_equal(result.replay.data.action[0], env.action_clip)
+    np.testing.assert_array_equal(result.replay.data.motor[0], env.action_clip)
+    np.testing.assert_array_equal(
+        result.collector.environment.last_action, env.action_clip
+    )
+
+
+def test_imagination_keeps_gradients_beyond_collection_action_clip(
+    toy_runner, monkeypatch
+):
+    from bello_mujoco.supermimic.collection import collect_step
+
+    env, config, runner = toy_runner
+    runner, _ = collect_step(runner, env, config)
+    starts = runner.replay.sample_starts(
+        jax.random.key(3), 2, history_frames=2, feedback_frames=1, horizon=2
+    )
+    actor = eqx.tree_at(
+        lambda a: a.decoder.layers[-1].bias,
+        runner.learner.actor,
+        jnp.full(env.action_size, 2 * env.action_clip),
+    )
+
+    class IdentityModel:
+        def step(self, state, action, context, input_norm, output_norm):
+            return state
+
+    def unexpected_projection(*args):
+        raise AssertionError("Imagination must use raw actions, not a target limiter")
+
+    monkeypatch.setattr(ActionMapping, "command", unexpected_projection)
+    learner = runner.learner
+    norms = (
+        learner.input_norm,
+        learner.output_norm,
+        learner.observation_norm,
+        learner.goal_norm,
+    )
+    (loss, rollout), gradient = eqx.filter_value_and_grad(actor_loss, has_aux=True)(
+        actor,
+        IdentityModel(),
+        learner.critic,
+        starts,
+        env,
+        norms,
+        learner.critic_norm,
+        key=jax.random.key(4),
+        horizon=2,
+        gamma=config.gamma,
+    )
+    assert np.isfinite(loss)
+    assert np.isfinite(rollout.rewards).all()
+    assert np.min(np.abs(gradient.decoder.layers[-1].bias)) > 1e-3
 
 
 @pytest.mark.parametrize("value", [0, -1, True, 1.5])

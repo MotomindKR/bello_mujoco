@@ -72,9 +72,9 @@ The LAFAN comparison uses the full 4,096-environment, ten-by-2,048 dynamics,
 and 4,096-imagination batches. Its transition target covers exactly 14,000
 update cycles after collection warmup with no wall-time cutoff. It disables
 command delay and feedback filtering/latency for reference comparison, inherited
-from the common SuperMimic recipe. Hardware filtering/delay commissioning uses
-separate explicitly configured settings. The return sampler
-uses alpha 0.2 and a 0.001 historical-difficulty EMA.
+from the common SuperMimic recipe. Command delay is rejected by raw-action
+dynamics; hardware filtering/delay commissioning is a separate workflow. The
+return sampler uses alpha 0.2 and a 0.001 historical-difficulty EMA.
 The common SuperMimic recipe sets `asset_config.self_collisions: false`, matching
 the unofficial reproduction. Robot-ground contacts remain enabled. Other tasks
 retain the model's default self-collision setting.
@@ -89,8 +89,10 @@ The [full profile](../configs/profiles/train/bello_mini_supermimic.yaml) owns
 `observations`, `tracking`, `networks`, `sampling`, `dataset`, `warp`,
 `checkpoint_config`, `checkpoint_evaluation`, and `wandb_config`. These decode into
 `SuperMimicTrainingRunConfig`; there is no PPO config in this task. The profile
-inherits only the Mini motion asset configuration, preserving its tuned gains
-and joint target restrictions. The
+inherits only the Mini motion asset configuration, preserving its tuned gains,
+physical joint constraints and actuator torque limits. Simulation PD setpoints
+are unprojected, matching the reference control path; the hardware command
+limiter remains separate. The
 [smoke profile](../configs/profiles/train/bello_mini_supermimic_smoke.yaml)
 overrides model widths and learning sizes for a compiled-loop check.
 The [pilot profile](../configs/profiles/train/bello_mini_supermimic_pilot.yaml)
@@ -111,9 +113,12 @@ change on resume; the learning contract remains fixed. An unset budget runs to
 `config.total_timesteps`.
 
 Control timing has one owner, `environment.control`: physics timestep,
-decimation, command delay, and action clipping. Observation delay is sampled in
-control steps; command delay must be a whole physics substep within one control
-period. Supported physical randomization is friction, calibration, and torso
+decimation, command delay, and collection exploration clipping. Raw actions
+are retained in imagination, deterministic evaluation and actor export. The
+world model consumes invariant physical state, raw action and physical context;
+previous motor targets and sensor latency are excluded from its inputs.
+Observation delay is sampled in control steps; command delay must be zero.
+Supported physical randomization is friction, calibration, and torso
 COM, all explicitly supplied to the world model and privileged critic. Unknown
 dynamics randomization and unobserved pushes fail setup.
 

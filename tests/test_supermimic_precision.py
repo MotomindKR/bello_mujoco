@@ -79,3 +79,72 @@ def test_rejected_nonfinite_optimizer_step_preserves_parameters_and_moments():
         strict=True,
     ):
         np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.parametrize("optimizer_index", [0, 1, 2])
+def test_adam_and_gradient_clipping_match_torch_for_identical_gradients(
+    optimizer_index,
+):
+    import equinox as eqx
+    from bello_mujoco.supermimic.config import LearningConfig
+    from bello_mujoco.supermimic.optimization import (
+        apply_optimizer,
+        learning_rate,
+        optimizers,
+    )
+
+    torch = pytest.importorskip("torch")
+    cfg = LearningConfig()
+    network = MLP((4, 8, 2), key=jax.random.key(0), layer_norm=True)
+    leaves, structure = jax.tree.flatten(eqx.filter(network, eqx.is_inexact_array))
+    parameters = [
+        torch.nn.Parameter(torch.tensor(np.asarray(x).copy())) for x in leaves
+    ]
+    reference = torch.optim.Adam(
+        parameters,
+        lr=cfg.learning_rate,
+        betas=(0.9, 0.95 if optimizer_index == 0 else 0.999),
+    )
+    optimizer = optimizers(cfg)[optimizer_index]
+    state = optimizer.init(eqx.filter(network, eqx.is_inexact_array))
+    for step in range(4):
+        gradients = []
+        for x in leaves:
+            indices = np.arange(x.size).reshape(x.shape)
+            values = np.sin(indices + step).astype(np.float32)
+            values[indices % 7 == 0] = (-1.0) ** step * 1e-10
+            values[indices % 11 == 0] = 0.0
+            gradients.append(jnp.asarray(values))
+        for parameter, grad in zip(parameters, gradients, strict=True):
+            parameter.grad = torch.tensor(np.asarray(grad).copy())
+        torch.nn.utils.clip_grad_norm_(parameters, cfg.max_gradient_norm)
+        if optimizer_index == 0:
+            torch.nn.utils.clip_grad_value_(parameters, cfg.actor_gradient_clip)
+        rate = float(learning_rate(cfg, step))
+        reference.param_groups[0]["lr"] = rate
+        reference.step()
+        network, state, valid = apply_optimizer(
+            network, jax.tree.unflatten(structure, gradients), state, optimizer, rate
+        )
+        assert valid
+        for actual, expected in zip(
+            jax.tree.leaves(eqx.filter(network, eqx.is_inexact_array)),
+            parameters,
+            strict=True,
+        ):
+            np.testing.assert_allclose(
+                actual, expected.detach().numpy(), atol=2e-7, rtol=1e-6
+            )
+        adam = next(s for s in state if hasattr(s, "mu"))
+        for mu, nu, parameter in zip(
+            jax.tree.leaves(adam.mu), jax.tree.leaves(adam.nu), parameters, strict=True
+        ):
+            np.testing.assert_allclose(
+                mu, reference.state[parameter]["exp_avg"].numpy(), atol=5e-8, rtol=1e-6
+            )
+            np.testing.assert_allclose(
+                nu,
+                reference.state[parameter]["exp_avg_sq"].numpy(),
+                atol=5e-8,
+                rtol=1e-6,
+            )

@@ -219,8 +219,7 @@ def collect_step(runner, env, config):
         input_norm=learner.input_norm.update(
             learner.model.features(
                 transition.state,
-                transition.previous_motor,
-                transition.motor,
+                transition.action,
                 transition.context,
             )
         ),
@@ -236,9 +235,7 @@ def collect_step(runner, env, config):
         replay=runner.replay.insert(transition),
         key=key,
     )
-    commands = jax.vmap(env.mapping.command)(
-        action, before.data.ctrl, before.joint_default_offset
-    )
+    commands = jax.vmap(env.mapping.command)(action, before.joint_default_offset)
     limit_flags = motor_limit_flags(
         commands, after.data.actuator_force, env.model.actuator_peak_force
     )
