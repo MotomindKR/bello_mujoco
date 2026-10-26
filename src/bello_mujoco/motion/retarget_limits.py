@@ -122,3 +122,22 @@ class RetargetJointLimit(mink.Limit):
                 (bounds, self.step - displacement, self.step + displacement)
             )
         return mink.Constraint(G=rows, h=bounds)
+
+
+def project_contacts(backend, contact_limit, *, iterations, tolerance):
+    """Repair nonlinear residuals with constrained minimum-displacement IK."""
+    dt = backend.model.opt.timestep
+    for _ in range(iterations):
+        constraint = contact_limit.compute_qp_inequalities(backend.configuration, dt)
+        if constraint.inactive or np.min(constraint.h) >= -tolerance:
+            return backend.configuration.data.qpos.copy()
+        velocity = mink.solve_ik(
+            backend.configuration,
+            [],
+            dt,
+            backend.solver,
+            damping=1.0,
+            limits=backend.ik_limits,
+        )
+        backend.configuration.integrate_inplace(velocity, dt)
+    raise ValueError("contact projection did not converge")

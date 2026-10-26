@@ -81,17 +81,56 @@ The [preparation config](../configs/commands/prepare_lafan.yaml) lists the same
 fall/get-up, fighting/sports, jumps, running, sprinting and walking. Nine separate
 ground/multiple-action recordings form an additional evaluation split. These
 are sequence-disjoint, not subject-disjoint. Local rotations are resampled at
-50 Hz before forward kinematics, and named LAFAN frames are converted to the
-pinned Mini SMPL-X target convention. Foot targets use the toe joints.
+50 Hz before forward kinematics. `human_source=bvh` converts named LAFAN
+rotations to the pinned Mini SMPL-X frame convention. Source toe transforms
+provide conservative planted-foot labels based on height, linear/angular speed
+and interval duration. These are geometric proxies, not measured contact forces.
 
-Preparation applies coupled motor/joint bounds, each joint's canonical URDF
-speed bound, and linearized floor/self-contact constraints within IK. A final
-minimum-displacement IK projection repairs nonlinear contact residuals. This
-does not apply independent root-height corrections or reject airborne phases.
-The pinned GMR solver's six-argument call is translated explicitly to Mink's
-keyword `limits` at the module boundary; its sixth positional slot otherwise
-selects `safety_break`, leaving additional constraints unused. Vendor files
-remain unchanged. Cached body twists use `mjOBJ_XBODY` link origins.
+Offline preparation fits source orientations to Mini with canonical coupled
+motor/joint bounds, then constructs position targets from that pose's native
+forward kinematics. Human hip rotations target the final hip yaw link after all
+three hip hinges. This replaces independent human landmark scaling and offsets
+as limb position targets: anatomical hip centers are not Mini hip roll origins.
+Root translation goals and orientation-frame offsets use the pinned GMR convention.
+Contact refinement anchors stationary feet with blended interval boundaries.
+Refinement also applies each joint's canonical URDF speed bound and linearized
+floor/self-contact constraints. A final minimum-displacement IK projection
+repairs nonlinear contact residuals.
+
+Ground alignment is one constant translation per sequence, estimated from
+calibrated sole heights on source-planted frames. When no stationary foot labels
+exist, the whole-body lower envelope supplies the plane alignment; the chosen
+method and translation are reported. No sequence is rejected for absent labels,
+and alignment preserves all flight-phase height differences. Calibration and
+refinement start from the robot's configured posture and fitted pose, respectively;
+they do not require an older reference corpus. Settings live under `retargeting.*`,
+including iteration counts, contact blending, `contacts.*` distance bounds and
+`source_contacts.*` proxy thresholds.
+
+To use full-sequence SOMA-to-native-SMPL-X exports instead of the BVH rotation
+adapter, select the input explicitly:
+
+```bash
+uv run bello-prepare-lafan source_directory=/data/lafan1/bvh \
+  output_directory=outputs/lafan-soma-mini \
+  human_source=smplx smplx_directory=/data/lafan-smplx \
+  smplx_model_directory=/data/body_models/smplx
+```
+
+Each native file must be named `SEQUENCE.npz` and contain `surface_model_type=smplx`,
+`gender`, `mocap_frame_rate`, `root_orient` (frames by 3), `pose_body` (frames by 63),
+`trans` (frames by 3) and constant `betas` (up to 16). The licensed gender-specific
+`SMPLX_GENDER.npz` supplies the shape-dependent rest joints. Native root rotations
+already express the Z-up source world; `trans` is added to the shaped rest pelvis.
+After resampling, the full sequence must have the same clock length as its BVH;
+partial pilot windows are rejected. BVH contact labels remain the common source
+for either input mode. Both source hashes and the native body-model hash are
+recorded. Supplying SMPL-X directories with `human_source=bvh` is an error.
+This command consumes native exports; it does not install or invoke SOMA-X.
+
+Live GMR behavior and the pinned vendor files are unchanged. The pinned GMR
+solver's six-argument call is translated explicitly to Mink's keyword `limits`
+at the module boundary. Cached body twists use `mjOBJ_XBODY` link origins.
 Velocities use central pose differences, with one-sided differences at clip
 endpoints. Free-joint angular velocities are transformed into the current pose's
 local frame before FK, matching the unofficial world-frame differentiation.

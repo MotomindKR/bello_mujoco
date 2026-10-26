@@ -7,9 +7,9 @@ import math
 import multiprocessing
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 
 import hydra
-import mink
 import mujoco
 import numpy as np
 
@@ -18,23 +18,24 @@ from bello_mujoco.envs.rewards import CommandConfig
 from bello_mujoco.hardware.gmr_retarget import (
     GmrLiveRetargetConfig,
     GmrRetargeter,
-    HumanTargetFrame,
 )
+from bello_mujoco.hardware.smplx_contract import SMPLX_BODY_JOINT_NAMES
 from bello_mujoco.motion.bvh import lafan1_targets, read_bvh
+from bello_mujoco.motion.calibration import (
+    CalibratedRetargeter,
+    KinematicRetargetConfig,
+    planted_feet,
+)
 from bello_mujoco.motion.clip import (
     MotionClip,
     load_motion_clip,
     motion_tracking_asset_config,
     save_motion_clip,
 )
-from bello_mujoco.motion.retarget_limits import (
-    ContactLimitConfig,
-    RetargetContactLimit,
-    RetargetJointLimit,
-)
 from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.sim import geom_lower_z, load_model
 from bello_mujoco.sonic.corpus import file_sha256, prepare_corpus, verify_corpus
+from bello_mujoco.sonic.amass import SmplxMotionReader
 from bello_mujoco.terrain import FLAT_TERRAIN
 
 
@@ -47,24 +48,32 @@ class LafanPreparationConfig:
     fps: int = 50
     human_height_m: float = 1.75
     workers: int = 4
-    initialization_iterations: int = 40
-    projection_iterations: int = 20
+    human_source: Literal["bvh", "smplx"] = "bvh"
+    smplx_directory: Path | None = None
+    smplx_model_directory: Path | None = None
     penetration_tolerance_m: float = 0.001
     contact_height_m: float = 0.03
-    contacts: ContactLimitConfig = field(default_factory=ContactLimitConfig)
+    retargeting: KinematicRetargetConfig = field(
+        default_factory=KinematicRetargetConfig
+    )
 
     def __post_init__(self):
         for name in (
             "fps",
             "workers",
-            "initialization_iterations",
-            "projection_iterations",
         ):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
         for name in ("human_height_m", "penetration_tolerance_m", "contact_height_m"):
             if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive and finite")
+        if self.human_source not in ("bvh", "smplx"):
+            raise ValueError("LAFAN human_source must be bvh or smplx")
+        paths = (self.smplx_directory, self.smplx_model_directory)
+        if self.human_source == "smplx" and any(path is None for path in paths):
+            raise ValueError("SMPL-X sources require motion and body-model directories")
+        if self.human_source == "bvh" and any(path is not None for path in paths):
+            raise ValueError("SMPL-X directories are unused with a BVH human source")
         sequences = self.training_sequences + self.evaluation_sequences
         if not self.training_sequences or not self.evaluation_sequences:
             raise ValueError(
@@ -177,30 +186,41 @@ def clip_from_poses(model, body_names, qpos, fps, contact_height_m):
     }
 
 
-def project_contacts(backend, contact_limit, *, iterations, tolerance):
-    """Repair nonlinear residuals with constrained minimum-displacement IK."""
-    dt = backend.model.opt.timestep
-    for _ in range(iterations):
-        constraint = contact_limit.compute_qp_inequalities(backend.configuration, dt)
-        if constraint.inactive or np.min(constraint.h) >= -tolerance:
-            return backend.configuration.data.qpos.copy()
-        velocity = mink.solve_ik(
-            backend.configuration,
-            [],
-            dt,
-            backend.solver,
-            damping=1.0,
-            limits=backend.ik_limits,
-        )
-        backend.configuration.integrate_inplace(velocity, dt)
-    raise ValueError("contact projection did not converge")
-
-
 def retarget_sequence(config: LafanPreparationConfig, name: str):
     path = config.source_directory / f"{name}.bvh"
     source_hash = file_sha256(path)
     motion = read_bvh(path).resample(config.fps)
-    targets = lafan1_targets(motion)
+    source_targets = lafan1_targets(motion)
+    feet = ("left_foot", "right_foot")
+    labels = planted_feet(
+        np.stack([source_targets[n][0] for n in feet], axis=1),
+        np.stack([source_targets[n][1] for n in feet], axis=1),
+        config.fps,
+        config.retargeting.source_contacts,
+    )
+    targets = source_targets
+    provenance = {"human_source": config.human_source}
+    if config.human_source == "smplx":
+        native_path = config.smplx_directory / f"{name}.npz"
+        positions, quaternions, _ = SmplxMotionReader(
+            config.smplx_model_directory
+        ).read(native_path, config.fps)
+        if len(positions) != len(motion.position):
+            raise ValueError(
+                "native SMPL-X and BVH source clocks have different lengths"
+            )
+        targets = {
+            name: (positions[:, index], quaternions[:, index])
+            for index, name in enumerate(SMPLX_BODY_JOINT_NAMES)
+        }
+        with np.load(native_path, allow_pickle=False) as data:
+            gender = str(data["gender"])
+        provenance.update(
+            smplx_source_sha256=file_sha256(native_path),
+            smplx_model_sha256=file_sha256(
+                config.smplx_model_directory / f"SMPLX_{gender.upper()}.npz"
+            ),
+        )
     model = load_model(
         motion_tracking_asset_config(asset="bello_mini"),
         terrain=FLAT_TERRAIN,
@@ -210,36 +230,10 @@ def retarget_sequence(config: LafanPreparationConfig, name: str):
         SimpleNamespace(model=model, command_config=CommandConfig()),
         GmrLiveRetargetConfig(human_height_m=config.human_height_m),
     )
-    backend = wrapper.retargeter
-    limit = RetargetContactLimit(backend.model, config.contacts)
-    joints = RetargetJointLimit(model, 1 / config.fps)
-    backend.ik_limits.extend((limit, joints))
-    qpos = []
-    for frame in range(len(motion.position)):
-        transforms = {n: (p[frame], q[frame]) for n, (p, q) in targets.items()}
-        if frame == 0:
-            # Seed from the configured human root and robot posture once. Offline
-            # refinement is separate from the live one-call-per-frame contract.
-            wrapper.retarget(HumanTargetFrame(transforms, 0, 1, 0, 0))
-            count = config.initialization_iterations - 1
-        else:
-            count = 1
-        for _ in range(count):
-            try:
-                backend.retarget(
-                    {n: [p.copy(), q.copy()] for n, (p, q) in transforms.items()}
-                )
-            except Exception as error:
-                raise ValueError(f"IK failed at frame {frame}: {error}") from error
-        qpos.append(
-            project_contacts(
-                backend,
-                limit,
-                iterations=config.projection_iterations,
-                tolerance=1e-6,
-            )
-        )
-        joints.previous = qpos[-1][model.actuator_qpos_indices].copy()
+    calibrated = CalibratedRetargeter(
+        model, wrapper.retargeter, config.fps, config.retargeting
+    )
+    qpos, calibration = calibrated.retarget(targets, labels)
     clip, report = clip_from_poses(
         model,
         motion_task_definition("bello_mini").beyondmimic_tracked_body_names,
@@ -250,7 +244,7 @@ def retarget_sequence(config: LafanPreparationConfig, name: str):
     speed_ratio = float(
         np.max(
             np.abs(clip.qvel[:, model.actuator_qvel_indices])
-            / (joints.step * config.fps)
+            / (calibrated.bounds.step * config.fps)
         )
     )
     report["peak_joint_speed_limit_ratio"] = speed_ratio
@@ -261,14 +255,21 @@ def retarget_sequence(config: LafanPreparationConfig, name: str):
     if report["worst_floor_penetration_m"] < -config.penetration_tolerance_m:
         raise ValueError("reference violates floor penetration tolerance")
     if report["worst_self_penetration_m"] < -(
-        config.contacts.max_self_penetration_m + config.penetration_tolerance_m
+        config.retargeting.contacts.max_self_penetration_m
+        + config.penetration_tolerance_m
     ):
         raise ValueError("reference violates self penetration tolerance")
     destination = config.output_directory / "corpus" / f"{name}.npz"
     with destination.open("xb") as stream:
         save_motion_clip(stream, clip)
     load_motion_clip(destination, model, as_numpy=True)
-    return {"sequence": name, "source_sha256": source_hash, **report}
+    return {
+        "sequence": name,
+        "source_sha256": source_hash,
+        **provenance,
+        **calibration,
+        **report,
+    }
 
 
 def _retarget_job(args):
@@ -284,11 +285,21 @@ def prepare_lafan(config: LafanPreparationConfig):
     for name in names:
         if not (config.source_directory / f"{name}.bvh").is_file():
             raise FileNotFoundError(config.source_directory / f"{name}.bvh")
+        if config.human_source == "smplx":
+            native = config.smplx_directory / f"{name}.npz"
+            if not native.is_file():
+                raise FileNotFoundError(native)
     config.output_directory.mkdir(parents=True, exist_ok=False)
     (config.output_directory / "corpus").mkdir()
     settings = asdict(config)
-    settings["source_directory"] = str(config.source_directory.resolve())
-    settings["output_directory"] = str(config.output_directory.resolve())
+    for key in (
+        "source_directory",
+        "output_directory",
+        "smplx_directory",
+        "smplx_model_directory",
+    ):
+        value = getattr(config, key)
+        settings[key] = str(value.resolve()) if value is not None else None
     (config.output_directory / "settings.json").write_text(
         json.dumps(settings, indent=2) + "\n"
     )

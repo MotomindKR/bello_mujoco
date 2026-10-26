@@ -55,14 +55,27 @@ evaluation_sequences:
 fps: 50
 human_height_m: 1.75
 workers: 4
-initialization_iterations: 40
-projection_iterations: 20
+human_source: bvh
+smplx_directory: null
+smplx_model_directory: null
 penetration_tolerance_m: 0.001
 contact_height_m: 0.03
-contacts:
-  floor_clearance_m: 0.001
-  max_self_penetration_m: 0.01
-  detection_distance_m: 0.03
+retargeting:
+  initialization_iterations: 40
+  calibration_iterations: 5
+  refinement_iterations: 3
+  projection_iterations: 20
+  contact_blend_frames: 3
+  contacts:
+    floor_clearance_m: 0.001
+    max_self_penetration_m: 0.01
+    detection_distance_m: 0.03
+  source_contacts:
+    height_m: 0.025
+    horizontal_speed_m_s: 0.15
+    vertical_speed_m_s: 0.10
+    angular_speed_rad_s: 0.5
+    min_seconds: 0.1
 hydra:
   job:
     chdir: false

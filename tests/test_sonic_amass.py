@@ -8,6 +8,7 @@ import yaml
 from bello_mujoco.hardware.smplx_contract import SMPLX_BODY_JOINT_PARENTS
 from bello_mujoco.sonic.amass import (
     AmassPreparationConfig,
+    SmplxMotionReader,
     ground_translation,
     resample_rotations,
     select_candidates,
@@ -43,6 +44,43 @@ def test_amass_shaped_joint_fk_preserves_root_and_hierarchy():
     np.testing.assert_allclose(positions[0], expected, atol=1e-12)
     np.testing.assert_allclose(
         orientations[0], np.tile(q[0, 0, [3, 0, 1, 2]], (count, 1))
+    )
+
+
+def test_native_smplx_reader_resamples_the_source_clock_and_shape(tmp_path):
+    count = len(SMPLX_BODY_JOINT_PARENTS)
+    rest = np.zeros((count, 3))
+    rest[:, 0] = np.arange(count) * 0.01
+    rest += [0.1, 0.2, 0.3]
+    directions = np.zeros((count, 3, 16))
+    directions[:, 0, 0] = 0.02
+    np.savez(
+        tmp_path / "SMPLX_NEUTRAL.npz",
+        J_regressor=np.eye(count),
+        v_template=rest,
+        shapedirs=directions,
+        kintree_table=np.stack((SMPLX_BODY_JOINT_PARENTS, np.arange(count))),
+    )
+    path = tmp_path / "motion.npz"
+    np.savez(
+        path,
+        surface_model_type="smplx",
+        gender="neutral",
+        mocap_frame_rate=25,
+        root_orient=np.array([[0, 0, 0], [0, 0, np.pi / 2]]),
+        pose_body=np.zeros((2, 63)),
+        trans=np.array([[0, 0, 0], [1, 0, 0]]),
+        betas=np.array([0.5]),
+    )
+    positions, quaternions, _ = SmplxMotionReader(tmp_path).read(path, 50)
+    assert len(positions) == 3
+    np.testing.assert_allclose(
+        positions[:, 0],
+        rest[0] + [0.01, 0, 0] + np.array([[0, 0, 0], [0.5, 0, 0], [1, 0, 0]]),
+    )
+    np.testing.assert_allclose(
+        Rotation.from_quat(quaternions[1, 0], scalar_first=True).as_rotvec(),
+        [0, 0, np.pi / 4],
     )
 
 

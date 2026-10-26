@@ -6,8 +6,12 @@ import numpy as np
 import pytest
 
 from bello_mujoco.models.target_limits import TargetLimits
-from bello_mujoco.motion.lafan import clip_from_poses, pose_velocities, project_contacts
-from bello_mujoco.motion.retarget_limits import RetargetContactLimit, RetargetJointLimit
+from bello_mujoco.motion.lafan import clip_from_poses, pose_velocities
+from bello_mujoco.motion.retarget_limits import (
+    RetargetContactLimit,
+    RetargetJointLimit,
+    project_contacts,
+)
 
 
 def test_cached_body_twists_are_at_link_origins_with_offset_centres_of_mass():

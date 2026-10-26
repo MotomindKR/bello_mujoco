@@ -209,20 +209,16 @@ def skeleton_forward(
     return positions, quaternions
 
 
-class AmassRetargeter:
-    def __init__(self, model_directory: Path, config: AmassPreparationConfig):
-        self.config = config
+class SmplxMotionReader:
+    """Shape-dependent native SMPL-X FK with a shared per-gender model cache."""
+
+    def __init__(self, model_directory: Path):
         self.model_directory = model_directory
         self.body_models = {}
-        self.model = load_model(
-            motion_tracking_asset_config(asset="bello_mini"),
-            terrain=FLAT_TERRAIN,
-            load_mjx=False,
-        )
-        self.task = motion_task_definition("bello_mini")
-        self.env = SimpleNamespace(model=self.model, command_config=CommandConfig())
 
-    def human_motion(self, path: Path):
+    def read(self, path: Path, output_fps: float):
+        if not math.isfinite(output_fps) or output_fps <= 0:
+            raise ValueError("SMPL-X output frame rate must be positive and finite")
         with np.load(path, allow_pickle=False) as data:
             if str(data["surface_model_type"]) != "smplx":
                 raise ValueError("requires AMASS SMPL-X, not SMPL/SMPL-H")
@@ -232,8 +228,21 @@ class AmassRetargeter:
             pose = np.asarray(data["pose_body"]).reshape(len(root), 21, 3)
             trans = np.asarray(data["trans"])
             betas = np.asarray(data["betas"]).reshape(-1)
-        if gender not in {"male", "female", "neutral"} or fps <= 0:
+        if (
+            gender not in {"male", "female", "neutral"}
+            or not math.isfinite(fps)
+            or fps <= 0
+        ):
             raise ValueError("invalid AMASS gender or frame rate")
+        if (
+            root.shape != (len(root), 3)
+            or trans.shape != root.shape
+            or len(root) < 2
+            or not 1 <= len(betas) <= 16
+        ):
+            raise ValueError(
+                "invalid native SMPL-X pose, translation or beta dimensions"
+            )
         if not all(np.isfinite(v).all() for v in (root, pose, trans, betas)):
             raise ValueError("nonfinite AMASS motion")
         if gender not in self.body_models:
@@ -252,9 +261,9 @@ class AmassRetargeter:
         rest, directions = self.body_models[gender]
         rest = rest + np.einsum("jck,k->jc", directions[:, :, : len(betas)], betas)
         frame = (
-            np.arange(int(np.floor((len(root) - 1) / fps * self.config.fps)) + 1)
+            np.arange(int(np.floor((len(root) - 1) / fps * output_fps)) + 1)
             * fps
-            / self.config.fps
+            / output_fps
         )
         local = resample_rotations(np.concatenate((root[:, None], pose), axis=1), frame)
         translation = np.stack(
@@ -266,6 +275,22 @@ class AmassRetargeter:
         )
         positions, orientations = skeleton_forward(rest, local, translation)
         return positions, orientations, float(1.66 + 0.1 * betas[0])
+
+
+class AmassRetargeter:
+    def __init__(self, model_directory: Path, config: AmassPreparationConfig):
+        self.config = config
+        self.motion_reader = SmplxMotionReader(model_directory)
+        self.model = load_model(
+            motion_tracking_asset_config(asset="bello_mini"),
+            terrain=FLAT_TERRAIN,
+            load_mjx=False,
+        )
+        self.task = motion_task_definition("bello_mini")
+        self.env = SimpleNamespace(model=self.model, command_config=CommandConfig())
+
+    def human_motion(self, path: Path):
+        return self.motion_reader.read(path, self.config.fps)
 
     def retarget(self, source: Path, output: Path) -> dict:
         if output.exists():
