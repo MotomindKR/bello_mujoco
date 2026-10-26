@@ -107,8 +107,11 @@ exist, the whole-body lower envelope supplies the plane alignment; the chosen
 method and translation are reported. No sequence is rejected for absent labels,
 and alignment preserves all flight-phase height differences. Calibration and
 refinement start from the robot's configured posture and fitted pose, respectively;
-they do not require an older reference corpus. Settings live under `retargeting.*`,
-including iteration counts, contact blending, `contacts.*` distance bounds and
+they do not require an older reference corpus.
+The initial fitted pose is projected through the physical constraints before
+any planted-foot anchors are captured, without advancing the source clock.
+Settings live under `retargeting.*`, including iteration counts, contact blending,
+`contacts.*` distance bounds and
 `source_contacts.*` proxy thresholds.
 
 To use full-sequence SOMA-to-native-SMPL-X exports instead of the BVH rotation

@@ -15,6 +15,7 @@ from bello_mujoco.motion.calibration import (
 )
 from bello_mujoco.motion.lafan import LafanPreparationConfig
 from bello_mujoco.motion.retarget_limits import PlantedFootTask
+from bello_mujoco.sim import geom_lower_z
 
 
 def test_source_contact_labels_exclude_flight_motion_and_rolling():
@@ -148,6 +149,30 @@ def test_no_foot_labels_uses_reported_body_alignment(synthetic_calibration):
     poses, report = retargeter.retarget(targets, np.zeros((10, 2), dtype=bool))
     assert report["ground_alignment"] == "body_lower_envelope_no_foot_labels"
     assert poses[3, 2] - poses[0, 2] == pytest.approx(0.3, abs=1e-5)
+
+
+def test_first_plant_anchor_is_captured_after_floor_recovery(
+    synthetic_calibration, monkeypatch
+):
+    retargeter, targets = synthetic_calibration
+    # Later standing frames determine alignment; the initial fit is below the plane.
+    targets["pelvis"][0][:, 2] = [0.7, 0.7, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8]
+    captured = []
+    original = PlantedFootTask.update
+
+    def observe(task, configuration, mask):
+        if not captured:
+            captured.append(
+                min(
+                    geom_lower_z(task.model, configuration.data, int(geom))
+                    for geom in retargeter.model.foot_geom_ids
+                )
+            )
+        return original(task, configuration, mask)
+
+    monkeypatch.setattr(PlantedFootTask, "update", observe)
+    retargeter.retarget(targets, np.ones((10, 2), dtype=bool))
+    assert captured[0] >= retargeter.config.contacts.floor_clearance_m - 1e-6
 
 
 def test_invalid_contact_clock_rejected(synthetic_calibration):

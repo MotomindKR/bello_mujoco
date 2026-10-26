@@ -339,6 +339,14 @@ class CalibratedRetargeter:
                 contact_limit,
             ],
         )
+        # Contact anchors must start on a physically feasible configuration.
+        # A fitted pose can penetrate the floor before its first constrained solve.
+        project_contacts(
+            solver,
+            contact_limit,
+            iterations=self.config.projection_iterations,
+            tolerance=1e-6,
+        )
         result, plant_xy_errors = [], []
         for frame in range(count):
             plants.update(configuration, mask[frame])
