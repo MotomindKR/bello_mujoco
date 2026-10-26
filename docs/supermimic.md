@@ -92,7 +92,11 @@ forward kinematics. Human hip rotations target the final hip yaw link after all
 three hip hinges. This replaces independent human landmark scaling and offsets
 as limb position targets: anatomical hip centers are not Mini hip roll origins.
 Root translation goals and orientation-frame offsets use the pinned GMR convention.
-Contact refinement anchors stationary feet with blended interval boundaries.
+Contact refinement tracks a fixed sole material point during each labelled
+stationary interval. Its position objective has explicit `plant_position_cost`,
+and touchdown height blends over `contact_blend_frames`. Foot labels are geometric
+proxies, so this objective remains soft when it conflicts with physical limits;
+per-sequence planted-point residuals are reported.
 Refinement also applies each joint's canonical URDF speed bound and linearized
 floor/self-contact constraints. A final minimum-displacement IK projection
 repairs nonlinear contact residuals.

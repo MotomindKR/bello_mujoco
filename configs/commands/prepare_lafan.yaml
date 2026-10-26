@@ -66,6 +66,7 @@ retargeting:
   refinement_iterations: 3
   projection_iterations: 20
   contact_blend_frames: 3
+  plant_position_cost: 1000.0
   contacts:
     floor_clearance_m: 0.001
     max_self_penetration_m: 0.01

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import mujoco
+import mink
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
@@ -13,6 +14,7 @@ from bello_mujoco.motion.calibration import (
     planted_feet,
 )
 from bello_mujoco.motion.lafan import LafanPreparationConfig
+from bello_mujoco.motion.retarget_limits import PlantedFootTask
 
 
 def test_source_contact_labels_exclude_flight_motion_and_rolling():
@@ -88,6 +90,7 @@ def synthetic_calibration(tmp_path):
         foot_body_ids=np.array([2, 3]),
         foot_geom_ids=np.array([2, 3]),
         robot_geom_ids=np.array([1, 2, 3]),
+        terrain_geom_ids=np.array([0]),
     )
     table = {
         frame: [source, 100, 10, [0, 0, 0], [1, 0, 0, 0]]
@@ -107,9 +110,9 @@ def synthetic_calibration(tmp_path):
     backend.update_targets = lambda targets: setattr(
         backend, "scaled_human_data", targets
     )
-    q = np.tile([1.0, 0, 0, 0], (7, 1))
-    p = np.zeros((7, 3))
-    p[:, 2] = [0.8, 0.8, 0.9, 1.1, 0.9, 0.8, 0.8]
+    q = np.tile([1.0, 0, 0, 0], (10, 1))
+    p = np.zeros((10, 3))
+    p[:, 2] = [0.8, 0.8, 0.9, 1.1, 0.9, 0.8, 0.8, 0.8, 0.8, 0.8]
     # Anatomical foot positions intentionally differ from robot link origins.
     targets = {
         "pelvis": (p, q),
@@ -124,12 +127,16 @@ def test_canonical_chain_alignment_preserves_flight_and_does_not_mutate_source(
 ):
     retargeter, targets = synthetic_calibration
     initial = {n: (p.copy(), q.copy()) for n, (p, q) in targets.items()}
-    mask = np.tile([True, True, False, False, False, True, True], (2, 1)).T
+    mask = np.tile(
+        [True, True, False, False, False, True, True, True, True, True], (2, 1)
+    ).T
     poses, report = retargeter.retarget(targets, mask)
     assert report["ground_alignment"] == "source_planted_soles"
     np.testing.assert_allclose(
-        poses[:, 2] - poses[0, 2], [0, 0, 0.1, 0.3, 0.1, 0, 0], atol=1e-5
+        poses[:5, 2] - poses[0, 2], [0, 0, 0.1, 0.3, 0.1], atol=1e-5
     )
+    assert np.all(np.diff(poses[5:9, 2]) <= 1e-6)
+    assert abs(poses[-1, 2] - poses[0, 2]) <= 0.0011
     np.testing.assert_allclose(poses[:, 7:], 0, atol=1e-8)
     for name, (p, q) in targets.items():
         np.testing.assert_array_equal(p, initial[name][0])
@@ -138,7 +145,7 @@ def test_canonical_chain_alignment_preserves_flight_and_does_not_mutate_source(
 
 def test_no_foot_labels_uses_reported_body_alignment(synthetic_calibration):
     retargeter, targets = synthetic_calibration
-    poses, report = retargeter.retarget(targets, np.zeros((7, 2), dtype=bool))
+    poses, report = retargeter.retarget(targets, np.zeros((10, 2), dtype=bool))
     assert report["ground_alignment"] == "body_lower_envelope_no_foot_labels"
     assert poses[3, 2] - poses[0, 2] == pytest.approx(0.3, abs=1e-5)
 
@@ -147,6 +154,35 @@ def test_invalid_contact_clock_rejected(synthetic_calibration):
     retargeter, targets = synthetic_calibration
     with pytest.raises(ValueError, match="frames-by-two bool"):
         retargeter.retarget(targets, np.zeros((6, 2), dtype=bool))
+
+
+def test_material_point_jacobian_and_anchor_lifecycle(synthetic_calibration):
+    calibrated, _ = synthetic_calibration
+    model = calibrated.model
+    configuration = mink.Configuration(model.mj_model)
+    pose = model.default_qpos.copy()
+    pose[3:7] = Rotation.from_euler("xyz", [0.2, -0.1, 0.15]).as_quat(scalar_first=True)
+    configuration.update(pose)
+    task = PlantedFootTask(model, 1000.0, 3, 0.001)
+    task.update(configuration, [True, False])
+    before = task.compute_error(configuration)
+    jacobian = task.compute_jacobian(configuration)
+    numerical = np.empty_like(jacobian)
+    for dof in range(model.mj_model.nv):
+        displaced = pose.copy()
+        step = np.zeros(model.mj_model.nv)
+        step[dof] = 1
+        mujoco.mj_integratePos(model.mj_model, displaced, step, 1e-7)
+        configuration.update(displaced)
+        numerical[:, dof] = (task.compute_error(configuration) - before) / 1e-7
+    np.testing.assert_allclose(jacobian, numerical, atol=1e-6)
+    assert task.points[task.bodies[0]][3] == 0
+    configuration.update(pose)
+    task.update(configuration, [True, False])
+    assert task.points[task.bodies[0]][3] == 1
+    task.update(configuration, [False, False])
+    np.testing.assert_array_equal(task.compute_jacobian(configuration), 0)
+    np.testing.assert_array_equal(task.compute_error(configuration), 0)
 
 
 def test_lafan_source_mode_requires_explicit_inputs(tmp_path):

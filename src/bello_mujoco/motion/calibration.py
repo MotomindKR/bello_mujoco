@@ -12,6 +12,7 @@ from scipy.spatial.transform import Rotation
 
 from bello_mujoco.motion.retarget_limits import (
     ContactLimitConfig,
+    PlantedFootTask,
     RetargetContactLimit,
     RetargetJointLimit,
     project_contacts,
@@ -39,10 +40,13 @@ class KinematicRetargetConfig:
     refinement_iterations: int = 3
     projection_iterations: int = 20
     contact_blend_frames: int = 3
+    plant_position_cost: float = 1000.0
     contacts: ContactLimitConfig = field(default_factory=ContactLimitConfig)
     source_contacts: SourceContactConfig = field(default_factory=SourceContactConfig)
 
     def __post_init__(self):
+        if not math.isfinite(self.plant_position_cost) or self.plant_position_cost <= 0:
+            raise ValueError("plant position cost must be positive and finite")
         for name in (
             "initialization_iterations",
             "calibration_iterations",
@@ -278,29 +282,6 @@ class CalibratedRetargeter:
             )
         return float(np.quantile(minima, 0.01)), "body_lower_envelope_no_foot_labels"
 
-    def _contact_targets(self, positions, poses, mask):
-        targets = positions.copy()
-        native, data = self.model.mj_model, mujoco.MjData(self.model.mj_model)
-        for side, foot in enumerate(self.foot_indices):
-            for start, end in contact_intervals(mask[:, side]):
-                anchor = np.median(targets[start:end, foot], axis=0)
-                data.qpos[:] = poses[(start + end) // 2]
-                mujoco.mj_kinematics(native, data)
-                anchor[2] -= min(
-                    geom_lower_z(native, data, g) for g in self.foot_geoms[side]
-                )
-                anchor[2] += self.config.contacts.floor_clearance_m
-                indices = np.arange(end - start)
-                weight = np.minimum(
-                    np.minimum(indices + 1, end - start - indices)
-                    / self.config.contact_blend_frames,
-                    1,
-                )
-                targets[start:end, foot] = (1 - weight[:, None]) * targets[
-                    start:end, foot
-                ] + weight[:, None] * anchor
-        return targets
-
     def retarget(self, targets: Mapping, foot_contacts):
         desired = self._aligned_source(targets)
         count = len(desired[self.backend.human_root_name])
@@ -332,7 +313,6 @@ class CalibratedRetargeter:
         positions[:, :, 2] -= ground
         for values in desired.values():
             values[:, 2] -= ground
-        contact_targets = self._contact_targets(positions, poses, mask)
         native = self.model.mj_model
         tasks = [
             mink.FrameTask(frame, "body", position, rotation, lm_damping=1)
@@ -341,25 +321,43 @@ class CalibratedRetargeter:
         configuration = mink.Configuration(native)
         configuration.update(poses[0])
         contact_limit = RetargetContactLimit(native, self.config.contacts)
+        plants = PlantedFootTask(
+            self.model,
+            self.config.plant_position_cost,
+            self.config.contact_blend_frames,
+            self.config.contacts.floor_clearance_m,
+        )
         self.bounds.previous = None
         solver = SimpleNamespace(
             model=native,
             configuration=configuration,
             solver=self.backend.solver,
             damping=self.backend.damping,
-            ik_limits=[mink.ConfigurationLimit(native), self.bounds, contact_limit],
+            ik_limits=[
+                mink.ConfigurationLimit(native),
+                self.bounds,
+                contact_limit,
+            ],
         )
-        result = []
+        result, plant_xy_errors = [], []
         for frame in range(count):
+            plants.update(configuration, mask[frame])
+            contact_targets = positions[frame].copy()
+            for side, foot in enumerate(self.foot_indices):
+                body = int(self.model.foot_body_ids[side])
+                if body in plants.points:
+                    local, anchor, _, _ = plants.points[body]
+                    source = self.frames2[foot][1]
+                    contact_targets[foot] = anchor - Rotation.from_quat(
+                        desired[source][frame, 3:], scalar_first=True
+                    ).apply(local)
             for index, (task, (_, source, *_)) in enumerate(
                 zip(tasks, self.frames2, strict=True)
             ):
-                _set_target(
-                    task, contact_targets[frame, index], desired[source][frame, 3:]
-                )
+                _set_target(task, contact_targets[index], desired[source][frame, 3:])
             _solve(
                 configuration,
-                tasks,
+                [*tasks, plants],
                 solver,
                 self.config.initialization_iterations
                 if frame == 0
@@ -371,12 +369,23 @@ class CalibratedRetargeter:
                     contact_limit,
                     iterations=self.config.projection_iterations,
                     tolerance=1e-6,
+                    tasks=(plants,),
                 )
             )
             self.bounds.previous = result[-1][self.model.actuator_qpos_indices].copy()
+            error = plants.compute_error(configuration).reshape(-1, 3)
+            for index, body in enumerate(plants.bodies):
+                if body in plants.points:
+                    plant_xy_errors.append(float(np.linalg.norm(error[index, :2])))
         return np.asarray(result), {
             "ground_alignment": method,
             "ground_translation_m": ground,
             "source_planted_frames": mask.sum(axis=0).tolist(),
             "calibrated_hip_yaw_to_knee_distance_m": thigh_distances,
+            "planted_point_xy_error_m": {
+                "p95": float(np.quantile(plant_xy_errors, 0.95)),
+                "max": float(np.max(plant_xy_errors)),
+            }
+            if plant_xy_errors
+            else None,
         }

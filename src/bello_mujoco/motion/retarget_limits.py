@@ -124,7 +124,84 @@ class RetargetJointLimit(mink.Limit):
         return mink.Constraint(G=rows, h=bounds)
 
 
-def project_contacts(backend, contact_limit, *, iterations, tolerance):
+class PlantedFootTask(mink.Task):
+    """Penalize sole material-point drift during a source-labelled plant."""
+
+    def __init__(self, model, position_cost, blend_frames, floor_clearance_m):
+        if not math.isfinite(position_cost) or position_cost <= 0:
+            raise ValueError("plant position cost must be positive and finite")
+        if type(blend_frames) is not int or blend_frames <= 0:
+            raise ValueError("plant blend_frames must be a positive integer")
+        if not math.isfinite(floor_clearance_m) or floor_clearance_m < 0:
+            raise ValueError("plant floor clearance must be finite and nonnegative")
+        self.model = model.mj_model
+        self.blend_frames = blend_frames
+        self.floor_clearance = floor_clearance_m
+        self.bodies = tuple(int(b) for b in model.foot_body_ids)
+        self.k = 3 * len(self.bodies)
+        super().__init__(cost=np.full(self.k, position_cost), gain=1, lm_damping=1)
+        self.geoms = tuple(
+            tuple(
+                int(g) for g in model.foot_geom_ids if self.model.geom_bodyid[g] == body
+            )
+            for body in self.bodies
+        )
+        self.terrain = tuple(int(g) for g in model.terrain_geom_ids)
+        if not self.terrain or any(not geoms for geoms in self.geoms):
+            raise ValueError("plant tasks require foot and terrain geometries")
+        self.points = {}
+        self._jacobian = np.zeros((3, self.model.nv))
+
+    def update(self, configuration, mask):
+        """Capture anchors once per source frame, outside the IK iteration loop."""
+        data = configuration.data
+        for side, body in enumerate(self.bodies):
+            if not mask[side]:
+                self.points.pop(body, None)
+                continue
+            if body not in self.points:
+                candidates = []
+                for geom in self.geoms[side]:
+                    for ground in self.terrain:
+                        points = np.zeros(6)
+                        distance = mujoco.mj_geomDistance(
+                            self.model, data, geom, ground, 10.0, points
+                        )
+                        candidates.append((distance, points[:3].copy()))
+                world = min(candidates, key=lambda value: value[0])[1]
+                local = data.xmat[body].reshape(3, 3).T @ (world - data.xpos[body])
+                self.points[body] = (local, world, float(world[2]), 0)
+            else:
+                local, world, start_z, age = self.points[body]
+                self.points[body] = (local, world, start_z, age + 1)
+            local, world, start_z, age = self.points[body]
+            world[2] = start_z + min(age / self.blend_frames, 1.0) * (
+                self.floor_clearance - start_z
+            )
+
+    def compute_error(self, configuration):
+        data = configuration.data
+        error = np.zeros(self.k)
+        for index, body in enumerate(self.bodies):
+            if body in self.points:
+                local, anchor, _, _ = self.points[body]
+                point = data.xpos[body] + data.xmat[body].reshape(3, 3) @ local
+                error[3 * index : 3 * index + 3] = point - anchor
+        return error
+
+    def compute_jacobian(self, configuration):
+        data = configuration.data
+        jacobian = np.zeros((self.k, self.model.nv))
+        for index, body in enumerate(self.bodies):
+            if body in self.points:
+                local, _, _, _ = self.points[body]
+                point = data.xpos[body] + data.xmat[body].reshape(3, 3) @ local
+                mujoco.mj_jac(self.model, data, self._jacobian, None, point, body)
+                jacobian[3 * index : 3 * index + 3] = self._jacobian
+        return jacobian
+
+
+def project_contacts(backend, contact_limit, *, iterations, tolerance, tasks=()):
     """Repair nonlinear residuals with constrained minimum-displacement IK."""
     dt = backend.model.opt.timestep
     for _ in range(iterations):
@@ -133,7 +210,7 @@ def project_contacts(backend, contact_limit, *, iterations, tolerance):
             return backend.configuration.data.qpos.copy()
         velocity = mink.solve_ik(
             backend.configuration,
-            [],
+            tasks,
             dt,
             backend.solver,
             damping=1.0,
