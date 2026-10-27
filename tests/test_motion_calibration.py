@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from dataclasses import replace
 
 import mujoco
 import mink
@@ -151,10 +152,12 @@ def test_no_foot_labels_uses_reported_body_alignment(synthetic_calibration):
     assert poses[3, 2] - poses[0, 2] == pytest.approx(0.3, abs=1e-5)
 
 
+@pytest.mark.parametrize("mode", ["fitted_projection", "constrained_neutral"])
 def test_first_plant_anchor_is_captured_after_floor_recovery(
-    synthetic_calibration, monkeypatch
+    synthetic_calibration, monkeypatch, mode
 ):
     retargeter, targets = synthetic_calibration
+    retargeter.config = replace(retargeter.config, initialization_mode=mode)
     # Later standing frames determine alignment; the initial fit is below the plane.
     targets["pelvis"][0][:, 2] = [0.7, 0.7, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8]
     captured = []
@@ -171,7 +174,9 @@ def test_first_plant_anchor_is_captured_after_floor_recovery(
         return original(task, configuration, mask)
 
     monkeypatch.setattr(PlantedFootTask, "update", observe)
-    retargeter.retarget(targets, np.ones((10, 2), dtype=bool))
+    poses, report = retargeter.retarget(targets, np.ones((10, 2), dtype=bool))
+    assert len(poses) == 10
+    assert report["initialization_mode"] == mode
     assert captured[0] >= retargeter.config.contacts.floor_clearance_m - 1e-6
 
 

@@ -1,0 +1,37 @@
+source_directory: null
+output_directory: null
+lafan_corpus: null
+metadata_file: metadata/seed_metadata_v004.csv
+bind_file: soma_shapes/soma_base_rig/soma_base_skel_minimal.bvh
+training_hours: 7.0
+evaluation_hours: 0.5
+seed: 0
+fps: 50
+human_height_m: 1.8
+workers: 8
+penetration_tolerance_m: 0.001
+contact_height_m: 0.03
+max_retarget_failure_fraction: 0.0
+retargeting:
+  initialization_mode: constrained_neutral
+  initialization_iterations: 40
+  calibration_iterations: 5
+  refinement_iterations: 3
+  projection_iterations: 20
+  contact_blend_frames: 3
+  plant_position_cost: 1000.0
+  contacts:
+    floor_clearance_m: 0.001
+    max_self_penetration_m: 0.01
+    detection_distance_m: 0.03
+  source_contacts:
+    height_m: 0.025
+    horizontal_speed_m_s: 0.15
+    vertical_speed_m_s: 0.10
+    angular_speed_rad_s: 0.5
+    min_seconds: 0.1
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: outputs/hydra/prepare_bones/${now:%Y-%m-%d}/${now:%H-%M-%S}

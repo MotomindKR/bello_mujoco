@@ -233,12 +233,63 @@ _LAFAN_TARGETS = (
 
 def lafan1_targets(motion: BvhMotion):
     """Convert named LAFAN poses, including toe-centre foot targets, for Mini GMR."""
-    missing = {bone for _, bone, _ in _LAFAN_TARGETS} - set(motion.names)
+    return _named_targets(motion, _LAFAN_TARGETS, "LAFAN1")
+
+
+_SOMA_TARGETS = (
+    ("pelvis", "Hips"),
+    ("spine3", "Chest"),
+    ("left_hip", "LeftLeg"),
+    ("right_hip", "RightLeg"),
+    ("left_knee", "LeftShin"),
+    ("right_knee", "RightShin"),
+    ("left_foot", "LeftToeBase"),
+    ("right_foot", "RightToeBase"),
+    ("left_shoulder", "LeftArm"),
+    ("right_shoulder", "RightArm"),
+    ("left_elbow", "LeftForeArm"),
+    ("right_elbow", "RightForeArm"),
+    ("left_wrist", "LeftHand"),
+    ("right_wrist", "RightHand"),
+)
+
+
+def soma_targets(motion: BvhMotion, bind: BvhMotion):
+    """Remove the published SOMA bind orientations, retaining anatomical motion."""
+    required = {bone for _, bone in _SOMA_TARGETS}
+    if missing := required - set(bind.names):
+        raise ValueError(f"SOMA bind skeleton is missing joints: {sorted(missing)}")
+    if not np.allclose(bind.position, bind.position[0]) or not np.allclose(
+        np.abs(np.sum(bind.quaternion * bind.quaternion[0], axis=-1)), 1
+    ):
+        raise ValueError("SOMA bind skeleton must contain one constant rest pose")
+    _, orientations = bind.world_transforms()
+    world_to_source = Rotation.from_euler("x", -90, degrees=True)
+    table = tuple(
+        (
+            name,
+            bone,
+            (
+                world_to_source
+                * Rotation.from_quat(
+                    orientations[0, bind.names.index(bone)], scalar_first=True
+                )
+            )
+            .inv()
+            .as_quat(scalar_first=True),
+        )
+        for name, bone in _SOMA_TARGETS
+    )
+    return _named_targets(motion, table, "SOMA")
+
+
+def _named_targets(motion, table, skeleton):
+    missing = {bone for _, bone, _ in table} - set(motion.names)
     if missing:
-        raise ValueError(f"LAFAN1 skeleton is missing joints: {sorted(missing)}")
+        raise ValueError(f"{skeleton} skeleton is missing joints: {sorted(missing)}")
     position, quaternion = motion.world_transforms()
     result = {}
-    for name, bone, basis in _LAFAN_TARGETS:
+    for name, bone, basis in table:
         index = motion.names.index(bone)
         orientation = Rotation.from_quat(
             quaternion[:, index], scalar_first=True

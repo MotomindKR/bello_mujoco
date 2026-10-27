@@ -147,6 +147,61 @@ published. The new output directory contains `settings.json`, per-sequence
 `preparation.jsonl` diagnostics, and the checked `corpus/`. Source datasets stay
 read-only. Passing these kinematic checks does not establish dynamic trackability.
 
+## BONES-SEED pilot preparation
+
+Prepare human SOMA Uniform sources from the read-only BONES-SEED release,
+retaining a previously verified LAFAN corpus unchanged:
+
+```bash
+uv run bello-prepare-bones source_directory=/data/bones-seed \
+  output_directory=outputs/bones-mini-7h \
+  lafan_corpus=outputs/lafan-mini/corpus \
+  max_retarget_failure_fraction=0.01
+```
+
+The [public config](../configs/commands/prepare_bones.yaml) selects approximately
+seven training hours and half an evaluation hour. Whole recordings are sampled
+with equal duration budgets for ground transitions, jumps, dance, sports/combat,
+locomotion, and other gestures/actions. Within each bucket, selection visits
+different motion families before adding more takes of a family. The seed fixes
+both selection and the train/evaluation assignment. Original and mirrored takes,
+including different actors performing the same named content, share one split.
+No upper duration cap, walking-only restriction, or blanket exclusion of floor,
+roll, kneel, or recovery motions is applied. Explicit unsupported support objects
+and terrain are excluded by recorded metadata terms; this is a Mini pilot
+selection, not the paper's exact filtered G1 benchmark.
+
+The command reads the configured metadata CSV and streams `soma_uniform.tar.gz`,
+extracting only selected regular BVH members into the output directory. It
+preserves the original source clock, resamples local transforms to 50 Hz, and
+uses the shared canonical Mini calibration/contact refinement. SOMA joint axes
+are removed using the release's `soma_base_skel_minimal.bvh` bind rig. They are
+not assumed to match LAFAN axes: in particular the leg and toe frames differ.
+BONES uses `retargeting.initialization_mode=constrained_neutral`: it fits the
+first frame under contact constraints from the canonical neutral joint pose,
+before capturing plantar anchors. This avoids asking a local projection to
+untangle an already intersecting crossed-leg fit. Initialization does not
+advance the source clock. LAFAN's default `fitted_projection` mode is unchanged.
+Source BVH hashes, metadata and bind-rig hashes, selection reasons, contact
+residuals, and physical validation reports are recorded. G1 joint CSVs are not
+Mini targets. Kinematic validation does not certify dynamic feasibility.
+
+`settings.json`, `selection.json`, and `preparation.jsonl` allow interruption and
+resumption with the same configuration and source identities. Failed sequences
+are retried. By default all must succeed before publishing the manifest.
+An explicit `max_retarget_failure_fraction` can permit a small quarantine of
+physical IK/contact failures, limited by both clip count and source duration
+separately for training and evaluation. Other errors always abort preparation.
+`quarantine.json` and manifest provenance retain every failure, source hash and
+reason; no recording is silently dropped or trimmed. Previously successful
+clips must still exist. The seven-hour pilot uses a 0.01 cap.
+The resulting `corpus/` copies all original LAFAN clips and splits byte for byte,
+adds `bones__` clips with family-based source identities, and verifies every
+checksum. All its evaluation stems must be passed to training. Pin and publish
+this corpus as a private immutable W&B dataset before a remote job. Inspect its
+uncompressed array bytes against `dataset.max_array_bytes` and available device
+memory before scaling beyond this pilot.
+
 ## Train and resume
 
 Use a clean checkout and initialized pinned dependencies on a Linux x86 CUDA

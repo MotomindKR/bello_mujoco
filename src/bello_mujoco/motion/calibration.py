@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 import math
 from types import SimpleNamespace
+from typing import Literal
 
 import mink
 import mujoco
@@ -35,6 +36,9 @@ class SourceContactConfig:
 
 @dataclass(frozen=True)
 class KinematicRetargetConfig:
+    initialization_mode: Literal["fitted_projection", "constrained_neutral"] = (
+        "fitted_projection"
+    )
     initialization_iterations: int = 40
     calibration_iterations: int = 5
     refinement_iterations: int = 3
@@ -45,6 +49,8 @@ class KinematicRetargetConfig:
     source_contacts: SourceContactConfig = field(default_factory=SourceContactConfig)
 
     def __post_init__(self):
+        if self.initialization_mode not in ("fitted_projection", "constrained_neutral"):
+            raise ValueError("unknown retarget initialization mode")
         if not math.isfinite(self.plant_position_cost) or self.plant_position_cost <= 0:
             raise ValueError("plant position cost must be positive and finite")
         for name in (
@@ -319,7 +325,18 @@ class CalibratedRetargeter:
             for frame, _, position, rotation in self.frames2
         ]
         configuration = mink.Configuration(native)
-        configuration.update(poses[0])
+        initial = poses[0].copy()
+        if self.config.initialization_mode == "constrained_neutral":
+            initial[self.model.actuator_qpos_indices] = self.model.default_qpos[
+                self.model.actuator_qpos_indices
+            ]
+            configuration.update(initial)
+            lowest = min(
+                geom_lower_z(native, configuration.data, int(g))
+                for g in self.model.robot_geom_ids
+            )
+            initial[2] += max(0.0, self.config.contacts.floor_clearance_m - lowest)
+        configuration.update(initial)
         contact_limit = RetargetContactLimit(native, self.config.contacts)
         plants = PlantedFootTask(
             self.model,
@@ -347,6 +364,18 @@ class CalibratedRetargeter:
             iterations=self.config.projection_iterations,
             tolerance=1e-6,
         )
+        if self.config.initialization_mode == "constrained_neutral":
+            for index, (task, (_, source, *_)) in enumerate(
+                zip(tasks, self.frames2, strict=True)
+            ):
+                _set_target(task, positions[0, index], desired[source][0, 3:])
+            _solve(configuration, tasks, solver, self.config.initialization_iterations)
+            project_contacts(
+                solver,
+                contact_limit,
+                iterations=self.config.projection_iterations,
+                tolerance=1e-6,
+            )
         result, plant_xy_errors = [], []
         for frame in range(count):
             plants.update(configuration, mask[frame])
@@ -386,6 +415,7 @@ class CalibratedRetargeter:
                 if body in plants.points:
                     plant_xy_errors.append(float(np.linalg.norm(error[index, :2])))
         return np.asarray(result), {
+            "initialization_mode": self.config.initialization_mode,
             "ground_alignment": method,
             "ground_translation_m": ground,
             "source_planted_frames": mask.sum(axis=0).tolist(),

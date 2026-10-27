@@ -28,7 +28,6 @@ from bello_mujoco.motion.calibration import (
 )
 from bello_mujoco.motion.clip import (
     MotionClip,
-    load_motion_clip,
     motion_tracking_asset_config,
     save_motion_clip,
 )
@@ -221,6 +220,36 @@ def retarget_sequence(config: LafanPreparationConfig, name: str):
                 config.smplx_model_directory / f"SMPLX_{gender.upper()}.npz"
             ),
         )
+    clip, report = calibrated_clip(
+        targets,
+        labels,
+        config.fps,
+        config.human_height_m,
+        config.retargeting,
+        config.penetration_tolerance_m,
+        config.contact_height_m,
+    )
+    destination = config.output_directory / "corpus" / f"{name}.npz"
+    with destination.open("xb") as stream:
+        save_motion_clip(stream, clip)
+    return {
+        "sequence": name,
+        "source_sha256": source_hash,
+        **provenance,
+        **report,
+    }
+
+
+def calibrated_clip(
+    targets,
+    labels,
+    fps,
+    human_height_m,
+    retargeting,
+    penetration_tolerance_m,
+    contact_height_m,
+):
+    """Apply the shared Mini calibration and validate the complete reference."""
     model = load_model(
         motion_tracking_asset_config(asset="bello_mini"),
         terrain=FLAT_TERRAIN,
@@ -228,23 +257,21 @@ def retarget_sequence(config: LafanPreparationConfig, name: str):
     )
     wrapper = GmrRetargeter(
         SimpleNamespace(model=model, command_config=CommandConfig()),
-        GmrLiveRetargetConfig(human_height_m=config.human_height_m),
+        GmrLiveRetargetConfig(human_height_m=human_height_m),
     )
-    calibrated = CalibratedRetargeter(
-        model, wrapper.retargeter, config.fps, config.retargeting
-    )
+    calibrated = CalibratedRetargeter(model, wrapper.retargeter, fps, retargeting)
     qpos, calibration = calibrated.retarget(targets, labels)
     clip, report = clip_from_poses(
         model,
         motion_task_definition("bello_mini").beyondmimic_tracked_body_names,
         qpos,
-        config.fps,
-        config.contact_height_m,
+        fps,
+        contact_height_m,
     )
     speed_ratio = float(
         np.max(
             np.abs(clip.qvel[:, model.actuator_qvel_indices])
-            / (calibrated.bounds.step * config.fps)
+            / (calibrated.bounds.step * fps)
         )
     )
     report["peak_joint_speed_limit_ratio"] = speed_ratio
@@ -252,24 +279,13 @@ def retarget_sequence(config: LafanPreparationConfig, name: str):
         raise ValueError(
             f"reference violates canonical joint speed limits: {speed_ratio}"
         )
-    if report["worst_floor_penetration_m"] < -config.penetration_tolerance_m:
+    if report["worst_floor_penetration_m"] < -penetration_tolerance_m:
         raise ValueError("reference violates floor penetration tolerance")
     if report["worst_self_penetration_m"] < -(
-        config.retargeting.contacts.max_self_penetration_m
-        + config.penetration_tolerance_m
+        retargeting.contacts.max_self_penetration_m + penetration_tolerance_m
     ):
         raise ValueError("reference violates self penetration tolerance")
-    destination = config.output_directory / "corpus" / f"{name}.npz"
-    with destination.open("xb") as stream:
-        save_motion_clip(stream, clip)
-    load_motion_clip(destination, model, as_numpy=True)
-    return {
-        "sequence": name,
-        "source_sha256": source_hash,
-        **provenance,
-        **calibration,
-        **report,
-    }
+    return clip, {**calibration, **report}
 
 
 def _retarget_job(args):
