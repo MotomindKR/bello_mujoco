@@ -1,8 +1,10 @@
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import jax.numpy as jnp
+import pytest
 
 from bello_mujoco.training.tracking import (
     close_run,
@@ -25,8 +27,9 @@ class FakeRun:
     def log(self, payload, step=None) -> None:
         self.logged.append({"payload": payload, "step": step})
 
-    def log_artifact(self, artifact) -> None:
+    def log_artifact(self, artifact):
         self.artifacts.append(artifact)
+        return artifact
 
     def finish(self, *, exit_code=0) -> None:
         self.finished = True
@@ -119,7 +122,7 @@ def test_track_checkpoint_artifact_logs_directory(monkeypatch, tmp_path) -> None
     checkpoint_dir.mkdir()
     run = FakeRun()
 
-    track_checkpoint_artifact(
+    uploaded = track_checkpoint_artifact(
         run,
         checkpoint_dir,
         name="checkpoint-name",
@@ -127,9 +130,59 @@ def test_track_checkpoint_artifact_logs_directory(monkeypatch, tmp_path) -> None
     )
 
     assert run.artifacts == artifacts
+    assert uploaded is artifacts[0]
     assert artifacts[0].name == "checkpoint-name"
     assert artifacts[0].type == "model"
     assert artifacts[0].dirs == [str(checkpoint_dir)]
+
+
+@pytest.mark.parametrize("upload_fails", [False, True])
+def test_supermimic_only_reports_published_checkpoint_after_upload(
+    monkeypatch, tmp_path, capsys, upload_fails
+):
+    from bello_mujoco.supermimic import checkpoint
+    from bello_mujoco.training import supermimic
+
+    events = []
+
+    class Upload:
+        qualified_name = "entity/project/checkpoint:v0"
+
+        def wait(self):
+            events.append("upload_wait")
+            if upload_fails:
+                raise RuntimeError("upload failed")
+
+    monkeypatch.setattr(
+        checkpoint, "save_checkpoint", lambda *a, **k: events.append("local_save")
+    )
+    monkeypatch.setattr(
+        supermimic, "track_checkpoint_artifact", lambda *a, **k: Upload()
+    )
+    config = SimpleNamespace(
+        checkpoint_config=SimpleNamespace(
+            upload_wandb_artifact=True,
+            wandb_artifact_name=None,
+            wandb_artifact_type="checkpoint",
+        )
+    )
+    arguments = (tmp_path / "checkpoint", SimpleNamespace(update=7), config)
+    if upload_fails:
+        with pytest.raises(RuntimeError, match="upload failed"):
+            supermimic.publish_checkpoint(
+                *arguments, git_commit="commit", dataset_digest="digest", run=object()
+            )
+    else:
+        supermimic.publish_checkpoint(
+            *arguments, git_commit="commit", dataset_digest="digest", run=object()
+        )
+    output = capsys.readouterr().out
+    assert events == ["local_save", "upload_wait"]
+    assert '"checkpoint_local_saved"' in output
+    assert ('"checkpoint_saved"' in output) is not upload_fails
+    assert (
+        '"checkpoint_uploaded": "entity/project/checkpoint:v0"' in output
+    ) is not upload_fails
 
 
 def test_track_video_logs_encoded_file_without_fps(monkeypatch, tmp_path) -> None:

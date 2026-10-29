@@ -37,16 +37,27 @@ def shutdown_reason(root: Path, deadline: float, now: float) -> str | None:
 
 def destroy_once(instance_id: str, api_key: str) -> bool:
     request = urllib.request.Request(
-        f"https://console.vast.ai/api/v0/instances/{instance_id}/",
+        f"https://cloud.vast.ai/api/v0/instances/{instance_id}/",
         method="DELETE",
-        headers={"Authorization": f"Bearer {api_key}"},
+        data=b"{}",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "bello-mujoco-supervisor",
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            return bool(json.load(response).get("success"))
+            confirmed = json.load(response).get("success") is True
+            if not confirmed:
+                print("Vast teardown response did not confirm success", flush=True)
+            return confirmed
     except urllib.error.HTTPError as error:
+        if error.code != 404:
+            print(f"Vast teardown HTTP status {error.code}", flush=True)
         return error.code == 404
-    except (OSError, urllib.error.URLError, ValueError):
+    except (OSError, urllib.error.URLError, ValueError) as error:
+        print(f"Vast teardown request failed: {type(error).__name__}", flush=True)
         return False
 
 

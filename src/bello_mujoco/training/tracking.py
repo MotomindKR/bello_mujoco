@@ -5,11 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from typing import Literal
 
 import jax
 import numpy as np
+
+if TYPE_CHECKING:
+    from wandb import Artifact
 
 
 @dataclass(frozen=True)
@@ -112,14 +115,14 @@ def track_checkpoint_artifact(
     *,
     name: str,
     artifact_type: str = "checkpoint",
-) -> None:
+) -> Artifact | None:
     if run is None:
         return
     import wandb
 
     artifact = wandb.Artifact(name=name, type=artifact_type)
     artifact.add_dir(str(path))
-    run.log_artifact(artifact)
+    return run.log_artifact(artifact)
 
 
 def close_run(run, *, exit_code: int = 0) -> None:

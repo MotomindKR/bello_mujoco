@@ -231,18 +231,27 @@ def publish_checkpoint(path, runner, run_config, *, git_commit, dataset_digest, 
         path, runner, run_config, git_commit=git_commit, dataset_digest=dataset_digest
     )
     saved = perf_counter()
+    print(
+        json.dumps({"checkpoint_local_saved": str(path), "update": int(runner.update)}),
+        flush=True,
+    )
     checkpoint = run_config.checkpoint_config
+    uploaded = None
     if checkpoint.upload_wandb_artifact:
-        track_checkpoint_artifact(
+        artifact = track_checkpoint_artifact(
             run,
             path,
             name=checkpoint.wandb_artifact_name or path.parent.name,
             artifact_type=checkpoint.wandb_artifact_type,
         )
+        if artifact is not None:
+            artifact.wait()
+            uploaded = artifact.qualified_name
     print(
         json.dumps(
             {
                 "checkpoint_saved": str(path),
+                "checkpoint_uploaded": uploaded,
                 "update": int(runner.update),
                 "timing/checkpoint_seconds": saved - started,
                 "timing/checkpoint_publication_seconds": perf_counter() - saved,

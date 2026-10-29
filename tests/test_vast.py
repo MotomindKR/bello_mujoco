@@ -4,6 +4,7 @@ import shlex
 import subprocess
 import time
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -385,6 +386,10 @@ def test_sdk_client_uses_pinned_sdk_response_contract() -> None:
         def show_instances(self):
             return [{"id": 456}]
 
+        def destroy_instance(self, **kwargs):
+            assert kwargs["id"] == 456
+            return {"success": True}
+
     raw_client = PinnedClient()
     client = object.__new__(VastSdkClient)
     client._client = raw_client
@@ -395,6 +400,15 @@ def test_sdk_client_uses_pinned_sdk_response_contract() -> None:
     assert client.create_instance(123, image="test") == 456
     assert client.show_instance(456)["actual_status"] == "running"
     assert client.show_instances() == [{"id": 456}]
+    assert client.destroy_instance(456) is None
+
+
+@pytest.mark.parametrize("response", [{"success": False}, {"success": "true"}, None])
+def test_sdk_rejects_unconfirmed_deletion(response):
+    client = object.__new__(VastSdkClient)
+    client._client = SimpleNamespace(destroy_instance=lambda **kwargs: response)
+    with pytest.raises(RuntimeError, match="did not confirm"):
+        client.destroy_instance(456)
 
 
 def test_credential_prefers_environment_over_keyring(monkeypatch) -> None:

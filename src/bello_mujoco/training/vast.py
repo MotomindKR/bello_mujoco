@@ -32,6 +32,7 @@ from bello_mujoco.training.vast_provider import (
     exception_http_status,
 )
 from bello_mujoco.training.vast_remote import (
+    RemoteTrainingFailed,
     run_remote_training,
     wait_for_ssh,
 )
@@ -623,6 +624,46 @@ class OffersUnavailableError(RuntimeError):
     pass
 
 
+def ensure_instance_destroyed(
+    api: VastApi,
+    instance_id: int,
+    label: str,
+    *,
+    grace_seconds: float = 45,
+    timeout_seconds: float = 120,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> None:
+    """Verify host cleanup after a confirmed job exit, with a local fallback."""
+    started = clock()
+    deadline = started + timeout_seconds
+    next_delete = started + grace_seconds
+    while True:
+        try:
+            info = api.show_instance(instance_id)
+        except Exception as error:
+            print(f"Vast cleanup status retry: {type(error).__name__}")
+        else:
+            if info is None:
+                print(f"Vast instance {instance_id}: deletion verified.")
+                return
+            if int(info["id"]) != instance_id or info.get("label") != label:
+                raise ValueError("Vast cleanup instance identity does not match")
+            if clock() >= next_delete:
+                print(f"Vast instance {instance_id}: requesting controller cleanup.")
+                try:
+                    api.destroy_instance(instance_id)
+                except Exception as error:
+                    print(f"Vast cleanup deletion retry: {type(error).__name__}")
+                next_delete = clock() + 5
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Vast instance {instance_id}: deletion could not be verified"
+            ) from None
+        sleep(min(5, remaining))
+
+
 def launch_pipeline(
     repo_root: Path,
     config: VastTrainConfig,
@@ -669,14 +710,19 @@ def launch_pipeline(
     )
     wait_for_instance(api, instance_id, config.ready_timeout_seconds)
     target = wait_for_ssh(api, instance_id, config.ssh_timeout_seconds)
-    remote_runner(
-        target,
-        selection,
-        config,
-        run_name,
-        wandb_key=wandb_key,
-        github_token=github_token,
-    )
+    try:
+        remote_runner(
+            target,
+            selection,
+            config,
+            run_name,
+            wandb_key=wandb_key,
+            github_token=github_token,
+        )
+    except RemoteTrainingFailed:
+        ensure_instance_destroyed(api, instance_id, label)
+        raise
+    ensure_instance_destroyed(api, instance_id, label)
     return 0
 
 

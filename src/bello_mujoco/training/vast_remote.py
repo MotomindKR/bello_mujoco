@@ -23,6 +23,10 @@ if TYPE_CHECKING:
 SSH_SUBPROCESS_TIMEOUT_SECONDS = 60.0
 
 
+class RemoteTrainingFailed(subprocess.CalledProcessError):
+    """The detached job wrote a final nonzero status, rather than losing SSH."""
+
+
 @dataclass(frozen=True)
 class RemoteJobUpdate:
     """One bounded log/status response from a detached remote job."""
@@ -834,7 +838,7 @@ def run_remote_training(
         if update.state == "lost":
             raise RuntimeError("detached remote training exited without a status")
         if update.returncode:
-            raise subprocess.CalledProcessError(
+            raise RemoteTrainingFailed(
                 update.returncode,
                 ["detached remote training", run_name],
             )

@@ -80,10 +80,12 @@ def test_host_delete_is_scoped_to_own_instance(monkeypatch):
     assert request.full_url.endswith("/instances/42/")
     assert request.get_method() == "DELETE"
     assert request.get_header("Authorization") == "Bearer token"
+    assert request.data == b"{}"
+    assert request.get_header("Content-type") == "application/json"
     assert timeout == 30
 
 
-@pytest.mark.parametrize("error", [None, KeyboardInterrupt(), RuntimeError("SSH lost")])
+@pytest.mark.parametrize("error", [KeyboardInterrupt(), RuntimeError("SSH lost")])
 def test_local_monitor_exit_never_destroys_remote_run(monkeypatch, tmp_path, error):
     api = SimpleNamespace(destroy_instance=lambda *args: pytest.fail("local teardown"))
     selection = vast.GitSelection(
@@ -101,15 +103,120 @@ def test_local_monitor_exit_never_destroys_remote_run(monkeypatch, tmp_path, err
             raise error
 
     config = vast.VastTrainConfig(max_price=0.5, branch="main")
-    if error is None:
+    with pytest.raises(type(error)):
+        vast.launch_pipeline(
+            tmp_path, config, api_factory=lambda key: api, remote_runner=monitor
+        )
+
+
+def test_host_logs_http_failure_without_credentials(monkeypatch, capsys):
+    def denied(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 403, "token-secret", None, None)
+
+    monkeypatch.setattr(vast_host.urllib.request, "urlopen", denied)
+    assert not vast_host.destroy_once("42", "token-secret")
+    output = capsys.readouterr().out
+    assert "403" in output
+    assert "token-secret" not in output
+
+
+def test_controller_deletes_only_confirmed_finished_rental():
+    destroyed = []
+    clock = [0]
+    api = SimpleNamespace(
+        show_instance=lambda instance: (
+            None if destroyed else {"id": instance, "label": "bello-run"}
+        ),
+        destroy_instance=destroyed.append,
+    )
+    vast.ensure_instance_destroyed(
+        api,
+        42,
+        "bello-run",
+        grace_seconds=0,
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        clock=lambda: clock[0],
+    )
+    assert destroyed == [42]
+
+
+def test_controller_accepts_host_deletion_without_account_delete():
+    api = SimpleNamespace(
+        show_instance=lambda instance: None,
+        destroy_instance=lambda instance: pytest.fail("host already destroyed rental"),
+    )
+    vast.ensure_instance_destroyed(api, 42, "bello-run")
+
+
+def test_controller_refuses_unrelated_rental():
+    api = SimpleNamespace(
+        show_instance=lambda instance: {"id": instance, "label": "other-run"},
+        destroy_instance=lambda instance: pytest.fail("unrelated rental"),
+    )
+    with pytest.raises(ValueError, match="identity"):
+        vast.ensure_instance_destroyed(api, 42, "bello-run", grace_seconds=0)
+
+
+def test_controller_does_not_report_success_when_deletion_cannot_be_confirmed():
+    clock = [0]
+    api = SimpleNamespace(
+        show_instance=lambda instance: {"id": instance, "label": "bello-run"},
+        destroy_instance=lambda instance: None,
+    )
+    with pytest.raises(TimeoutError, match="could not be verified"):
+        vast.ensure_instance_destroyed(
+            api,
+            42,
+            "bello-run",
+            grace_seconds=0,
+            timeout_seconds=10,
+            sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+            clock=lambda: clock[0],
+        )
+    assert clock[0] == 10
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_confirmed_remote_exit_verifies_teardown(monkeypatch, tmp_path, returncode):
+    from bello_mujoco.training.vast_remote import RemoteTrainingFailed
+
+    selection = vast.GitSelection(
+        "main", "a" * 40, PurePosixPath("config"), "https://example.com/repo.git"
+    )
+    monkeypatch.setattr(vast, "resolve_git_selection", lambda *args: selection)
+    monkeypatch.setattr(vast, "credential", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(vast, "find_offers", lambda *args: [])
+    monkeypatch.setattr(vast, "create_available_instance", lambda *args: 42)
+    monkeypatch.setattr(vast, "wait_for_instance", lambda *args: None)
+    monkeypatch.setattr(vast, "wait_for_ssh", lambda *args: ("root", "host", 22))
+    cleaned = []
+    monkeypatch.setattr(
+        vast,
+        "ensure_instance_destroyed",
+        lambda api, instance, label: cleaned.append((instance, label)),
+    )
+
+    def monitor(*args, **kwargs):
+        if returncode:
+            raise RemoteTrainingFailed(returncode, ["detached job"])
+
+    config = vast.VastTrainConfig(max_price=0.5, branch="main", run_name="run")
+    if returncode:
+        with pytest.raises(RemoteTrainingFailed):
+            vast.launch_pipeline(
+                tmp_path,
+                config,
+                api_factory=lambda key: object(),
+                remote_runner=monitor,
+            )
+    else:
         assert (
             vast.launch_pipeline(
-                tmp_path, config, api_factory=lambda key: api, remote_runner=monitor
+                tmp_path,
+                config,
+                api_factory=lambda key: object(),
+                remote_runner=monitor,
             )
             == 0
         )
-    else:
-        with pytest.raises(type(error)):
-            vast.launch_pipeline(
-                tmp_path, config, api_factory=lambda key: api, remote_runner=monitor
-            )
+    assert cleaned == [(42, "bello-run")]

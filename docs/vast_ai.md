@@ -41,8 +41,14 @@ the versioned W&B corpus artifact and the exact Hugging Face checkpoint revision
   The host enforces it even without the local monitor.
 - An absolute host deadline also covers readiness, SSH, job time, and teardown
   grace, including a launch that never reaches the job-start step.
-- Deletion uses Vast's instance-scoped credentials and retries until confirmed.
-  Your account API key is not sent to the host supervisor.
+- The host requests deletion with Vast's instance-scoped credentials and logs
+  HTTP status codes when a request fails. Your account API key is not sent to
+  the host supervisor.
+- After a confirmed job exit, the local controller verifies that the rental is
+  absent. If host cleanup has not completed after 45 seconds, the controller
+  requests deletion using the exact rental ID and label, then verifies absence.
+  Successful launcher completion includes this verification. A failed deletion
+  check raises an error instead of reporting successful cleanup.
 
 Closing your terminal, pressing Ctrl-C locally, losing SSH, or shutting down
 your computer does **not** stop training or delete the instance. Local
@@ -63,6 +69,11 @@ On the instance:
 
 Checkpoints must finish uploading to W&B before the job exits. Teardown deletes
 the instance's local disk; the brief final-log grace is not an upload mechanism.
+SuperMimic emits `checkpoint_local_saved` after writing local state and waits for
+W&B to commit the artifact before emitting `checkpoint_saved` with its immutable
+`checkpoint_uploaded` reference. An interrupted or failed upload is not reported
+as a published recovery point. Upload waiting happens outside rollout math and
+does not change the update budget.
 
 SSH retries reuse the detached job under a host-side launch lock. An ambiguous
 rental response is reconciled using the exact instance label, never blindly
