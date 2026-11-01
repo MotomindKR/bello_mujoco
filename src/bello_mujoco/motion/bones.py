@@ -14,11 +14,13 @@ import tarfile
 
 import hydra
 import mink
-import numpy as np
 
 from bello_mujoco.configuration import command_config, config_path
 from bello_mujoco.motion.bvh import read_bvh, soma_targets
-from bello_mujoco.motion.calibration import KinematicRetargetConfig, planted_feet
+from bello_mujoco.motion.calibration import (
+    KinematicRetargetConfig,
+    source_contact_labels,
+)
 from bello_mujoco.motion.clip import save_motion_clip
 from bello_mujoco.motion.lafan import calibrated_clip
 from bello_mujoco.sonic.corpus import (
@@ -280,13 +282,7 @@ def retarget_bones(config, entry):
     targets = soma_targets(
         motion, read_bvh(config.output_directory / "source-bind.bvh")
     )
-    feet = ("left_foot", "right_foot")
-    labels = planted_feet(
-        np.stack([targets[n][0] for n in feet], axis=1),
-        np.stack([targets[n][1] for n in feet], axis=1),
-        config.fps,
-        config.retargeting.source_contacts,
-    )
+    labels = source_contact_labels(targets, config.fps, config.retargeting)
     clip, report = calibrated_clip(
         targets,
         labels,

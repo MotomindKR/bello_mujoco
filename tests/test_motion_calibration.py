@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from dataclasses import replace
+import xml.etree.ElementTree as ET
 
 import mujoco
 import mink
@@ -10,12 +11,14 @@ from scipy.spatial.transform import Rotation
 from bello_mujoco.models.target_limits import TargetLimits
 from bello_mujoco.motion.calibration import (
     CalibratedRetargeter,
+    KinematicRetargetConfig,
     SourceContactConfig,
     calibration_frames,
-    planted_feet,
+    stationary_contacts,
+    source_contact_labels,
 )
 from bello_mujoco.motion.lafan import LafanPreparationConfig
-from bello_mujoco.motion.retarget_limits import PlantedFootTask
+from bello_mujoco.motion.retarget_limits import PlantedContactTask, rigid_support_geoms
 from bello_mujoco.sim import geom_lower_z
 
 
@@ -28,12 +31,12 @@ def test_source_contact_labels_exclude_flight_motion_and_rolling():
     q[35:, 0] = Rotation.from_euler("x", (np.arange(15) * 0.1)[:, None]).as_quat(
         scalar_first=True
     )
-    mask = planted_feet(p, q, 50)
+    mask = stationary_contacts(p, q, 50)
     assert mask[5:10, 0].all()
     assert not mask[15:30].any()
     assert not mask[:, 1].any()
     assert not mask[36:, 0].any()
-    assert not planted_feet(p, q, 50, SourceContactConfig(min_seconds=2)).any()
+    assert not stationary_contacts(p, q, 50, SourceContactConfig(min_seconds=2)).any()
 
 
 def test_full_thigh_rotation_targets_the_last_hip_hinge():
@@ -49,7 +52,51 @@ def test_stationary_raised_feet_are_not_relabelled_as_grounded():
     positions = np.zeros((20, 2, 3))
     positions[:, :, 2] = 0.4
     quaternions = np.tile([1.0, 0, 0, 0], (20, 2, 1))
-    assert not planted_feet(positions, quaternions, 50).any()
+    assert not stationary_contacts(positions, quaternions, 50).any()
+
+
+def test_source_wrists_have_explicit_height_thresholds_and_order():
+    q = np.tile([1.0, 0, 0, 0], (30, 1))
+    targets = {
+        name: (np.tile([0.0, 0, height], (30, 1)), q.copy())
+        for name, height in (
+            ("left_foot", 1.5),
+            ("right_foot", 1.5),
+            ("left_wrist", 0.1),
+            ("right_wrist", 0.4),
+        )
+    }
+    labels = source_contact_labels(
+        targets, 50, KinematicRetargetConfig(support_mode="hands_and_feet")
+    )
+    assert labels.shape == (30, 4)
+    assert labels[:, 2].all()
+    assert not labels[:, [0, 1, 3]].any()
+    assert not source_contact_labels(targets, 50, KinematicRetargetConfig()).any()
+    del targets["left_wrist"]
+    with pytest.raises(ValueError, match="missing joints"):
+        source_contact_labels(
+            targets, 50, KinematicRetargetConfig(support_mode="hands_and_feet")
+        )
+
+
+def test_height_band_excludes_hovering_after_a_low_stationary_support():
+    position = np.zeros((60, 1, 3))
+    position[:20, 0, 2] = 0.04
+    position[20:, 0, 2] = 0.10
+    quaternion = np.tile([1.0, 0, 0, 0], (60, 1, 1))
+    config = SourceContactConfig(height_m=0.12, height_band_m=0.025)
+    labels = stationary_contacts(position, quaternion, 50, config)
+    assert labels[3:15].all()
+    assert not labels[25:].any()
+    position[..., 2] = 0.4
+    assert not stationary_contacts(position, quaternion, 50, config).any()
+
+
+@pytest.mark.parametrize("band", [0.0, -0.01, float("nan"), 0.2])
+def test_invalid_source_height_band_is_rejected(band):
+    with pytest.raises(ValueError, match="height band"):
+        SourceContactConfig(height_m=0.12, height_band_m=band)
 
 
 @pytest.fixture
@@ -161,7 +208,7 @@ def test_first_plant_anchor_is_captured_after_floor_recovery(
     # Later standing frames determine alignment; the initial fit is below the plane.
     targets["pelvis"][0][:, 2] = [0.7, 0.7, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8]
     captured = []
-    original = PlantedFootTask.update
+    original = PlantedContactTask.update
 
     def observe(task, configuration, mask):
         if not captured:
@@ -173,7 +220,7 @@ def test_first_plant_anchor_is_captured_after_floor_recovery(
             )
         return original(task, configuration, mask)
 
-    monkeypatch.setattr(PlantedFootTask, "update", observe)
+    monkeypatch.setattr(PlantedContactTask, "update", observe)
     poses, report = retargeter.retarget(targets, np.ones((10, 2), dtype=bool))
     assert len(poses) == 10
     assert report["initialization_mode"] == mode
@@ -182,7 +229,7 @@ def test_first_plant_anchor_is_captured_after_floor_recovery(
 
 def test_invalid_contact_clock_rejected(synthetic_calibration):
     retargeter, targets = synthetic_calibration
-    with pytest.raises(ValueError, match="frames-by-two bool"):
+    with pytest.raises(ValueError, match="frames-by-supports bool"):
         retargeter.retarget(targets, np.zeros((6, 2), dtype=bool))
 
 
@@ -193,7 +240,9 @@ def test_material_point_jacobian_and_anchor_lifecycle(synthetic_calibration):
     pose = model.default_qpos.copy()
     pose[3:7] = Rotation.from_euler("xyz", [0.2, -0.1, 0.15]).as_quat(scalar_first=True)
     configuration.update(pose)
-    task = PlantedFootTask(model, 1000.0, 3, 0.001)
+    task = PlantedContactTask(
+        model, model.foot_body_ids, calibrated.support_geoms, 1000.0, 3, 0.001
+    )
     task.update(configuration, [True, False])
     before = task.compute_error(configuration)
     jacobian = task.compute_jacobian(configuration)
@@ -226,3 +275,127 @@ def test_lafan_source_mode_requires_explicit_inputs(tmp_path):
         LafanPreparationConfig(**common, human_source="smplx")
     with pytest.raises(ValueError, match="unused"):
         LafanPreparationConfig(**common, smplx_directory=tmp_path)
+
+
+def test_hand_support_then_flight_preserves_source_excursion(
+    synthetic_calibration, tmp_path
+):
+    original, targets = synthetic_calibration
+    xml_path = tmp_path / "four-supports.xml"
+    mujoco.mj_saveLastXML(str(xml_path), original.model.mj_model)
+    tree = ET.parse(xml_path)
+    root_body = tree.getroot().find("worldbody/body")
+    for side, y in (("left", 0.15), ("right", -0.15)):
+        body = ET.SubElement(root_body, "body", name=side + "_hand", pos=f"0 {y} .5")
+        ET.SubElement(body, "geom", type="sphere", size=".1")
+    native = mujoco.MjModel.from_xml_string(ET.tostring(tree.getroot()).decode())
+    model = SimpleNamespace(**vars(original.model))
+    model.mj_model = native
+    model.robot_geom_ids = np.arange(1, native.ngeom)
+    backend = SimpleNamespace(**vars(original.backend))
+    table = dict(backend.ik_match_table1)
+    for side in ("left", "right"):
+        table[side + "_hand"] = [side + "_wrist", 100, 10, [0, 0, 0], [1, 0, 0, 0]]
+    backend.ik_match_table1 = backend.ik_match_table2 = table
+    backend.update_targets = lambda values: setattr(
+        backend, "scaled_human_data", values
+    )
+    rotation = Rotation.from_euler("x", np.pi).as_quat(scalar_first=True)
+    targets = {
+        name: (p.copy(), np.tile(rotation, (len(p), 1)))
+        for name, (p, _) in targets.items()
+    }
+    for side in ("left", "right"):
+        targets[side + "_wrist"] = (
+            targets["pelvis"][0] + [0, 0, -0.7],
+            np.tile(rotation, (10, 1)),
+        )
+    retargeter = CalibratedRetargeter(
+        model, backend, 50, KinematicRetargetConfig(support_mode="hands_and_feet")
+    )
+    labels = np.zeros((10, 4), dtype=bool)
+    labels[:2, 2:] = True
+    poses, report = retargeter.retarget(targets, labels)
+    assert report["ground_alignment"] == "source_planted_supports"
+    assert report["source_planted_frames"] == [0, 0, 2, 2]
+    np.testing.assert_allclose(
+        poses[:5, 2] - poses[0, 2], [0, 0, 0.1, 0.3, 0.1], atol=1e-5
+    )
+    assert report["planted_point_z_error_m"]["max"] < 1e-5
+
+
+def test_plant_geometry_must_belong_to_its_body(synthetic_calibration):
+    retargeter, _ = synthetic_calibration
+    with pytest.raises(ValueError, match="collision geoms"):
+        PlantedContactTask(
+            retargeter.model,
+            retargeter.model.foot_body_ids,
+            tuple(reversed(retargeter.support_geoms)),
+            1000.0,
+            3,
+            0.001,
+        )
+
+
+def test_new_support_anchor_cannot_drop_a_large_gap_in_three_frames(
+    synthetic_calibration,
+):
+    retargeter, _ = synthetic_calibration
+    configuration = mink.Configuration(retargeter.model.mj_model)
+    configuration.update(retargeter.model.default_qpos)
+    task = PlantedContactTask(
+        retargeter.model,
+        retargeter.support_bodies,
+        retargeter.support_geoms,
+        1000.0,
+        3,
+        0.001,
+        maximum_lowering_step_m=0.02,
+    )
+    task.update(configuration, [True, False])
+    initial = task.points[task.bodies[0]][1][2]
+    for frame in range(1, 5):
+        task.update(configuration, [True, False])
+        assert initial - task.points[task.bodies[0]][1][2] == pytest.approx(
+            frame * 0.02
+        )
+
+
+def test_support_includes_rigid_tool_geometry_but_excludes_articulated_children():
+    native = mujoco.MjModel.from_xml_string("""
+        <mujoco><worldbody><geom type="plane" size="2 2 .1"/>
+        <body name="root" pos="0 0 1"><freejoint/><geom size=".05"/>
+          <body name="wrist" pos="0 0 -.5"><joint name="wrist_joint"/>
+            <geom name="wrist_geom" size=".04"/>
+            <body name="tool" pos="0 0 -.1"><geom name="tool_geom" size=".025"/></body>
+            <body name="moving_finger" pos=".2 0 0"><joint/>
+              <geom name="finger_geom" size=".02"/>
+            </body>
+          </body>
+        </body></worldbody></mujoco>
+    """)
+    wrist = native.body("wrist").id
+    geoms = rigid_support_geoms(native, wrist, range(native.ngeom))
+    assert set(geoms) == {native.geom("wrist_geom").id, native.geom("tool_geom").id}
+    model = SimpleNamespace(mj_model=native, terrain_geom_ids=(0,))
+    configuration = mink.Configuration(native)
+    task = PlantedContactTask(model, (wrist,), (geoms,), 1000, 3, 0.001)
+    task.update(configuration, [True])
+    local, _, _, _ = task.points[wrist]
+    assert local[2] == pytest.approx(-0.125)
+    before = task.compute_error(configuration)
+    jacobian = task.compute_jacobian(configuration)
+    pose = configuration.q.copy()
+    numerical = np.empty_like(jacobian)
+    for index in range(native.nv):
+        displaced = pose.copy()
+        step = np.zeros(native.nv)
+        step[index] = 1
+        mujoco.mj_integratePos(native, displaced, step, 1e-7)
+        configuration.update(displaced)
+        numerical[:, index] = (task.compute_error(configuration) - before) / 1e-7
+    np.testing.assert_allclose(jacobian, numerical, atol=1e-6)
+    with pytest.raises(ValueError, match="collision geoms"):
+        PlantedContactTask(
+            model, (wrist,), ((native.geom("finger_geom").id,),), 1000, 3, 0.001
+        )

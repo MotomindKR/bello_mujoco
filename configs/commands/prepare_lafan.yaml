@@ -61,18 +61,28 @@ smplx_model_directory: null
 penetration_tolerance_m: 0.001
 contact_height_m: 0.03
 retargeting:
+  support_mode: feet
   initialization_iterations: 40
   calibration_iterations: 5
   refinement_iterations: 3
   projection_iterations: 20
   contact_blend_frames: 3
   plant_position_cost: 1000.0
+  maximum_support_correction_speed_m_s: 1.0
   contacts:
     floor_clearance_m: 0.001
     max_self_penetration_m: 0.01
     detection_distance_m: 0.03
   source_contacts:
     height_m: 0.025
+    height_band_m: null
+    horizontal_speed_m_s: 0.15
+    vertical_speed_m_s: 0.10
+    angular_speed_rad_s: 0.5
+    min_seconds: 0.1
+  hand_contacts:
+    height_m: 0.12
+    height_band_m: 0.025
     horizontal_speed_m_s: 0.15
     vertical_speed_m_s: 0.10
     angular_speed_rad_s: 0.5

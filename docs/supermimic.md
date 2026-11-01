@@ -149,6 +149,57 @@ read-only. Passing these kinematic checks does not establish dynamic trackabilit
 
 ## BONES-SEED pilot preparation
 
+Offline preparation supports `retargeting.support_mode=hands_and_feet` as an
+explicit candidate mode. Its support order is left foot, right foot, left wrist,
+right wrist. Labels are computed on the unscaled human source, before GMR pose
+offsets. Feet use `retargeting.source_contacts.*`; wrists use
+`retargeting.hand_contacts.*`, including an independent height threshold because
+a wrist marker is above the palm contact surface. Both require low translation
+and rotation speeds for a minimum duration against the known source floor;
+stationary elevated limbs are not grounded by their own minimum height.
+An optional `height_band_m` further restricts each marker to a narrow band above
+its low stationary observations, always inside `height_m` of the source floor.
+This distinguishes a planted phase from a low hovering phase without inventing
+a raised support surface. The wrist default is a 2.5 cm band inside a 12 cm
+absolute height limit; feet leave this option disabled by default.
+
+This mode anchors material points on the actual canonical collision geometry
+for the two soles and wrist bodies, including rigid end-effector children but
+excluding articulated children. The IK pass fits pose and plant targets;
+the final minimum-displacement projection repairs hard floor, self-collision,
+joint, and speed constraints without pursuing soft pose targets. The height
+translation introduced by support fitting carries through detected flight,
+using unsupported intervals and fitted COM acceleration. Other unlabelled
+phases return toward the fitted height. Root translation correction and anchor
+lowering are bounded by `maximum_support_correction_speed_m_s`; this bounds
+correction relative to source motion, without capping source jump velocity.
+Reports include support names, label counts, flight-frame counts, and horizontal
+and vertical plant errors. MotionClip's two-column `foot_contacts` schema stays
+foot-only and is recomputed from final canonical geometry.
+
+The preparation defaults remain `support_mode=feet`. A candidate must pass
+whole-recording geometry, timing, joint-speed, penetration, and flight checks
+before publishing a new dataset version. Source clips, the fixed held-out
+benchmark, and existing checkpoint dataset identities are never rewritten.
+For a SOMA support experiment, set thresholds explicitly, for example:
+
+```bash
+uv run bello-prepare-bones \
+  source_directory=/data/bones-seed output_directory=outputs/bones-support-candidate \
+  lafan_corpus=outputs/lafan-mini/corpus \
+  retargeting.support_mode=hands_and_feet \
+  retargeting.source_contacts.height_m=0.08 \
+  retargeting.source_contacts.height_band_m=0.025 \
+  retargeting.hand_contacts.height_m=0.12
+```
+
+These values are candidate source-proxy thresholds, not a feasibility guarantee
+or commissioned hardware settings. Inspect labelled support clearance after
+the blend interval and genuine jump phases before scaling preparation.
+Source labels remain soft geometric proxies: report a missed plant separately
+from a genuinely unsupported whole-body interval. A near-floor body alone does
+not certify dynamic feasibility or policy tracking quality.
+
 Prepare human SOMA Uniform sources from the read-only BONES-SEED release,
 retaining a previously verified LAFAN corpus unchanged:
 

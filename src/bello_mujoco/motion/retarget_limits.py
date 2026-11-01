@@ -124,10 +124,71 @@ class RetargetJointLimit(mink.Limit):
         return mink.Constraint(G=rows, h=bounds)
 
 
-class PlantedFootTask(mink.Task):
-    """Penalize sole material-point drift during a source-labelled plant."""
+def rigid_support_geoms(model, body, geom_ids):
+    """Collision geometry on a support body and its rigidly attached children."""
+    if not 0 < body < model.nbody:
+        raise ValueError("support body must be a non-world body")
+    result = []
+    for geom in geom_ids:
+        geom = int(geom)
+        if not 0 <= geom < model.ngeom:
+            raise ValueError("support geometry index is invalid")
+        owner = int(model.geom_bodyid[geom])
+        if model.body_weldid[owner] != model.body_weldid[body]:
+            continue
+        while owner and owner != body:
+            owner = int(model.body_parentid[owner])
+        if owner == body and (model.geom_contype[geom] or model.geom_conaffinity[geom]):
+            result.append(geom)
+    return tuple(result)
 
-    def __init__(self, model, position_cost, blend_frames, floor_clearance_m):
+
+class RetargetRootTranslationLimit(mink.Limit):
+    """Bound support correction per source frame, preserving source translation."""
+
+    def __init__(self, model, maximum_step_m):
+        if (
+            model.njnt == 0
+            or model.jnt_type[0] != mujoco.mjtJoint.mjJNT_FREE
+            or model.jnt_qposadr[0] != 0
+            or model.jnt_dofadr[0] != 0
+        ):
+            raise ValueError("root correction limit requires the first floating root")
+        if not math.isfinite(maximum_step_m) or maximum_step_m <= 0:
+            raise ValueError("root correction step must be positive and finite")
+        self.maximum_step_m = maximum_step_m
+        self.previous = None
+        self.source_displacement = np.zeros(3)
+        rows = np.zeros((3, model.nv))
+        rows[:, :3] = np.eye(3)
+        self.matrix = np.vstack((rows, -rows))
+
+    def compute_qp_inequalities(self, configuration, dt):
+        del dt
+        if self.previous is None:
+            return mink.Constraint()
+        displacement = configuration.q[:3] - self.previous - self.source_displacement
+        return mink.Constraint(
+            G=self.matrix,
+            h=np.r_[
+                self.maximum_step_m - displacement, self.maximum_step_m + displacement
+            ],
+        )
+
+
+class PlantedContactTask(mink.Task):
+    """Penalize material-point drift on explicitly selected support bodies."""
+
+    def __init__(
+        self,
+        model,
+        bodies,
+        geoms,
+        position_cost,
+        blend_frames,
+        floor_clearance_m,
+        maximum_lowering_step_m=None,
+    ):
         if not math.isfinite(position_cost) or position_cost <= 0:
             raise ValueError("plant position cost must be positive and finite")
         if type(blend_frames) is not int or blend_frames <= 0:
@@ -137,23 +198,41 @@ class PlantedFootTask(mink.Task):
         self.model = model.mj_model
         self.blend_frames = blend_frames
         self.floor_clearance = floor_clearance_m
-        self.bodies = tuple(int(b) for b in model.foot_body_ids)
+        if maximum_lowering_step_m is not None and (
+            not math.isfinite(maximum_lowering_step_m) or maximum_lowering_step_m <= 0
+        ):
+            raise ValueError("plant lowering step must be positive and finite")
+        self.maximum_lowering_step_m = maximum_lowering_step_m
+        self.bodies = tuple(int(b) for b in bodies)
+        self.geoms = tuple(tuple(int(g) for g in group) for group in geoms)
+        if (
+            not self.bodies
+            or len(set(self.bodies)) != len(self.bodies)
+            or len(self.geoms) != len(self.bodies)
+            or any(body <= 0 or body >= self.model.nbody for body in self.bodies)
+            or any(
+                not group
+                or any(g < 0 or g >= self.model.ngeom for g in group)
+                or set(rigid_support_geoms(self.model, body, group)) != set(group)
+                for body, group in zip(self.bodies, self.geoms, strict=True)
+            )
+        ):
+            raise ValueError(
+                "plant tasks require unique bodies and their collision geoms"
+            )
         self.k = 3 * len(self.bodies)
         super().__init__(cost=np.full(self.k, position_cost), gain=1, lm_damping=1)
-        self.geoms = tuple(
-            tuple(
-                int(g) for g in model.foot_geom_ids if self.model.geom_bodyid[g] == body
-            )
-            for body in self.bodies
-        )
         self.terrain = tuple(int(g) for g in model.terrain_geom_ids)
         if not self.terrain or any(not geoms for geoms in self.geoms):
-            raise ValueError("plant tasks require foot and terrain geometries")
+            raise ValueError("plant tasks require support and terrain geometries")
         self.points = {}
         self._jacobian = np.zeros((3, self.model.nv))
 
     def update(self, configuration, mask):
         """Capture anchors once per source frame, outside the IK iteration loop."""
+        mask = np.asarray(mask)
+        if mask.shape != (len(self.bodies),) or mask.dtype != np.bool_:
+            raise ValueError("plant labels must be one bool per support body")
         data = configuration.data
         for side, body in enumerate(self.bodies):
             if not mask[side]:
@@ -175,9 +254,13 @@ class PlantedFootTask(mink.Task):
                 local, world, start_z, age = self.points[body]
                 self.points[body] = (local, world, start_z, age + 1)
             local, world, start_z, age = self.points[body]
-            world[2] = start_z + min(age / self.blend_frames, 1.0) * (
+            offset = min(age / self.blend_frames, 1.0) * (
                 self.floor_clearance - start_z
             )
+            if self.maximum_lowering_step_m is not None:
+                step = age * self.maximum_lowering_step_m
+                offset = np.clip(offset, -step, step)
+            world[2] = start_z + offset
 
     def compute_error(self, configuration):
         data = configuration.data
@@ -201,7 +284,7 @@ class PlantedFootTask(mink.Task):
         return jacobian
 
 
-def project_contacts(backend, contact_limit, *, iterations, tolerance, tasks=()):
+def project_contacts(backend, contact_limit, *, iterations, tolerance):
     """Repair nonlinear residuals with constrained minimum-displacement IK."""
     dt = backend.model.opt.timestep
     for _ in range(iterations):
@@ -210,7 +293,7 @@ def project_contacts(backend, contact_limit, *, iterations, tolerance, tasks=())
             return backend.configuration.data.qpos.copy()
         velocity = mink.solve_ik(
             backend.configuration,
-            tasks,
+            (),
             dt,
             backend.solver,
             damping=1.0,

@@ -24,7 +24,7 @@ from bello_mujoco.motion.bvh import lafan1_targets, read_bvh
 from bello_mujoco.motion.calibration import (
     CalibratedRetargeter,
     KinematicRetargetConfig,
-    planted_feet,
+    source_contact_labels,
 )
 from bello_mujoco.motion.clip import (
     MotionClip,
@@ -190,13 +190,7 @@ def retarget_sequence(config: LafanPreparationConfig, name: str):
     source_hash = file_sha256(path)
     motion = read_bvh(path).resample(config.fps)
     source_targets = lafan1_targets(motion)
-    feet = ("left_foot", "right_foot")
-    labels = planted_feet(
-        np.stack([source_targets[n][0] for n in feet], axis=1),
-        np.stack([source_targets[n][1] for n in feet], axis=1),
-        config.fps,
-        config.retargeting.source_contacts,
-    )
+    labels = source_contact_labels(source_targets, config.fps, config.retargeting)
     targets = source_targets
     provenance = {"human_source": config.human_source}
     if config.human_source == "smplx":
