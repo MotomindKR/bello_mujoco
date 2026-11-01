@@ -1,5 +1,34 @@
 # Barbell pose and hold diagnostics
 
+## Fixed 10 kg retraining
+
+This experiment branch retains the trainer from `8f873c9` and selects a fixed
+10 kg bar with its corresponding inertia. The approved 20.2-second handover
+cycle, 49.5 kg nominal robot, original timing, gains, torque limits, grips,
+collision rules, observations, and randomization are unchanged. Training starts
+from fresh policy and optimizer state for 2,949,120,000 environment steps with
+1,024 parallel worlds. It does not resume the 15 kg policy.
+
+The reference is rebuilt under `outputs/barbell-10kg/` by copying all motion
+arrays unchanged, updating the fixed object mass, and repeating the geometry
+and authored-float64 dynamics checks. The archive retains the resulting screen
+status. Exploratory simulation permits a failed exact-reference effort screen;
+deployment still requires a passed screen and separate commissioning.
+
+The 10 kg screen passes geometry and joint/motor position bounds, including
+three interpolants per interval. It still has 161 unsolved samples out of
+1,011, and solved samples reach 3.2395 times the configured effort limits.
+The archive therefore retains `screen_passed=false`.
+
+```bash
+uv run --group training bello-train experiment=bello_mini_barbell_motion \
+  motion_path=outputs/barbell-10kg/handover_cycle.npz \
+  checkpoint_directory=checkpoints/barbell-10kg \
+  run_name=barbell10kg_fresh_seed0_20261101
+```
+
+The 15 kg reports below are historical reference-generation results.
+
 This is an offline pose/load review, not a training task or robot command.
 It does not connect to hardware, operate the hands, or change existing policies.
 Use it before investing in a loaded clean-and-jerk reference and training task.

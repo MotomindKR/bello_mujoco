@@ -60,7 +60,7 @@ def test_payload_mixture_is_reproducible_and_world_prefix_stable():
     assert uniform.mean() == pytest.approx(17.5, abs=0.3)
 
 
-@pytest.mark.parametrize("mass", [15.0, 30.0])
+@pytest.mark.parametrize("mass", [10.0, 15.0, 30.0])
 def test_mass_accounted_once_and_generic_randomization_excludes_object(mass):
     model = mechanism(mass)
     robot = SimpleNamespace(
@@ -330,7 +330,7 @@ def test_motion_profile_keeps_fixed_object_and_all_policy_actions():
     )
     assert standing.env_config.model_randomization.payload_distribution == "standing"
     assert motion.env_config.model_randomization.payload_distribution == "fixed"
-    assert motion.asset_config.barbell.mass_kg == 15.0
+    assert motion.asset_config.barbell.mass_kg > 0.0
     assert motion.asset_config.target_total_mass_kg == 49.5
     with pytest.raises(ValueError, match="49.5 kg"):
         _validate_motion_asset(

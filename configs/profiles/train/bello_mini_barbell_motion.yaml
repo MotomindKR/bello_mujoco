@@ -1,14 +1,14 @@
 config:
-  total_timesteps: 100000000
+  total_timesteps: 2949120000
   num_envs: 1024
 motion:
-  directory: outputs/barbell-15kg
+  directory: outputs/barbell-10kg
   sequence: handover_cycle
 asset_config:
   asset: bello_mini
   target_total_mass_kg: 49.5
   barbell:
-    mass_kg: 15.0
+    mass_kg: 10.0
   joint_default_positions:
     left_shoulder_pitch_joint: 0.000367519
     left_shoulder_roll_joint: -0.013369513
@@ -41,12 +41,12 @@ env_config:
     - 0.0
 checkpoint_config:
   every_updates: 100
-  name: bello_mini_barbell_15kg_handover_cycle_seed${config.seed}
+  name: bello_mini_barbell_10kg_handover_cycle_seed${config.seed}
 wandb_config:
   group: bello-mini-barbell-motion
   tags:
   - bello-mini
   - beyondmimic
   - rigid-bar
-  - fixed-15kg
+  - fixed-10kg
   - exploratory-unscreened-reference

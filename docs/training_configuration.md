@@ -160,7 +160,7 @@ scales the robot before adding the bar. Normal walking profiles leave it null.
 `env_config.model_randomization.payload_distribution` defaults to `fixed`.
 `standing` requires enabled model randomization and a rigid bar, and samples
 25% unloaded, 25% 30 kg, and 50% uniform 5--30 kg per world. It is never used by
-`bello_mini_barbell_motion`, which now selects a fixed 15 kg reference and scene.
+`bello_mini_barbell_motion`, which selects a fixed 10 kg reference and scene.
 Python and Rust require the screened clip mass to match the scene mass; changing
 the configured load requires rebuilding and screening the reference.
 Generic mass/inertia randomization applies only to robot bodies.
@@ -179,5 +179,5 @@ reference review, the current feasibility blocker and pending runtime gates.
 For exploratory barbell simulation, `env_config.allow_unscreened_reference`
 (default `false`) permits a failed exact-reference torque screen without changing
 the archive result or relaxing mass, torque, grip, or collision constraints.
-The fixed-15 kg profile enables this setting; saved simulation checkpoints retain
+The fixed-10 kg profile enables this setting; saved simulation checkpoints retain
 it. Rust deployment continues to require a passed screen.
