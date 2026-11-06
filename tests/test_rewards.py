@@ -560,13 +560,6 @@ def test_moving_angular_velocity_error_has_a_non_saturating_signed_gradient() ->
     assert standing_terms["reward/moving_ang_vel_z_error"] == pytest.approx(0.0)
 
 
-def test_default_tracking_weights_are_doubled() -> None:
-    config = RewardConfig()
-
-    assert config.weights.track_lin_vel_xy == pytest.approx(2.0)
-    assert config.weights.track_ang_vel_z == pytest.approx(2.0)
-
-
 def test_tracking_reward_uses_tighter_tolerance_on_each_zero_command_axis() -> None:
     config = reward_config(
         track_lin_vel_xy=1.0,

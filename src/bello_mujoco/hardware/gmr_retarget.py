@@ -215,10 +215,7 @@ class GmrRetargeter:
                 src_human=profile.source_human,
                 tgt_robot=profile.target_robot,
                 actual_human_height=config.human_height_m,
-                solver="daqp",
-                damping=5.0e-1,
                 verbose=False,
-                use_velocity_limit=False,
             )
         self.profile = profile
         self.config = config

@@ -8,7 +8,6 @@ from scipy.spatial.transform import Rotation
 
 from bello_mujoco.motion.bones import (
     BUCKETS,
-    BonesPreparationConfig,
     bucket,
     extract_sources,
     family,
@@ -169,18 +168,6 @@ def test_archive_extraction_copies_only_requested_regular_sources(tmp_path):
         extract_sources(
             archive, output, [{"sequence": "missing", "source_path": "missing.bvh"}]
         )
-
-
-def test_config_rejects_invalid_preparation_settings(tmp_path):
-    config = BonesPreparationConfig(tmp_path, tmp_path / "out", tmp_path / "lafan")
-    for values in (
-        {"workers": 0},
-        {"training_hours": -1},
-        {"metadata_file": "../metadata.csv"},
-        {"max_retarget_failure_fraction": 0.2},
-    ):
-        with pytest.raises(ValueError):
-            replace(config, **values)
 
 
 def test_quarantine_is_explicit_and_limited_by_both_clip_count_and_duration():

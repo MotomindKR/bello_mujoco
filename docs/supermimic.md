@@ -81,38 +81,25 @@ The [preparation config](../configs/commands/prepare_lafan.yaml) lists the same
 fall/get-up, fighting/sports, jumps, running, sprinting and walking. Nine separate
 ground/multiple-action recordings form an additional evaluation split. These
 are sequence-disjoint, not subject-disjoint. Local rotations are resampled at
-50 Hz before forward kinematics. `human_source=bvh` converts named LAFAN
-rotations to the pinned Mini SMPL-X frame convention. Source toe transforms
-provide conservative planted-foot labels based on height, linear/angular speed
-and interval duration. These are geometric proxies, not measured contact forces.
+50 Hz before forward kinematics. `human_source=bvh` converts the named source
+transforms into the pinned Mini SMPL-X input convention.
 
-Offline preparation fits source orientations to Mini with canonical coupled
-motor/joint bounds, then constructs position targets from that pose's native
-forward kinematics. Human hip rotations target the final hip yaw link after all
-three hip hinges. This replaces independent human landmark scaling and offsets
-as limb position targets: anatomical hip centers are not Mini hip roll origins.
-Root translation goals and orientation-frame offsets use the pinned GMR convention.
-Contact refinement tracks a fixed sole material point during each labelled
-stationary interval. Its position objective has explicit `plant_position_cost`,
-and touchdown height blends over `contact_blend_frames`. Foot labels are geometric
-proxies, so this objective remains soft when it conflicts with physical limits;
-per-sequence planted-point residuals are reported.
-Refinement also applies each joint's canonical URDF speed bound and linearized
-floor/self-contact constraints. A final minimum-displacement IK projection
-repairs nonlinear contact residuals.
+All offline sources use the pinned stock
+[`smplx_to_bello_mini.json`](../deps/GMR/general_motion_retargeting/ik_configs/smplx_to_bello_mini.json)
+profile through the same GMR wrapper as live following. The profile owns the
+body mappings, scale factors, offsets and IK weights. Each source frame gets
+one upstream retarget call, initialized once from the source root and the
+configured Mini posture. Output poses are preserved: there is no custom pose
+calibration, planted-contact solver, collision projection or subsequent floor
+translation. Source frame conversion does not change the profile's mappings.
 
-Ground alignment is one constant translation per sequence, estimated from
-calibrated sole heights on source-planted frames. When no stationary foot labels
-exist, the whole-body lower envelope supplies the plane alignment; the chosen
-method and translation are reported. No sequence is rejected for absent labels,
-and alignment preserves all flight-phase height differences. Calibration and
-refinement start from the robot's configured posture and fitted pose, respectively;
-they do not require an older reference corpus.
-The initial fitted pose is projected through the physical constraints before
-any planted-foot anchors are captured, without advancing the source clock.
-Settings live under `retargeting.*`, including iteration counts, contact blending,
-`contacts.*` distance bounds and
-`source_contacts.*` proxy thresholds.
+Shared clip reconstruction computes central-difference velocities and native
+link-origin FK/twists, validates finite shapes and the canonical motor/joint
+position envelope, and reports speed and floor/self-penetration diagnostics.
+Foot contacts are geometric sole-proximity labels, not source contact guesses
+or measured forces. Diagnostics do not repair poses or certify dynamic
+trackability. Preparation settings are defined in the public command YAML;
+removed `retargeting.*` overrides are rejected.
 
 To use full-sequence SOMA-to-native-SMPL-X exports instead of the BVH rotation
 adapter, select the input explicitly:
@@ -130,9 +117,8 @@ Each native file must be named `SEQUENCE.npz` and contain `surface_model_type=sm
 `SMPLX_GENDER.npz` supplies the shape-dependent rest joints. Native root rotations
 already express the Z-up source world; `trans` is added to the shaped rest pelvis.
 After resampling, the full sequence must have the same clock length as its BVH;
-partial pilot windows are rejected. BVH contact labels remain the common source
-for either input mode. Both source hashes and the native body-model hash are
-recorded. Supplying SMPL-X directories with `human_source=bvh` is an error.
+partial pilot windows are rejected. Both source hashes and the native body-model
+hash are recorded. Supplying SMPL-X directories with `human_source=bvh` is an error.
 This command consumes native exports; it does not install or invoke SOMA-X.
 
 Live GMR behavior and the pinned vendor files are unchanged. The pinned GMR
@@ -149,56 +135,11 @@ read-only. Passing these kinematic checks does not establish dynamic trackabilit
 
 ## BONES-SEED pilot preparation
 
-Offline preparation supports `retargeting.support_mode=hands_and_feet` as an
-explicit candidate mode. Its support order is left foot, right foot, left wrist,
-right wrist. Labels are computed on the unscaled human source, before GMR pose
-offsets. Feet use `retargeting.source_contacts.*`; wrists use
-`retargeting.hand_contacts.*`, including an independent height threshold because
-a wrist marker is above the palm contact surface. Both require low translation
-and rotation speeds for a minimum duration against the known source floor;
-stationary elevated limbs are not grounded by their own minimum height.
-An optional `height_band_m` further restricts each marker to a narrow band above
-its low stationary observations, always inside `height_m` of the source floor.
-This distinguishes a planted phase from a low hovering phase without inventing
-a raised support surface. The wrist default is a 2.5 cm band inside a 12 cm
-absolute height limit; feet leave this option disabled by default.
-
-This mode anchors material points on the actual canonical collision geometry
-for the two soles and wrist bodies, including rigid end-effector children but
-excluding articulated children. The IK pass fits pose and plant targets;
-the final minimum-displacement projection repairs hard floor, self-collision,
-joint, and speed constraints without pursuing soft pose targets. The height
-translation introduced by support fitting carries through detected flight,
-using unsupported intervals and fitted COM acceleration. Other unlabelled
-phases return toward the fitted height. Root translation correction and anchor
-lowering are bounded by `maximum_support_correction_speed_m_s`; this bounds
-correction relative to source motion, without capping source jump velocity.
-Reports include support names, label counts, flight-frame counts, and horizontal
-and vertical plant errors. MotionClip's two-column `foot_contacts` schema stays
-foot-only and is recomputed from final canonical geometry.
-
-The preparation defaults remain `support_mode=feet`. A candidate must pass
-whole-recording geometry, timing, joint-speed, penetration, and flight checks
-before publishing a new dataset version. Source clips, the fixed held-out
-benchmark, and existing checkpoint dataset identities are never rewritten.
-For a SOMA support experiment, set thresholds explicitly, for example:
-
-```bash
-uv run bello-prepare-bones \
-  source_directory=/data/bones-seed output_directory=outputs/bones-support-candidate \
-  lafan_corpus=outputs/lafan-mini/corpus \
-  retargeting.support_mode=hands_and_feet \
-  retargeting.source_contacts.height_m=0.08 \
-  retargeting.source_contacts.height_band_m=0.025 \
-  retargeting.hand_contacts.height_m=0.12
-```
-
-These values are candidate source-proxy thresholds, not a feasibility guarantee
-or commissioned hardware settings. Inspect labelled support clearance after
-the blend interval and genuine jump phases before scaling preparation.
-Source labels remain soft geometric proxies: report a missed plant separately
-from a genuinely unsupported whole-body interval. A near-floor body alone does
-not certify dynamic feasibility or policy tracking quality.
+BONES uses the same stock Mini GMR path as LAFAN and AMASS. The experimental
+hand/foot support mode and custom contact refinement have been removed. Existing
+corpora and checkpoints retain their original bytes and source commits; build
+a new output directory to prepare stock-GMR references. Historical checkpoints
+must still run from their recorded source checkout.
 
 Prepare human SOMA Uniform sources from the read-only BONES-SEED release,
 retaining a previously verified LAFAN corpus unchanged:
@@ -225,23 +166,18 @@ selection, not the paper's exact filtered G1 benchmark.
 The command reads the configured metadata CSV and streams `soma_uniform.tar.gz`,
 extracting only selected regular BVH members into the output directory. It
 preserves the original source clock, resamples local transforms to 50 Hz, and
-uses the shared canonical Mini calibration/contact refinement. SOMA joint axes
-are removed using the release's `soma_base_skel_minimal.bvh` bind rig. They are
-not assumed to match LAFAN axes: in particular the leg and toe frames differ.
-BONES uses `retargeting.initialization_mode=constrained_neutral`: it fits the
-first frame under contact constraints from the canonical neutral joint pose,
-before capturing plantar anchors. This avoids asking a local projection to
-untangle an already intersecting crossed-leg fit. Initialization does not
-advance the source clock. LAFAN's default `fitted_projection` mode is unchanged.
-Source BVH hashes, metadata and bind-rig hashes, selection reasons, contact
-residuals, and physical validation reports are recorded. G1 joint CSVs are not
-Mini targets. Kinematic validation does not certify dynamic feasibility.
+uses stock Mini GMR after removing the release's SOMA bind-joint rotations
+with `soma_base_skel_minimal.bvh`. SOMA axes are not assumed to match LAFAN axes.
+Source BVH, metadata and bind-rig hashes, selection reasons, speed and penetration
+diagnostics are recorded. G1 joint CSVs are not Mini targets. No contact fitting,
+posture calibration or clock adjustment is applied to GMR output. Kinematic
+validation does not certify dynamic feasibility.
 
 `settings.json`, `selection.json`, and `preparation.jsonl` allow interruption and
 resumption with the same configuration and source identities. Failed sequences
 are retried. By default all must succeed before publishing the manifest.
 An explicit `max_retarget_failure_fraction` can permit a small quarantine of
-physical IK/contact failures, limited by both clip count and source duration
+IK or motor/joint-position failures, limited by both clip count and source duration
 separately for training and evaluation. Other errors always abort preparation.
 `quarantine.json` and manifest provenance retain every failure, source hash and
 reason; no recording is silently dropped or trimmed. Previously successful

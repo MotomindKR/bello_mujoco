@@ -266,14 +266,15 @@ Those duration and filename filters are conservative curation heuristics, not
 published optimal hyperparameters or a complete semantic classifier.
 
 Rotations are resampled with shortest-arc SLERP. Shape-dependent SMPL-X joint FK
-feeds the existing canonical Mini GMR mapping. After retargeting, a single
-clip-wide vertical translation aligns the fifth percentile of the lowest sole
-height to the floor; there is no per-frame root snapping. Checks reject canonical
-motor/joint-limit violations, speeds over 20 rad/s, penetration over 3 cm,
-ground correction over 15 cm, and remaining floor clearance over 10 cm.
-Foot labels are geometric proximity within 3 cm, not measured contact forces.
-Body poses and velocities are recomputed with Mini FK. These are kinematic
-quality checks, not proof that a motion is dynamically trackable.
+feeds the pinned stock Mini GMR profile. AMASS, LAFAN and BONES share the same
+retarget and clip reconstruction functions. GMR output poses are preserved,
+without floor translation, pose calibration or contact projection. The AMASS
+quality thresholds in `AmassPreparationConfig` reject excessive joint speed or
+penetration; source data and rejected poses are never silently corrected.
+Shared reconstruction checks canonical motor/joint positions and computes
+central-difference velocities and native link-origin FK/twists. Foot labels use
+sole proximity, not measured forces. These checks do not certify dynamic
+trackability.
 
 The finalized `clips/sonic-corpus.json` embeds source provenance and split
 metadata, including source hashes, preparation settings and dependency pins.

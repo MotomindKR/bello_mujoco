@@ -8,6 +8,8 @@ import re
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from bello_mujoco.motion.interpolation import resample_quaternions
+
 
 @dataclass(frozen=True)
 class BvhMotion:
@@ -63,18 +65,7 @@ class BvhMotion:
         upper = np.minimum(lower + 1, len(self.position) - 1)
         alpha = (frame - lower)[:, None, None]
         position = (1 - alpha) * self.position[lower] + alpha * self.position[upper]
-        a, b = self.quaternion[lower], self.quaternion[upper]
-        dot = np.sum(a * b, axis=-1, keepdims=True)
-        b = np.where(dot < 0, -b, b)
-        angle = np.arccos(np.clip(np.abs(dot), 0, 1))
-        sine = np.sin(angle)
-        quaternion = np.where(
-            sine > 1e-7,
-            (np.sin((1 - alpha) * angle) * a + np.sin(alpha * angle) * b)
-            / np.maximum(sine, 1e-7),
-            (1 - alpha) * a + alpha * b,
-        )
-        quaternion /= np.linalg.norm(quaternion, axis=-1, keepdims=True)
+        quaternion = resample_quaternions(self.quaternion, frame)
         return BvhMotion(self.names, self.parents, position, quaternion, 1 / fps)
 
     def world_transforms(self):

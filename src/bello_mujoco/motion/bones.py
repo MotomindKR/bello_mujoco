@@ -1,8 +1,8 @@
-"""Whole-recording BONES-SEED selection and calibrated SOMA-to-Mini preparation."""
+"""Whole-recording BONES-SEED selection and stock Mini GMR preparation."""
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import csv
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 import math
@@ -17,18 +17,16 @@ import mink
 
 from bello_mujoco.configuration import command_config, config_path
 from bello_mujoco.motion.bvh import read_bvh, soma_targets
-from bello_mujoco.motion.calibration import (
-    KinematicRetargetConfig,
-    source_contact_labels,
-)
-from bello_mujoco.motion.clip import save_motion_clip
-from bello_mujoco.motion.lafan import calibrated_clip
+from bello_mujoco.motion.clip import motion_tracking_asset_config, save_motion_clip
+from bello_mujoco.motion.retarget import RetargetValidationError, retarget_gmr
+from bello_mujoco.sim import load_model
 from bello_mujoco.sonic.corpus import (
     MANIFEST,
     file_sha256,
     prepare_corpus,
     verify_corpus,
 )
+from bello_mujoco.terrain import FLAT_TERRAIN
 
 
 BUCKETS = ("ground", "jump", "dance", "sport", "locomotion", "other")
@@ -45,22 +43,16 @@ class BonesPreparationConfig:
     source_directory: Path
     output_directory: Path
     lafan_corpus: Path
-    metadata_file: str = "metadata/seed_metadata_v004.csv"
-    bind_file: str = "soma_shapes/soma_base_rig/soma_base_skel_minimal.bvh"
-    training_hours: float = 7.0
-    evaluation_hours: float = 0.5
-    seed: int = 0
-    fps: int = 50
-    human_height_m: float = 1.8
-    workers: int = 8
-    penetration_tolerance_m: float = 0.001
-    contact_height_m: float = 0.03
-    max_retarget_failure_fraction: float = 0.0
-    retargeting: KinematicRetargetConfig = field(
-        default_factory=lambda: KinematicRetargetConfig(
-            initialization_mode="constrained_neutral"
-        )
-    )
+    metadata_file: str
+    bind_file: str
+    training_hours: float
+    evaluation_hours: float
+    seed: int
+    fps: int
+    human_height_m: float
+    workers: int
+    contact_height_m: float
+    max_retarget_failure_fraction: float
 
     def __post_init__(self):
         for name in ("fps", "workers"):
@@ -72,7 +64,6 @@ class BonesPreparationConfig:
             "training_hours",
             "evaluation_hours",
             "human_height_m",
-            "penetration_tolerance_m",
             "contact_height_m",
         ):
             if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
@@ -282,15 +273,17 @@ def retarget_bones(config, entry):
     targets = soma_targets(
         motion, read_bvh(config.output_directory / "source-bind.bvh")
     )
-    labels = source_contact_labels(targets, config.fps, config.retargeting)
-    clip, report = calibrated_clip(
+    model = load_model(
+        motion_tracking_asset_config(asset="bello_mini"),
+        terrain=FLAT_TERRAIN,
+        load_mjx=False,
+    )
+    clip, report = retarget_gmr(
+        model,
         targets,
-        labels,
-        config.fps,
-        config.human_height_m,
-        config.retargeting,
-        config.penetration_tolerance_m,
-        config.contact_height_m,
+        fps=config.fps,
+        human_height_m=config.human_height_m,
+        contact_height_m=config.contact_height_m,
     )
     destination = config.output_directory / "corpus" / f"bones__{entry['sequence']}.npz"
     temporary = destination.with_suffix(".partial")
@@ -309,15 +302,7 @@ def _retarget_job(config, entry):
     try:
         return retarget_bones(config, entry)
     except Exception as error:
-        physical = isinstance(error, mink.NoSolutionFound) or (
-            isinstance(error, ValueError)
-            and str(error).startswith(
-                (
-                    "contact projection did not converge",
-                    "reference violates ",
-                )
-            )
-        )
+        physical = isinstance(error, (mink.NoSolutionFound, RetargetValidationError))
         source = config.output_directory / "sources" / f"{entry['sequence']}.bvh"
         return {
             **entry,

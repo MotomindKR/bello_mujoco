@@ -8,13 +8,14 @@ import yaml
 from bello_mujoco.hardware.smplx_contract import SMPLX_BODY_JOINT_PARENTS
 from bello_mujoco.sonic.amass import (
     AmassPreparationConfig,
-    SmplxMotionReader,
-    ground_translation,
-    resample_rotations,
     select_candidates,
-    skeleton_forward,
     source_subject,
     summarize_preparation,
+)
+from bello_mujoco.motion.smplx import (
+    SmplxMotionReader,
+    resample_rotations,
+    skeleton_forward,
 )
 from bello_mujoco.sonic.embodiment import validate_named_joint_axes
 from bello_mujoco.sonic import amass
@@ -82,18 +83,6 @@ def test_native_smplx_reader_resamples_the_source_clock_and_shape(tmp_path):
         Rotation.from_quat(quaternions[1, 0], scalar_first=True).as_rotvec(),
         [0, 0, np.pi / 4],
     )
-
-
-def test_ground_offset_is_constant_not_per_frame():
-    config = AmassPreparationConfig()
-    heights = np.array([[-0.02, 0.04], [0.01, 0.08], [-0.01, 0.03]])
-    offset, clearance = ground_translation(heights, config)
-    np.testing.assert_allclose(np.diff(clearance), np.diff(heights.min(axis=1)))
-    assert offset == pytest.approx(np.quantile(heights.min(axis=1), 0.05))
-    with pytest.raises(ValueError, match="ground correction"):
-        ground_translation(heights + 1, config)
-    with pytest.raises(ValueError, match="airborne"):
-        ground_translation(np.array([[0, 0], [0.3, 0.4]]), config)
 
 
 def test_amass_selection_is_deduplicated_and_subject_disjoint(tmp_path):

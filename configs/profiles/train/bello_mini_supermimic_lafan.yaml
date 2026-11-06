@@ -3,13 +3,7 @@
 max_training_seconds: null
 config:
   total_timesteps: 143622144
-  num_envs: 4096
   max_episode_steps: 500
-  replay_steps: 1000
-  max_replay_bytes: 17179869184
-  model_batches: 10
-  model_batch_size: 2048
-  imagined_batch_size: 4096
 environment:
   reset:
     initial_xy_range: [0.0, 0.0]

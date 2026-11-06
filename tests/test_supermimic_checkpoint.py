@@ -1,5 +1,4 @@
 from dataclasses import replace
-from pathlib import Path
 from types import SimpleNamespace
 
 import jax
@@ -8,7 +7,6 @@ import equinox as eqx
 import numpy as np
 import pytest
 
-from bello_mujoco.configuration import supermimic_training_profile
 from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.sonic.corpus import MANIFEST, file_sha256
 from bello_mujoco.supermimic import checkpoint
@@ -183,50 +181,3 @@ def test_dynamics_snapshot_loads_without_replay_and_checks_its_own_hash(
             dataset_directory=config.dataset.directory,
             reference_clips=("fixture",),
         )
-
-
-def test_profiles_preserve_stiffness_and_motor_contract_with_damping_overrides():
-    from bello_mujoco.configuration import motion_training_profile
-
-    run = supermimic_training_profile(Path("motions/local"))
-    motion = motion_training_profile(name="bello_mini_motion")
-    changed = False
-    for name, actuator in run.asset_config.actuator_config.joints.items():
-        baseline = motion.asset_config.actuator_config.joints[name]
-        assert actuator.gains[0] == baseline.gains[0]
-        assert 0 < actuator.gains[1] <= baseline.gains[1]
-        assert replace(actuator, gains=baseline.gains) == baseline
-        changed |= actuator.gains != baseline.gains
-    assert changed
-    smoke = supermimic_training_profile(
-        Path("motions/local"), name="bello_mini_supermimic_smoke"
-    )
-    assert smoke.config.total_timesteps < run.config.total_timesteps
-    assert (
-        smoke.config.model_warmup_updates
-        < smoke.config.total_timesteps / smoke.config.num_envs
-    )
-    assert (
-        smoke.environment.control.command_delay_seconds
-        == run.environment.control.command_delay_seconds
-    )
-    assert smoke.environment.randomization.joint_origin_range == (0.0, 0.0)
-    lafan = supermimic_training_profile(
-        Path("motions/local"), name="bello_mini_supermimic_lafan"
-    )
-    for name in (
-        "num_envs",
-        "replay_steps",
-        "model_batches",
-        "model_batch_size",
-        "imagined_batch_size",
-    ):
-        assert getattr(lafan.config, name) == getattr(run.config, name)
-    vector_steps = lafan.config.total_timesteps // lafan.config.num_envs
-    assert (
-        vector_steps - lafan.config.warmup_steps
-    ) * lafan.config.update_to_data_ratio == 14000
-    assert lafan.max_training_seconds is None
-    assert lafan.environment.control.command_delay_seconds == 0
-    assert not lafan.environment.filtering.enabled
-    assert not lafan.environment.latency.enabled

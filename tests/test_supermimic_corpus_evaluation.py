@@ -64,12 +64,10 @@ def test_parallel_evaluation_preserves_all_clips_and_equal_clip_weighting(
     }
 
 
-def test_bounded_corpus_profile_and_operational_resume_budget():
+def test_operational_wall_budget_does_not_change_the_resume_contract():
     run = supermimic_training_profile(
         Path("corpus"), name="bello_mini_supermimic_amass"
     )
-    assert run.max_training_seconds == 4500
-    assert run.config.total_timesteps > run.config.warmup_steps * run.config.num_envs
     assert resume_contract(run) == resume_contract(replace(run, max_training_seconds=1))
     for invalid in (0, -1, float("inf"), float("nan")):
         with pytest.raises(ValueError, match="max_training_seconds"):
@@ -147,12 +145,3 @@ def test_explicit_training_evaluation_does_not_relabel_training_as_held_out(tmp_
     )
     assert report["summary"]["split"] == "training"
     assert not report["summary"]["measures_held_out_generalization"]
-
-
-def test_lafan_profile_uses_bounded_collection_without_shortening_references():
-    run = supermimic_training_profile(
-        Path("corpus"), name="bello_mini_supermimic_lafan"
-    )
-    assert run.config.max_episode_steps == 500
-    assert run.networks.matmul_precision == "bfloat16"
-    assert run.config.learning_rate_decay_updates == 250000

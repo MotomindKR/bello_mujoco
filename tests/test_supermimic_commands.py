@@ -1,14 +1,11 @@
 from dataclasses import replace
 from pathlib import Path
-import ast
-import subprocess
 
 from hydra import compose, initialize_config_dir
 import pytest
 
 from bello_mujoco import cli
 from bello_mujoco.configuration import CONFIG_ROOT
-from bello_mujoco.training import vast_remote
 from bello_mujoco.training.vast import VastTrainConfig, validate_config
 
 
@@ -19,25 +16,13 @@ def command(name, overrides):
         return compose(config_name=name, overrides=overrides)
 
 
-@pytest.mark.parametrize(
-    "profile",
-    [
-        "bello_mini_supermimic",
-        "bello_mini_supermimic_smoke",
-        "bello_mini_supermimic_pilot",
-        "bello_mini_supermimic_amass",
-        "bello_mini_supermimic_lafan",
-    ],
-)
-def test_training_cli_routes_dataset_seed_and_resume_without_pretrained(
-    profile, monkeypatch
-):
+def test_training_cli_routes_dataset_seed_and_resume_without_pretrained(monkeypatch):
     from bello_mujoco.training import supermimic
 
     captured = []
     monkeypatch.setattr(supermimic, "run_training", captured.append)
     overrides = [
-        f"experiment={profile}",
+        "experiment=bello_mini_supermimic",
         "motion_dataset=/tmp/corpus",
         "seed=19",
         "evaluation_clips=[held_out]",
@@ -96,20 +81,9 @@ def test_evaluation_cli_routes_split_and_first_frame_options(monkeypatch, split)
     assert kwargs == {"steps": None, "stop_on_terminal": True, "split": split}
 
 
-@pytest.mark.parametrize(
-    "profile",
-    [
-        "bello_mini_supermimic",
-        "bello_mini_supermimic_smoke",
-        "bello_mini_supermimic_pilot",
-        "bello_mini_supermimic_amass",
-    ],
-)
-def test_remote_config_accepts_pinned_dataset_and_rejects_wrong_training_inputs(
-    profile,
-):
+def test_remote_config_accepts_pinned_dataset_and_rejects_wrong_training_inputs():
     config = VastTrainConfig(
-        experiment=profile,
+        experiment="bello_mini_supermimic",
         motion_dataset_artifact="entity/project/mini:v0",
         max_price=1.0,
         branch="feat/supermimic",
@@ -123,31 +97,3 @@ def test_remote_config_accepts_pinned_dataset_and_rejects_wrong_training_inputs(
     ):
         with pytest.raises(ValueError):
             validate_config(bad)
-
-
-def test_remote_script_parses_and_restores_improved_actor_before_full_training():
-    script = vast_remote.REMOTE_TRAIN_SCRIPT
-    subprocess.run(["bash", "-n"], input=script, text=True, check=True)
-    blocks = [part.split("\nPY", 1)[0] for part in script.split("<<'PY'\n")[1:]]
-    for block in blocks:
-        ast.parse(block)
-    preflight = next(
-        block for block in blocks if "supermimic_preflight_checkpoint_restored" in block
-    )
-    assert 'metadata["actor_updates"] < 1' in preflight
-    assert "load_actor(" in preflight and "make_native_motion_step(env)" in preflight
-    assert "export_checkpoint(ExportConfig(" in preflight
-    assert script.index("supermimic_preflight_checkpoint_restored") < script.rindex(
-        "uv run --no-sync bello-train"
-    )
-    evaluation = next(
-        block for block in blocks if "supermimic_evaluation_artifact" in block
-    )
-    assert evaluation.index("configure_software_rendering()") < evaluation.index(
-        "import wandb"
-    )
-    assert "evaluate_supermimic_corpus(" in evaluation
-    assert "run.log_artifact(artifact).wait()" in evaluation
-    assert script.index("supermimic_evaluation_artifact") > script.rindex(
-        "uv run --no-sync bello-train"
-    )

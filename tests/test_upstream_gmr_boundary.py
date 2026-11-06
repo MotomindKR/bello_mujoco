@@ -33,10 +33,7 @@ def boundary(monkeypatch):
             src_human,
             tgt_robot,
             actual_human_height,
-            solver,
-            damping,
             verbose,
-            use_velocity_limit,
         ):
             self.model = model
             self.robot_root_name = "base"
@@ -99,27 +96,25 @@ def frame(sequence=1, timestamp=1_000_000_000):
 
 
 def test_pinned_solver_forwards_real_constraints_without_modifying_mink():
-    from bello_mujoco.motion.retarget_limits import RetargetContactLimit
-
     model = mujoco.MjModel.from_xml_string(
-        '<mujoco><worldbody><geom type="plane" size="1 1 .01"/>'
-        '<body name="base" pos="0 0 .05"><freejoint/>'
-        '<geom type="sphere" size=".1"/></body></worldbody></mujoco>'
+        '<mujoco><worldbody><body name="arm"><joint name="hinge" '
+        'axis="0 0 1" range="-45 45"/><geom type="sphere" size=".1"/>'
+        "</body></worldbody></mujoco>"
     )
     original_solve = mink.solve_ik
     backend = module.import_pinned_gmr_retargeter().__new__(
         module.import_pinned_gmr_retargeter()
     )
     backend.configuration = mink.Configuration(model)
-    task = mink.FrameTask("base", "body", position_cost=1, orientation_cost=1)
-    task.set_target_from_configuration(backend.configuration)
+    task = mink.FrameTask("arm", "body", position_cost=0, orientation_cost=1)
+    task.set_target(mink.SE3.from_rotation(mink.SO3.exp(np.array([0.0, 0.0, 2.0]))))
     backend.tasks1 = [task]
-    backend.ik_limits = [RetargetContactLimit(model)]
+    backend.ik_limits = [mink.ConfigurationLimit(model)]
     backend.solver, backend.damping, backend.max_iter = "daqp", 0.5, 0
     backend.use_ik_match_table1, backend.use_ik_match_table2 = True, False
     backend.update_targets = lambda *args: None
     result = backend.retarget({})
-    assert result[2] == pytest.approx(0.101, abs=1e-7)
+    assert 0 < result[0] <= model.jnt_range[0, 1]
     assert mink.solve_ik is original_solve
 
 

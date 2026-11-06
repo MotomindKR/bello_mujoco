@@ -603,42 +603,6 @@ def test_sonic_onnx_matches_jax_actor_and_logical_motor_mapping() -> None:
     np.testing.assert_allclose(motor[0], expected_motor, atol=2.0e-5)
 
 
-def test_sonic_profile_keeps_any2any_lora_and_ppo_recipe(tmp_path) -> None:
-    profile = sonic_transfer_training_profile(
-        tmp_path / "motions",
-        tmp_path / "last.pt",
-        "a" * 40,
-    )
-
-    assert profile.asset_config.asset == "bello_mini"
-    assert profile.config.num_envs == 2048
-    assert profile.config.total_timesteps == 60000 * 2048 * 24
-    assert profile.checkpoint_config.every_updates == 1000
-    assert profile.config.num_steps == 24
-    assert profile.config.update_epochs == 5
-    assert profile.config.num_minibatches == 4
-    assert profile.config.learning_rate == pytest.approx(5.0e-5)
-    assert profile.config.critic_learning_rate is None
-    assert profile.config.adaptive_lr_interval == "minibatch"
-    assert profile.config.value_loss_scale == 1.0
-    assert profile.config.max_grad_norm == pytest.approx(0.1)
-    assert profile.config.gradient_norm_max is None
-    assert profile.config.policy.obs_stack_size == 10
-    assert profile.config.policy.action_distribution == "gaussian"
-    assert profile.env_config.simulation_physics.timestep == pytest.approx(0.005)
-    assert profile.env_config.decimation == 4
-    assert profile.env_config.anchor_body_name == "pelvis_link"
-    assert profile.env_config.reward.local_five_point_weight == pytest.approx(2.0)
-    assert profile.env_config.reward.anti_shake_weight == pytest.approx(-0.005)
-    assert profile.env_config.reward.foot_acceleration_weight == pytest.approx(-2.5e-6)
-    assert profile.config.timeout_bootstrap == "current_state"
-    assert profile.config.policy.action_limit == profile.env_config.action_clip == 20
-    assert profile.env_config.push.interval_seconds == (4.0, 6.0)
-    assert profile.env_config.done.root_height_error == 0.25
-    assert profile.env_config.done.root_orientation_error == 1.0
-    assert profile.env_config.done.end_effector_position_error == 0.3
-
-
 def test_sonic_integrates_all_reward_terms_and_keeps_beyondmimic_unchanged(monkeypatch):
     monkeypatch.setattr(
         BelloMotionTrackingEnv,

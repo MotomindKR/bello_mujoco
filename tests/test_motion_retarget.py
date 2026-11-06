@@ -1,20 +1,16 @@
 from types import SimpleNamespace
 
-import mink
 import mujoco
 import numpy as np
 import pytest
 
 from bello_mujoco.models.target_limits import TargetLimits
-from bello_mujoco.motion.lafan import clip_from_poses, pose_velocities
-from bello_mujoco.motion.retarget_limits import (
-    RetargetContactLimit,
-    RetargetJointLimit,
-    project_contacts,
-)
+from bello_mujoco.motion import retarget
+from bello_mujoco.motion.retarget import clip_from_poses, pose_velocities
 
 
-def test_cached_body_twists_are_at_link_origins_with_offset_centres_of_mass():
+@pytest.fixture
+def model():
     mj_model = mujoco.MjModel.from_xml_string(
         '<mujoco><worldbody><body name="root"><freejoint/>'
         '<geom type="sphere" size=".1" pos=".2 0 0"/>'
@@ -22,7 +18,7 @@ def test_cached_body_twists_are_at_link_origins_with_offset_centres_of_mass():
         '<geom type="sphere" size=".1" pos=".15 0 0"/>'
         "</body></body></worldbody></mujoco>"
     )
-    model = SimpleNamespace(
+    return SimpleNamespace(
         mj_model=mj_model,
         actuator_qpos_indices=np.array([7]),
         actuator_qvel_indices=np.array([6]),
@@ -31,9 +27,13 @@ def test_cached_body_twists_are_at_link_origins_with_offset_centres_of_mass():
         target_limits=TargetLimits(
             np.array([[-2.0, 2.0]]), np.array([[-2.0, 2.0]]), np.eye(1), np.ones(1)
         ),
-        robot=SimpleNamespace(foot_body_names=("arm",)),
+        robot=SimpleNamespace(asset="synthetic", foot_body_names=("arm",)),
         foot_geom_ids=np.array([1]),
     )
+
+
+def test_cached_body_twists_are_at_link_origins_with_offset_centres_of_mass(model):
+    mj_model = model.mj_model
     poses = np.tile(mj_model.qpos0, (3, 1))
     poses[:, 7] = [0, 0.02, 0.04]
     clip, _ = clip_from_poses(model, ("root", "arm"), poses, 50, 0.03)
@@ -45,6 +45,50 @@ def test_cached_body_twists_are_at_link_origins_with_offset_centres_of_mass():
     com = np.zeros(6)
     mujoco.mj_objectVelocity(mj_model, data, mujoco.mjtObj.mjOBJ_BODY, 2, com, 0)
     assert abs(com[4]) > 0.1
+
+
+def test_offline_retarget_preserves_each_gmr_pose_and_source_clock(model, monkeypatch):
+    poses = np.tile(model.mj_model.qpos0, (4, 1))
+    poses[:, 2] = [-0.1, 0.2, 0.5, 0.2]
+    poses[:, 7] = [0.0, 0.1, -0.1, 0.0]
+    calls = []
+
+    def solve(frame):
+        calls.append(frame)
+        return SimpleNamespace(qpos=poses[frame.sequence].copy())
+
+    monkeypatch.setattr(
+        retarget,
+        "GmrRetargeter",
+        lambda *a, **k: SimpleNamespace(
+            profile=SimpleNamespace(source_body_names=("pelvis",)), retarget=solve
+        ),
+    )
+    monkeypatch.setattr(
+        retarget,
+        "motion_task_definition",
+        lambda asset: SimpleNamespace(beyondmimic_tracked_body_names=("root", "arm")),
+    )
+    position = np.arange(12).reshape(4, 3)
+    quaternion = np.tile([1.0, 0.0, 0.0, 0.0], (4, 1))
+    clip, _ = retarget.retarget_gmr(
+        model,
+        {"pelvis": (position, quaternion)},
+        fps=50,
+        human_height_m=1.8,
+        contact_height_m=0.03,
+    )
+    np.testing.assert_allclose(clip.qpos, poses)
+    assert len(calls) == len(poses)
+    assert [frame.source_timestamp_ns for frame in calls] == [
+        1,
+        20000001,
+        40000001,
+        60000001,
+    ]
+    np.testing.assert_array_equal(
+        [frame.transforms["pelvis"][0] for frame in calls], position
+    )
 
 
 def test_reference_velocities_use_central_differences_in_the_current_root_frame():
@@ -78,47 +122,3 @@ def test_reference_velocities_use_central_differences_in_the_current_root_frame(
         np.testing.assert_allclose(
             rotations[frame].apply(velocity[frame, 3:6]), expected, atol=1e-12
         )
-
-
-def test_contact_projection_repairs_penetration_without_target_tasks():
-    model = mujoco.MjModel.from_xml_string(
-        '<mujoco><worldbody><geom type="plane" size="1 1 .01"/>'
-        '<body pos="0 0 .05"><freejoint/><geom type="sphere" size=".1"/>'
-        "</body></worldbody></mujoco>"
-    )
-    limit = RetargetContactLimit(model)
-    backend = SimpleNamespace(
-        model=model,
-        configuration=mink.Configuration(model),
-        solver="daqp",
-        ik_limits=[limit],
-    )
-    pose = project_contacts(backend, limit, iterations=5, tolerance=1e-6)
-    assert pose[2] == pytest.approx(0.101)
-
-
-def test_rate_limit_bounds_total_frame_motion_across_multiple_ik_iterations(tmp_path):
-    source = tmp_path / "source.urdf"
-    source.write_text(
-        '<robot><joint name="joint"><limit velocity="2"/></joint></robot>'
-    )
-    model = mujoco.MjModel.from_xml_string(
-        '<mujoco><worldbody><body><joint name="joint"/><geom size=".1"/></body></worldbody></mujoco>'
-    )
-    description = SimpleNamespace(
-        actuator_qpos_indices=np.array([0]),
-        actuator_qvel_indices=np.array([0]),
-        actuator_joint_names=("joint",),
-        actuator_coordinate_transform=np.eye(1),
-        target_limits=TargetLimits(
-            np.array([[-1.0, 1.0]]), np.array([[-1.0, 1.0]]), np.eye(1), np.ones(1)
-        ),
-        robot=SimpleNamespace(source_urdf_path=lambda root: source),
-    )
-    limit = RetargetJointLimit(description, 0.02)
-    limit.previous = np.array([0.0])
-    configuration = mink.Configuration(model)
-    configuration.update(np.array([0.03]))
-    inequality = limit.compute_qp_inequalities(configuration, 0.005)
-    assert (inequality.G @ np.array([0.01]) <= inequality.h + 1e-12).all()
-    assert not (inequality.G @ np.array([0.02]) <= inequality.h + 1e-12).all()

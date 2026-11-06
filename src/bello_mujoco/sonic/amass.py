@@ -15,22 +15,14 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
-from types import SimpleNamespace
 
-import mujoco
 import numpy as np
-from scipy.spatial.transform import Rotation
 import yaml
 
-from bello_mujoco.envs.rewards import CommandConfig
-from bello_mujoco.hardware.gmr_retarget import (
-    GmrRetargeter,
-    GmrLiveRetargetConfig,
-    HumanTargetFrame,
-)
+from bello_mujoco.motion.retarget import retarget_gmr
+from bello_mujoco.motion.smplx import SmplxMotionReader
 from bello_mujoco.hardware.smplx_contract import (
     SMPLX_BODY_JOINT_NAMES,
-    SMPLX_BODY_JOINT_PARENTS,
 )
 from bello_mujoco.motion.clip import (
     MotionClip,
@@ -38,8 +30,7 @@ from bello_mujoco.motion.clip import (
     motion_tracking_asset_config,
     save_motion_clip,
 )
-from bello_mujoco.robot_tasks import motion_task_definition
-from bello_mujoco.sim import geom_lower_z, load_model
+from bello_mujoco.sim import load_model
 from bello_mujoco.sonic.corpus import (
     MANIFEST,
     file_sha256,
@@ -60,8 +51,6 @@ class AmassPreparationConfig:
     max_seconds: float = 30.0
     max_joint_speed: float = 20.0
     max_penetration_m: float = 0.03
-    max_ground_offset_m: float = 0.15
-    max_floor_clearance_m: float = 0.10
     contact_height_m: float = 0.03
 
     def __post_init__(self):
@@ -145,138 +134,6 @@ def source_subject(subdataset: str, subject: str) -> str:
     return f"{subdataset}/{subject}"
 
 
-def ground_translation(foot_heights: np.ndarray, config: AmassPreparationConfig):
-    lowest = np.min(foot_heights, axis=1)
-    if not np.isfinite(lowest).all():
-        raise ValueError("nonfinite foot geometry")
-    offset = float(np.quantile(lowest, 0.05))
-    if abs(offset) > config.max_ground_offset_m:
-        raise ValueError(f"excessive ground correction: {offset:.4f} m")
-    if float(np.max(lowest - offset)) > config.max_floor_clearance_m:
-        raise ValueError("unsupported airborne/elevated motion")
-    return offset, lowest - offset
-
-
-def resample_rotations(rotvecs: np.ndarray, frame: np.ndarray) -> np.ndarray:
-    rotations = (
-        Rotation.from_rotvec(rotvecs.reshape(-1, 3))
-        .as_quat()
-        .reshape(rotvecs.shape[:-1] + (4,))
-    )
-    lower = np.floor(frame).astype(int)
-    upper = np.minimum(lower + 1, len(rotvecs) - 1)
-    alpha = (frame - lower)[:, None, None]
-    a, b = rotations[lower], rotations[upper]
-    dot = np.sum(a * b, axis=-1, keepdims=True)
-    b = np.where(dot < 0, -b, b)
-    angle = np.arccos(np.clip(np.abs(dot), 0, 1))
-    sine = np.sin(angle)
-    result = np.where(
-        sine > 1e-7,
-        (np.sin((1 - alpha) * angle) * a + np.sin(alpha * angle) * b)
-        / np.maximum(sine, 1e-7),
-        (1 - alpha) * a + alpha * b,
-    )
-    return result / np.linalg.norm(result, axis=-1, keepdims=True)
-
-
-def skeleton_forward(
-    rest: np.ndarray, local_quaternions: np.ndarray, translation: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """SMPL-X shape-dependent joint FK, before skinning; AMASS is already Z-up."""
-    frames, joints = local_quaternions.shape[:2]
-    positions = np.empty((frames, joints, 3))
-    rotations = np.empty((frames, joints, 3, 3))
-    local = (
-        Rotation.from_quat(local_quaternions.reshape(-1, 4))
-        .as_matrix()
-        .reshape(frames, joints, 3, 3)
-    )
-    for joint, parent in enumerate(SMPLX_BODY_JOINT_PARENTS):
-        if parent == -1:
-            positions[:, joint] = rest[joint] + translation
-            rotations[:, joint] = local[:, joint]
-        else:
-            positions[:, joint] = positions[:, parent] + np.einsum(
-                "fij,j->fi", rotations[:, parent], rest[joint] - rest[parent]
-            )
-            rotations[:, joint] = rotations[:, parent] @ local[:, joint]
-    quaternions = (
-        Rotation.from_matrix(rotations.reshape(-1, 3, 3))
-        .as_quat(scalar_first=True)
-        .reshape(frames, joints, 4)
-    )
-    return positions, quaternions
-
-
-class SmplxMotionReader:
-    """Shape-dependent native SMPL-X FK with a shared per-gender model cache."""
-
-    def __init__(self, model_directory: Path):
-        self.model_directory = model_directory
-        self.body_models = {}
-
-    def read(self, path: Path, output_fps: float):
-        if not math.isfinite(output_fps) or output_fps <= 0:
-            raise ValueError("SMPL-X output frame rate must be positive and finite")
-        with np.load(path, allow_pickle=False) as data:
-            if str(data["surface_model_type"]) != "smplx":
-                raise ValueError("requires AMASS SMPL-X, not SMPL/SMPL-H")
-            gender = str(data["gender"])
-            fps = float(data["mocap_frame_rate"])
-            root = np.asarray(data["root_orient"])
-            pose = np.asarray(data["pose_body"]).reshape(len(root), 21, 3)
-            trans = np.asarray(data["trans"])
-            betas = np.asarray(data["betas"]).reshape(-1)
-        if (
-            gender not in {"male", "female", "neutral"}
-            or not math.isfinite(fps)
-            or fps <= 0
-        ):
-            raise ValueError("invalid AMASS gender or frame rate")
-        if (
-            root.shape != (len(root), 3)
-            or trans.shape != root.shape
-            or len(root) < 2
-            or not 1 <= len(betas) <= 16
-        ):
-            raise ValueError(
-                "invalid native SMPL-X pose, translation or beta dimensions"
-            )
-        if not all(np.isfinite(v).all() for v in (root, pose, trans, betas)):
-            raise ValueError("nonfinite AMASS motion")
-        if gender not in self.body_models:
-            with np.load(
-                self.model_directory / f"SMPLX_{gender.upper()}.npz", allow_pickle=False
-            ) as body:
-                regressor = np.asarray(body["J_regressor"])[:22]
-                parents = np.asarray(body["kintree_table"])[0, :22].astype(int)
-                parents[0] = -1
-                if not np.array_equal(parents, SMPLX_BODY_JOINT_PARENTS):
-                    raise ValueError("unexpected SMPL-X hierarchy")
-                self.body_models[gender] = (
-                    regressor @ body["v_template"],
-                    np.einsum("jv,vck->jck", regressor, body["shapedirs"][:, :, :16]),
-                )
-        rest, directions = self.body_models[gender]
-        rest = rest + np.einsum("jck,k->jc", directions[:, :, : len(betas)], betas)
-        frame = (
-            np.arange(int(np.floor((len(root) - 1) / fps * output_fps)) + 1)
-            * fps
-            / output_fps
-        )
-        local = resample_rotations(np.concatenate((root[:, None], pose), axis=1), frame)
-        translation = np.stack(
-            [
-                np.interp(frame, np.arange(len(trans)), trans[:, axis])
-                for axis in range(3)
-            ],
-            axis=-1,
-        )
-        positions, orientations = skeleton_forward(rest, local, translation)
-        return positions, orientations, float(1.66 + 0.1 * betas[0])
-
-
 class AmassRetargeter:
     def __init__(self, model_directory: Path, config: AmassPreparationConfig):
         self.config = config
@@ -286,129 +143,39 @@ class AmassRetargeter:
             terrain=FLAT_TERRAIN,
             load_mjx=False,
         )
-        self.task = motion_task_definition("bello_mini")
-        self.env = SimpleNamespace(model=self.model, command_config=CommandConfig())
-
-    def human_motion(self, path: Path):
-        return self.motion_reader.read(path, self.config.fps)
 
     def retarget(self, source: Path, output: Path) -> dict:
         if output.exists():
             raise FileExistsError(output)
-        positions, orientations, height = self.human_motion(source)
-        retargeter = GmrRetargeter(
-            self.env, GmrLiveRetargetConfig(human_height_m=height)
+        positions, orientations, height = self.motion_reader.read(
+            source, self.config.fps
         )
-        qpos = []
-        names = retargeter.profile.source_body_names
-        indices = [SMPLX_BODY_JOINT_NAMES.index(name) for name in names]
-        for frame in range(len(positions)):
-            human = HumanTargetFrame(
-                transforms={
-                    name: (positions[frame, index], orientations[frame, index])
-                    for name, index in zip(names, indices, strict=True)
-                },
-                sequence=frame,
-                source_timestamp_ns=1 + round(frame * 1e9 / self.config.fps),
-                source_age_ms=0.0,
-                received_at=0.0,
-            )
-            qpos.append(retargeter.retarget(human).qpos)
-        qpos = np.asarray(qpos)
-        model = self.model.mj_model
-        logical = qpos[:, self.model.actuator_qpos_indices]
-        motors = logical @ self.model.actuator_coordinate_transform.T
-        constrained = motors @ self.model.target_limits.matrix.T
-        bounds = self.model.target_limits.bounds
-        if np.any(constrained < bounds[:, 0] - 1e-4) or np.any(
-            constrained > bounds[:, 1] + 1e-4
-        ):
-            raise ValueError("retarget violates canonical motor/joint limits")
-        data = mujoco.MjData(model)
-        foot_heights = []
-        for position in qpos:
-            data.qpos[:] = position
-            mujoco.mj_kinematics(model, data)
-            foot_heights.append(
-                [geom_lower_z(model, data, int(g)) for g in self.model.foot_geom_ids]
-            )
-        # A single clip-wide translation preserves all motion derivatives and
-        # flight phases. Do not pull the root to the floor independently per frame.
-        ground_offset, clearance = ground_translation(
-            np.asarray(foot_heights), self.config
+        targets = {
+            name: (positions[:, index], orientations[:, index])
+            for index, name in enumerate(SMPLX_BODY_JOINT_NAMES)
+        }
+        clip, report = retarget_gmr(
+            self.model,
+            targets,
+            fps=self.config.fps,
+            human_height_m=height,
+            contact_height_m=self.config.contact_height_m,
         )
-        qpos[:, 2] -= ground_offset
-        qvel = np.zeros((len(qpos), model.nv))
-        for frame in range(len(qpos) - 1):
-            mujoco.mj_differentiatePos(
-                model, qvel[frame], 1 / self.config.fps, qpos[frame], qpos[frame + 1]
-            )
-        qvel[-1] = qvel[-2]
-        peak_speed = float(np.max(np.abs(qvel[:, self.model.actuator_qvel_indices])))
+        peak_speed = report["peak_joint_speed_rad_s"]
         if peak_speed > self.config.max_joint_speed:
             raise ValueError(
                 f"retarget joint speed exceeds threshold: {peak_speed:.3f} rad/s"
             )
-        body_ids = [
-            model.body(name).id for name in self.task.beyondmimic_tracked_body_names
-        ]
-        foot_ids = [model.body(name).id for name in self.model.robot.foot_body_names]
-        positions, quaternions, linear, angular, contacts = [], [], [], [], []
-        worst_penetration = 0.0
-        foot_geoms = [
-            [int(g) for g in self.model.foot_geom_ids if model.geom_bodyid[g] == body]
-            for body in foot_ids
-        ]
-        for position, velocity in zip(qpos, qvel, strict=True):
-            data.qpos[:], data.qvel[:] = position, velocity
-            mujoco.mj_forward(model, data)
-            positions.append(data.xpos[body_ids].copy())
-            quaternions.append(data.xquat[body_ids].copy())
-            body_velocity = np.empty((len(body_ids), 6))
-            for index, body in enumerate(body_ids):
-                mujoco.mj_objectVelocity(
-                    model, data, mujoco.mjtObj.mjOBJ_BODY, body, body_velocity[index], 0
-                )
-            linear.append(body_velocity[:, 3:].copy())
-            angular.append(body_velocity[:, :3].copy())
-            touching = np.asarray(
-                [
-                    min(geom_lower_z(model, data, g) for g in geoms)
-                    <= self.config.contact_height_m
-                    for geoms in foot_geoms
-                ],
-                dtype=np.float32,
-            )
-            for contact in data.contact:
-                worst_penetration = min(worst_penetration, float(contact.dist))
-            contacts.append(touching)
+        worst_penetration = min(
+            report["worst_floor_penetration_m"], report["worst_self_penetration_m"]
+        )
         if worst_penetration < -self.config.max_penetration_m:
             raise ValueError(
                 f"retarget penetration exceeds threshold: {worst_penetration:.4f} m"
             )
-        clip = MotionClip(
-            fps=float(self.config.fps),
-            joint_names=self.model.actuator_joint_names,
-            body_names=self.task.beyondmimic_tracked_body_names,
-            qpos=qpos.astype(np.float32),
-            qvel=qvel.astype(np.float32),
-            body_pos=np.asarray(positions, dtype=np.float32),
-            body_quat=np.asarray(quaternions, dtype=np.float32),
-            body_lin_vel=np.asarray(linear, dtype=np.float32),
-            body_ang_vel=np.asarray(angular, dtype=np.float32),
-            foot_contacts=np.asarray(contacts, dtype=np.float32),
-        )
         output.parent.mkdir(parents=True, exist_ok=True)
         publish_motion_clip(output, clip, self.model)
-        return {
-            "frames": clip.num_frames,
-            "seconds": clip.duration,
-            "peak_joint_speed": peak_speed,
-            "worst_penetration_m": worst_penetration,
-            "ground_offset_m": ground_offset,
-            "max_floor_clearance_m": float(np.max(clearance)),
-            "contact_fraction": np.mean(contacts, axis=0).tolist(),
-        }
+        return report
 
 
 def publish_motion_clip(output: Path, clip: MotionClip, model):
