@@ -137,21 +137,25 @@ def test_track_checkpoint_artifact_logs_directory(monkeypatch, tmp_path) -> None
 
 
 @pytest.mark.parametrize("upload_fails", [False, True])
-def test_supermimic_only_reports_published_checkpoint_after_upload(
+def test_supermimic_upload_runs_in_background_and_drains_on_close(
     monkeypatch, tmp_path, capsys, upload_fails
 ):
+    from threading import Event
     from bello_mujoco.supermimic import checkpoint
     from bello_mujoco.training import supermimic
 
+    entered, release = Event(), Event()
     events = []
 
     class Upload:
         qualified_name = "entity/project/checkpoint:v0"
 
         def wait(self):
+            entered.set()
+            assert release.wait(timeout=5)
             events.append("upload_wait")
             if upload_fails:
-                raise RuntimeError("upload failed")
+                raise RuntimeError("network error")
 
     monkeypatch.setattr(
         checkpoint, "save_checkpoint", lambda *a, **k: events.append("local_save")
@@ -166,23 +170,62 @@ def test_supermimic_only_reports_published_checkpoint_after_upload(
             wandb_artifact_type="checkpoint",
         )
     )
-    arguments = (tmp_path / "checkpoint", SimpleNamespace(update=7), config)
-    if upload_fails:
-        with pytest.raises(RuntimeError, match="upload failed"):
-            supermimic.publish_checkpoint(
-                *arguments, git_commit="commit", dataset_digest="digest", run=object()
-            )
-    else:
+    publisher = supermimic.CheckpointPublisher(object(), config.checkpoint_config)
+    try:
         supermimic.publish_checkpoint(
-            *arguments, git_commit="commit", dataset_digest="digest", run=object()
+            tmp_path / "checkpoint",
+            SimpleNamespace(update=7),
+            config,
+            git_commit="commit",
+            dataset_digest="digest",
+            publisher=publisher,
         )
-    output = capsys.readouterr().out
+        assert entered.wait(timeout=2)
+        publisher.check()
+        assert events == ["local_save"]
+        output = capsys.readouterr().out
+        assert '"checkpoint_local_saved"' in output
+        assert '"checkpoint_uploaded"' not in output
+    finally:
+        release.set()
+        if upload_fails:
+            with pytest.raises(RuntimeError, match="checkpoint upload failed") as error:
+                publisher.close()
+            assert str(error.value.__cause__) == "network error"
+        else:
+            publisher.close()
     assert events == ["local_save", "upload_wait"]
-    assert '"checkpoint_local_saved"' in output
-    assert ('"checkpoint_saved"' in output) is not upload_fails
+    output = capsys.readouterr().out
     assert (
         '"checkpoint_uploaded": "entity/project/checkpoint:v0"' in output
     ) is not upload_fails
+
+
+def test_checkpoint_uploads_are_serial_and_queue_without_waiting(monkeypatch, tmp_path):
+    from threading import Event
+    from bello_mujoco.training import supermimic
+    from bello_mujoco.training.checkpoint import CheckpointConfig
+
+    entered, release = Event(), Event()
+    paths = []
+
+    def upload(run, path, **kwargs):
+        paths.append(path)
+        entered.set()
+        assert release.wait(timeout=5)
+        return SimpleNamespace(wait=lambda: None, qualified_name=str(path))
+
+    monkeypatch.setattr(supermimic, "track_checkpoint_artifact", upload)
+    publisher = supermimic.CheckpointPublisher(object(), CheckpointConfig())
+    try:
+        publisher.submit(tmp_path / "first", 1)
+        assert entered.wait(timeout=2)
+        publisher.submit(tmp_path / "second", 2)
+        assert paths == [tmp_path / "first"]
+    finally:
+        release.set()
+        publisher.close()
+    assert paths == [tmp_path / "first", tmp_path / "second"]
 
 
 def test_track_video_logs_encoded_file_without_fps(monkeypatch, tmp_path) -> None:

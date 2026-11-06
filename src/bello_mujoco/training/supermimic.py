@@ -1,5 +1,6 @@
 """Alternate Mini simulation, learned dynamics fitting, and analytic policy updates."""
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 import json
 import math
@@ -219,7 +220,61 @@ def training_metric_snapshot(metrics, motor_names, *, include_per_motor):
     return result
 
 
-def publish_checkpoint(path, runner, run_config, *, git_commit, dataset_digest, run):
+class CheckpointPublisher:
+    """Upload immutable local checkpoints serially without holding device state."""
+
+    def __init__(self, run, config):
+        self.run = run
+        self.config = config
+        self.pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="checkpoint-upload"
+        )
+        self.pending = {}
+
+    def submit(self, path, update):
+        self.check()
+        if self.run is not None and self.config.upload_wandb_artifact:
+            future = self.pool.submit(self._upload, path, update)
+            self.pending[future] = path
+
+    def _upload(self, path, update):
+        started = perf_counter()
+        artifact = track_checkpoint_artifact(
+            self.run,
+            path,
+            name=self.config.wandb_artifact_name or path.parent.name,
+            artifact_type=self.config.wandb_artifact_type,
+        )
+        artifact.wait()
+        print(
+            json.dumps(
+                {
+                    "checkpoint_uploaded": artifact.qualified_name,
+                    "checkpoint_path": str(path),
+                    "update": update,
+                    "timing/checkpoint_publication_seconds": perf_counter() - started,
+                }
+            ),
+            flush=True,
+        )
+
+    def check(self):
+        for future, path in tuple(self.pending.items()):
+            if future.done():
+                del self.pending[future]
+                try:
+                    future.result()
+                except Exception as error:
+                    raise RuntimeError(f"checkpoint upload failed: {path}") from error
+
+    def close(self):
+        self.pool.shutdown(wait=True)
+        self.check()
+
+
+def publish_checkpoint(
+    path, runner, run_config, *, git_commit, dataset_digest, publisher
+):
     from bello_mujoco.supermimic.checkpoint import save_checkpoint
 
     started = perf_counter()
@@ -232,33 +287,16 @@ def publish_checkpoint(path, runner, run_config, *, git_commit, dataset_digest, 
     )
     saved = perf_counter()
     print(
-        json.dumps({"checkpoint_local_saved": str(path), "update": int(runner.update)}),
-        flush=True,
-    )
-    checkpoint = run_config.checkpoint_config
-    uploaded = None
-    if checkpoint.upload_wandb_artifact:
-        artifact = track_checkpoint_artifact(
-            run,
-            path,
-            name=checkpoint.wandb_artifact_name or path.parent.name,
-            artifact_type=checkpoint.wandb_artifact_type,
-        )
-        if artifact is not None:
-            artifact.wait()
-            uploaded = artifact.qualified_name
-    print(
         json.dumps(
             {
-                "checkpoint_saved": str(path),
-                "checkpoint_uploaded": uploaded,
+                "checkpoint_local_saved": str(path),
                 "update": int(runner.update),
                 "timing/checkpoint_seconds": saved - started,
-                "timing/checkpoint_publication_seconds": perf_counter() - saved,
             }
         ),
         flush=True,
     )
+    publisher.submit(path, int(runner.update))
 
 
 def run_training(run_config):
@@ -294,9 +332,11 @@ def run_training(run_config):
         )
     run = None
     evaluator = None
+    publisher = None
     succeeded = False
     try:
         run = create_wandb_run(run_config.wandb_config)
+        publisher = CheckpointPublisher(run, run_config.checkpoint_config)
         if run_config.dataset.artifact is not None:
             verified = verify_artifact(
                 directory,
@@ -417,6 +457,7 @@ def run_training(run_config):
                 context={"phase": "train"},
             )
             if log_interval:
+                publisher.check()
                 if evaluator is not None:
                     evaluator.check()
                 print(
@@ -443,7 +484,7 @@ def run_training(run_config):
                     run_config,
                     git_commit=commit,
                     dataset_digest=digest,
-                    run=run,
+                    publisher=publisher,
                 )
                 if evaluator is not None:
                     evaluator.submit(path)
@@ -459,7 +500,7 @@ def run_training(run_config):
                 run_config,
                 git_commit=commit,
                 dataset_digest=digest,
-                run=run,
+                publisher=publisher,
             )
             if evaluator is not None:
                 evaluator.submit(final)
@@ -472,4 +513,11 @@ def run_training(run_config):
             succeeded = False
             raise
         finally:
-            close_run(run, exit_code=0 if succeeded else 1)
+            try:
+                if publisher is not None:
+                    publisher.close()
+            except BaseException:
+                succeeded = False
+                raise
+            finally:
+                close_run(run, exit_code=0 if succeeded else 1)

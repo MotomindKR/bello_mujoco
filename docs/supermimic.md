@@ -97,6 +97,9 @@ optimizers, normalizers, RNG, collector and sampler state. Resume requires the
 same learning contract, corpus, exact clean source commit and dependencies.
 Operational wall-time/checkpoint-evaluation limits may change. Use a historical
 checkout for historical policies; checkpoint migration is not supported.
+Local checkpoint saves complete before training continues. Artifact registration
+and uploads run serially in a background worker; failures stop the run, and
+shutdown drains pending uploads before closing W&B.
 
 ## Runtime contract
 
