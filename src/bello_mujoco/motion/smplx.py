@@ -1,5 +1,6 @@
 """Read native SMPL-X motion into named human joint transforms."""
 
+from fractions import Fraction
 import math
 from pathlib import Path
 
@@ -99,10 +100,15 @@ class SmplxMotionReader:
                 )
         rest, directions = self.body_models[gender]
         rest = rest + np.einsum("jck,k->jc", directions[:, :, : len(betas)], betas)
-        frame = (
-            np.arange(int(np.floor((len(root) - 1) / fps * output_fps)) + 1)
-            * fps
-            / output_fps
+        rate_ratio = Fraction(str(output_fps)) / Fraction(str(fps))
+        last_output_frame = (
+            (len(root) - 1) * rate_ratio.numerator // rate_ratio.denominator
+        )
+        frame = np.minimum(
+            np.arange(last_output_frame + 1)
+            * rate_ratio.denominator
+            / rate_ratio.numerator,
+            len(root) - 1,
         )
         local = resample_rotations(np.concatenate((root[:, None], pose), axis=1), frame)
         translation = np.stack(

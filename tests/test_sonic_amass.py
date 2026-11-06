@@ -48,7 +48,8 @@ def test_amass_shaped_joint_fk_preserves_root_and_hierarchy():
     )
 
 
-def test_native_smplx_reader_resamples_the_source_clock_and_shape(tmp_path):
+@pytest.fixture
+def native_smplx_model(tmp_path):
     count = len(SMPLX_BODY_JOINT_PARENTS)
     rest = np.zeros((count, 3))
     rest[:, 0] = np.arange(count) * 0.01
@@ -62,6 +63,13 @@ def test_native_smplx_reader_resamples_the_source_clock_and_shape(tmp_path):
         shapedirs=directions,
         kintree_table=np.stack((SMPLX_BODY_JOINT_PARENTS, np.arange(count))),
     )
+    return rest
+
+
+def test_native_smplx_reader_resamples_the_source_clock_and_shape(
+    tmp_path, native_smplx_model
+):
+    rest = native_smplx_model
     path = tmp_path / "motion.npz"
     np.savez(
         path,
@@ -82,6 +90,31 @@ def test_native_smplx_reader_resamples_the_source_clock_and_shape(tmp_path):
     np.testing.assert_allclose(
         Rotation.from_quat(quaternions[1, 0], scalar_first=True).as_rotvec(),
         [0, 0, np.pi / 4],
+    )
+
+
+@pytest.mark.parametrize("fps", [50.0, 59.94])
+def test_native_smplx_identity_resampling_keeps_the_last_frame(
+    tmp_path, native_smplx_model, fps
+):
+    frames = 13065
+    translation = np.zeros((frames, 3))
+    translation[:, 0] = np.linspace(0, 2, frames)
+    path = tmp_path / "motion.npz"
+    np.savez(
+        path,
+        surface_model_type="smplx",
+        gender="neutral",
+        mocap_frame_rate=fps,
+        root_orient=np.zeros((frames, 3)),
+        pose_body=np.zeros((frames, 63)),
+        trans=translation,
+        betas=np.zeros(1),
+    )
+    positions, _, _ = SmplxMotionReader(tmp_path).read(path, fps)
+    assert len(positions) == frames
+    np.testing.assert_allclose(
+        positions[-1, 0], native_smplx_model[0] + translation[-1]
     )
 
 
