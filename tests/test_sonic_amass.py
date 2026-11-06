@@ -93,9 +93,12 @@ def test_native_smplx_reader_resamples_the_source_clock_and_shape(
     )
 
 
-@pytest.mark.parametrize("fps", [50.0, 59.94])
-def test_native_smplx_identity_resampling_keeps_the_last_frame(
-    tmp_path, native_smplx_model, fps
+@pytest.mark.parametrize(
+    ("fps", "output_fps", "expected_frames"),
+    [(50.0, 50.0, 13065), (59.94, 59.94, 13065), (29.97002997002997, 50.0, 21796)],
+)
+def test_native_smplx_resampling_preserves_long_clip_clocks(
+    tmp_path, native_smplx_model, fps, output_fps, expected_frames
 ):
     frames = 13065
     translation = np.zeros((frames, 3))
@@ -111,10 +114,13 @@ def test_native_smplx_identity_resampling_keeps_the_last_frame(
         trans=translation,
         betas=np.zeros(1),
     )
-    positions, _, _ = SmplxMotionReader(tmp_path).read(path, fps)
-    assert len(positions) == frames
+    positions, _, _ = SmplxMotionReader(tmp_path).read(path, output_fps)
+    assert len(positions) == expected_frames
+    last_translation = np.array(
+        [2 * (expected_frames - 1) / output_fps * fps / (frames - 1), 0, 0]
+    )
     np.testing.assert_allclose(
-        positions[-1, 0], native_smplx_model[0] + translation[-1]
+        positions[-1, 0], native_smplx_model[0] + last_translation
     )
 
 

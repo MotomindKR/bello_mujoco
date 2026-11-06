@@ -105,7 +105,7 @@ class SmplxMotionReader:
             (len(root) - 1) * rate_ratio.numerator // rate_ratio.denominator
         )
         frame = np.minimum(
-            np.arange(last_output_frame + 1)
+            np.arange(last_output_frame + 1, dtype=np.float64)
             * rate_ratio.denominator
             / rate_ratio.numerator,
             len(root) - 1,
