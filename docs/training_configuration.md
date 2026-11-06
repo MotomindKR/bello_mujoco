@@ -70,8 +70,9 @@ LAFAN recipes inherit the base and specify only overrides.
 - `config.max_episode_steps` caps collection episodes without shortening source
   references or full-clip evaluation. `max_training_seconds` bounds a run between
   completed updates and saves its final state.
-- `networks.matmul_precision` selects network matmuls. Physical state, kinematics,
-  rewards, master parameters and optimizer state remain float32.
+- `networks.matmul_precision` selects network matmuls; the base recipe uses BF16.
+  Physical state, kinematics, rewards, master parameters and optimizer state
+  remain float32.
 - `config.replay_steps` counts vector steps. `config.max_replay_bytes` bounds replay
   and `dataset.max_array_bytes` bounds reference arrays; neither covers total VRAM.
 - `checkpoint_evaluation` owns isolated CPU window checks and their resource

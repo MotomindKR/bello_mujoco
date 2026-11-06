@@ -89,7 +89,7 @@ networks:
   actor_widths: [2048, 1024, 512, 256]
   critic_widths: [256, 128]
   latent_size: 32
-  matmul_precision: float32
+  matmul_precision: bfloat16
 sampling:
   uniform_weight: 0.5
   difficult_weight: 0.4

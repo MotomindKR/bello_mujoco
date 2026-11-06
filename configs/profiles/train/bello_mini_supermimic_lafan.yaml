@@ -18,8 +18,6 @@ environment:
   randomization:
     joint_angle_offset_range: [0.0, 0.0]
     friction_range: [0.3, 1.2]
-networks:
-  matmul_precision: bfloat16
 checkpoint_config:
   name: bello_mini_supermimic_lafan_seed${config.seed}
   every_updates: 2000
