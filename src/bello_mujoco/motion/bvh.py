@@ -227,6 +227,25 @@ def lafan1_targets(motion: BvhMotion):
     return _named_targets(motion, _LAFAN_TARGETS, "LAFAN1")
 
 
+def lafan1_body_targets(motion: BvhMotion):
+    """Include the remaining body landmarks needed to animate a human rig."""
+    ankle = (
+        Rotation.from_euler("z", 0.37117860986509)
+        * Rotation.from_euler("y", math.pi / 2)
+    ).as_quat(scalar_first=True)
+    table = _LAFAN_TARGETS + (
+        ("spine1", "Spine", _HALF_ROOT),
+        ("spine2", "Spine1", _HALF_ROOT),
+        ("neck", "Neck", _HALF_ROOT),
+        ("head", "Head", _HALF_ROOT),
+        ("left_collar", "LeftShoulder", (_SQRT_HALF, _SQRT_HALF, 0.0, 0.0)),
+        ("right_collar", "RightShoulder", (0.0, 0.0, _SQRT_HALF, -_SQRT_HALF)),
+        ("left_ankle", "LeftFoot", ankle),
+        ("right_ankle", "RightFoot", ankle),
+    )
+    return _named_targets(motion, table, "LAFAN1")
+
+
 _SOMA_TARGETS = (
     ("pelvis", "Hips"),
     ("spine3", "Chest"),

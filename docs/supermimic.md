@@ -29,15 +29,24 @@ then prepare the sequences selected in
 [prepare_lafan.yaml](../configs/commands/prepare_lafan.yaml):
 
 ```bash
-uv run bello-prepare-lafan source_directory=/data/lafan1/bvh \
-  output_directory=outputs/lafan-mini
+uv run --group soma bello-prepare-lafan source_directory=/data/lafan1/bvh \
+  output_directory=outputs/lafan-mini \
+  soma.asset_directory=/data/soma-assets \
+  smplx_model_directory=/data/body-models/SMPLX
 ```
 
-For native SMPL-X input, select `human_source=smplx`, `smplx_directory`, and
-`smplx_model_directory`. Motion files must be named `SEQUENCE.npz`, use the native
-SMPL-X schema consumed by [the reader](../src/bello_mujoco/motion/smplx.py), and
-cover the same clock as their BVHs. This command consumes exports; it does not
-run SOMA-X fitting.
+The default path fits the LAFAN body landmarks to a SOMA rig with fixed source
+bone lengths, uses pinned [SOMA-X](https://github.com/NVlabs/SOMA-X) pose transfer
+to native neutral SMPL-X, then runs stock Mini GMR. `human/` retains both human
+representations. Fitting batches preserve the full source clock; no windows are
+discarded. The YAML owns batch/fit settings and the 40 training / 9 evaluation
+split. Licensed SMPL-X models and SOMA assets must already exist locally.
+
+To consume existing native exports, select `human_source=smplx` and
+`smplx_directory`; files must be named `SEQUENCE.npz` and cover their BVHs' clocks.
+Both native routes use the reader's shape-dependent GMR height estimate. Direct
+BVH retargeting remains explicit with `human_source=bvh` and `human_height_m`,
+without SOMA assets or a body-model directory.
 
 ### BONES-SEED
 

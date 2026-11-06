@@ -7,7 +7,7 @@ The YAML files linked below are the authoritative field/default reference.
 | Command | Configuration | Purpose |
 | --- | --- | --- |
 | `bello-train` | [train.yaml](../configs/commands/train.yaml) | PPO tasks or Mini SuperMimic model-based learning |
-| `bello-prepare-lafan` | [prepare_lafan.yaml](../configs/commands/prepare_lafan.yaml) | BVH or clock-matched native SMPL-X sequences through stock Mini GMR |
+| `bello-prepare-lafan` | [prepare_lafan.yaml](../configs/commands/prepare_lafan.yaml) | LAFAN through SOMA-X, native SMPL-X and stock Mini GMR; explicit BVH/native input modes |
 | `bello-prepare-bones` | [prepare_bones.yaml](../configs/commands/prepare_bones.yaml) | Family-disjoint BONES SOMA selection, stock Mini GMR, and retained LAFAN splits |
 | `bello-audit-reference` | [audit_reference.yaml](../configs/commands/audit_reference.yaml) | Read-only reference torque, contact, and acceleration diagnostics |
 | `bello-audit-world-model` | [audit_world_model.yaml](../configs/commands/audit_world_model.yaml) | Contact-stratified autoregressive model errors against native rollouts |

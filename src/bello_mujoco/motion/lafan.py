@@ -16,6 +16,7 @@ from bello_mujoco.hardware.smplx_contract import SMPLX_BODY_JOINT_NAMES
 from bello_mujoco.motion.bvh import lafan1_targets, read_bvh
 from bello_mujoco.motion.retarget import retarget_gmr
 from bello_mujoco.motion.smplx import SmplxMotionReader
+from bello_mujoco.motion.soma_lafan import SomaLafanConfig, SomaLafanConverter
 from bello_mujoco.motion.clip import (
     motion_tracking_asset_config,
     save_motion_clip,
@@ -32,27 +33,48 @@ class LafanPreparationConfig:
     training_sequences: tuple[str, ...]
     evaluation_sequences: tuple[str, ...]
     fps: int
-    human_height_m: float
+    human_height_m: float | None
     workers: int
-    human_source: Literal["bvh", "smplx"]
+    human_source: Literal["bvh", "smplx", "soma"]
     smplx_directory: Path | None
     smplx_model_directory: Path | None
+    soma: SomaLafanConfig
     contact_height_m: float
 
     def __post_init__(self):
         for name in ("fps", "workers"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
-        for name in ("human_height_m", "contact_height_m"):
-            if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
-                raise ValueError(f"{name} must be positive and finite")
-        if self.human_source not in ("bvh", "smplx"):
-            raise ValueError("LAFAN human_source must be bvh or smplx")
+        if not math.isfinite(self.contact_height_m) or self.contact_height_m <= 0:
+            raise ValueError("contact_height_m must be positive and finite")
+        if self.human_source not in ("bvh", "smplx", "soma"):
+            raise ValueError("LAFAN human_source must be bvh, smplx or soma")
+        if self.human_source == "bvh":
+            if (
+                self.human_height_m is None
+                or not math.isfinite(self.human_height_m)
+                or self.human_height_m <= 0
+            ):
+                raise ValueError("BVH sources require a positive finite human_height_m")
+        elif self.human_height_m is not None:
+            raise ValueError(
+                "native SMPL-X sources determine height from shape; human_height_m is unused"
+            )
         paths = (self.smplx_directory, self.smplx_model_directory)
         if self.human_source == "smplx" and any(path is None for path in paths):
             raise ValueError("SMPL-X sources require motion and body-model directories")
         if self.human_source == "bvh" and any(path is not None for path in paths):
             raise ValueError("SMPL-X directories are unused with a BVH human source")
+        if self.human_source == "soma" and (
+            self.smplx_directory is not None
+            or self.smplx_model_directory is None
+            or self.soma.asset_directory is None
+        ):
+            raise ValueError(
+                "SOMA requires body-model/assets directories and generates its own exports"
+            )
+        if self.human_source != "soma" and self.soma.asset_directory is not None:
+            raise ValueError("SOMA assets are unused for this human_source")
         sequences = self.training_sequences + self.evaluation_sequences
         if not self.training_sequences or not self.evaluation_sequences:
             raise ValueError(
@@ -71,11 +93,19 @@ def retarget_sequence(config: LafanPreparationConfig, name: str):
     path = config.source_directory / f"{name}.bvh"
     source_hash = file_sha256(path)
     motion = read_bvh(path).resample(config.fps)
-    targets = lafan1_targets(motion)
     provenance = {"human_source": config.human_source}
-    if config.human_source == "smplx":
-        native_path = config.smplx_directory / f"{name}.npz"
-        positions, quaternions, _ = SmplxMotionReader(
+    human_height = config.human_height_m
+    if config.human_source in ("smplx", "soma"):
+        if config.human_source == "soma":
+            native_path = config.output_directory / "human" / f"{name}.npz"
+            provenance.update(
+                SomaLafanConverter(config.soma, config.smplx_model_directory).convert(
+                    motion, native_path
+                )
+            )
+        else:
+            native_path = config.smplx_directory / f"{name}.npz"
+        positions, quaternions, human_height = SmplxMotionReader(
             config.smplx_model_directory
         ).read(native_path, config.fps)
         if len(positions) != len(motion.position):
@@ -94,6 +124,9 @@ def retarget_sequence(config: LafanPreparationConfig, name: str):
                 config.smplx_model_directory / f"SMPLX_{gender.upper()}.npz"
             ),
         )
+    else:
+        targets = lafan1_targets(motion)
+    provenance["human_height_m"] = human_height
     model = load_model(
         motion_tracking_asset_config(asset="bello_mini"),
         terrain=FLAT_TERRAIN,
@@ -103,7 +136,7 @@ def retarget_sequence(config: LafanPreparationConfig, name: str):
         model,
         targets,
         fps=config.fps,
-        human_height_m=config.human_height_m,
+        human_height_m=human_height,
         contact_height_m=config.contact_height_m,
     )
     destination = config.output_directory / "corpus" / f"{name}.npz"
@@ -145,6 +178,8 @@ def prepare_lafan(config: LafanPreparationConfig):
     ):
         value = getattr(config, key)
         settings[key] = str(value.resolve()) if value is not None else None
+    if config.soma.asset_directory is not None:
+        settings["soma"]["asset_directory"] = str(config.soma.asset_directory.resolve())
     (config.output_directory / "settings.json").write_text(
         json.dumps(settings, indent=2) + "\n"
     )

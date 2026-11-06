@@ -68,6 +68,9 @@ reference-validation = [
   "huggingface-hub>=0.35,<2",
   "torch>=2.7,<3",
 ]
+soma = [
+    "py-soma-x",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -88,6 +91,9 @@ required-environments = [
   "sys_platform == 'linux' and platform_machine == 'aarch64'",
   "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
+
+[tool.uv.sources]
+py-soma-x = { git = "https://github.com/NVlabs/SOMA-X.git", rev = "56a3d957a549c66425b500fddf7f3183bc6fbdff" }
 
 [tool.pytest.ini_options]
 addopts = "-m 'not integration'"

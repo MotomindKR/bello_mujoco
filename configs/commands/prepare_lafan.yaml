@@ -53,11 +53,19 @@ evaluation_sequences:
 - multipleActions1_subject3
 - multipleActions1_subject4
 fps: 50
-human_height_m: 1.75
+human_height_m: null  # Required only for direct BVH input; native sources use shape.
 workers: 4
-human_source: bvh
+human_source: soma
 smplx_directory: null
 smplx_model_directory: null
+soma:
+  asset_directory: null
+  device: cpu
+  cpu_threads: 2
+  batch_size: 128
+  fit_iterations: 200
+  fit_learning_rate: 0.025
+  pose_regularization: 0.0001
 contact_height_m: 0.03
 hydra:
   job:
