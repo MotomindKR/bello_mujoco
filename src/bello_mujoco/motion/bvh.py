@@ -92,7 +92,11 @@ class BvhMotion:
 
 def read_bvh(path: Path) -> BvhMotion:
     """Read the Y-up, centimetre BVH convention used by LAFAN1 and SOMA."""
-    text = Path(path).read_text()
+    return parse_bvh(Path(path).read_text())
+
+
+def parse_bvh(text: str) -> BvhMotion:
+    """Parse BVH text, including archive members without extracting a raw copy."""
     sections = re.split(r"(?m)^\s*MOTION\s*$", text, maxsplit=1)
     if len(sections) != 2:
         raise ValueError("BVH requires a MOTION section")

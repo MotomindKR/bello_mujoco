@@ -16,7 +16,7 @@ from bello_mujoco.hardware.smplx_contract import SMPLX_BODY_JOINT_NAMES
 from bello_mujoco.motion.bvh import lafan1_targets, read_bvh
 from bello_mujoco.motion.retarget import retarget_gmr
 from bello_mujoco.motion.smplx import SmplxMotionReader
-from bello_mujoco.motion.soma_lafan import SomaLafanConfig, SomaLafanConverter
+from bello_mujoco.motion.soma import SomaLafanConfig, SomaLafanConverter
 from bello_mujoco.motion.clip import (
     motion_tracking_asset_config,
     save_motion_clip,

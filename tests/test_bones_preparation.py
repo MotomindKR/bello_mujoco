@@ -7,13 +7,12 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from bello_mujoco.motion.bones import (
-    BUCKETS,
-    bucket,
-    extract_sources,
+    archive_sources,
+    clip_directory,
+    completed_sequences,
     family,
     safe_member,
     select_bones,
-    validate_quarantine,
 )
 from bello_mujoco.motion.bvh import BvhMotion, soma_targets
 
@@ -25,11 +24,6 @@ def metadata_row(name, **overrides):
         "move_duration_frames": "1201",
         "content_name": name,
         "is_mirror": "False",
-        "package": "Communication",
-        "category": "Gestures",
-        "content_body_position": "standing",
-        "content_type_of_movement": "gesture",
-        "content_props": "0",
         **overrides,
     }
 
@@ -98,94 +92,127 @@ def test_source_paths_cannot_escape_the_archive(name):
         safe_member(name)
 
 
-@pytest.mark.parametrize(
-    "position", ["sitting on floor", "lying on the floor", "crawling", "kneeling"]
-)
-def test_floor_actions_remain_candidates(position):
-    assert bucket(metadata_row("move", content_body_position=position)) == "ground"
-
-
-def test_skill_labels_do_not_match_substrings_or_treat_all_gaming_as_sport():
-    assert bucket(metadata_row("dance_hips_sites", package="Dances")) == "dance"
-    assert bucket(metadata_row("looking_around", package="Gaming")) == "other"
-    assert bucket(metadata_row("punch_right", package="Gaming")) == "sport"
-
-
-def test_mirrors_and_different_takes_share_the_content_family():
-    assert family(metadata_row("take_001__A1", content_name="dance_M")) == family(
-        metadata_row("take_002__A2", content_name="dance")
-    )
-
-
-def test_selection_is_balanced_deterministic_and_family_disjoint():
-    rows = []
-    categories = {
-        "ground": {"content_body_position": "sitting on floor"},
-        "jump": {"content_type_of_movement": "jumping"},
-        "dance": {"package": "Dances"},
-        "sport": {"package": "Sport"},
-        "locomotion": {"package": "Locomotion"},
-        "other": {},
-    }
-    for kind, fields in categories.items():
-        for index in range(200):
-            for mirror in (False, True):
-                name = f"{kind}_{index}" + ("_M" if mirror else "")
-                rows.append(metadata_row(name, is_mirror=str(mirror), **fields))
-    rows.append(metadata_row("box", content_props="50cm box"))
-    report = select_bones(rows, 0.04, 0.02, 0)
-    assert report == select_bones(list(reversed(rows)), 0.04, 0.02, 0)
-    selected = report["clips"]
-    groups = {
-        s: {e["source_sequence"] for e in selected if e["split"] == s}
-        for s in ("train", "evaluation")
-    }
-    assert not groups["train"] & groups["evaluation"]
-    assert {e["bucket"] for e in selected} == set(BUCKETS)
-    assert report["estimated_hours"]["train"] >= 0.04
-    assert report["estimated_hours"]["evaluation"] >= 0.02
-    assert report["excluded"] == [
-        {"sequence": "box", "reason": "unsupported_support", "term": "box"}
+def test_full_selection_retains_hard_floor_and_acrobatic_motions_and_records_exclusions():
+    rows = [
+        metadata_row(n)
+        for n in (
+            "crawl",
+            "handstand",
+            "cartwheel",
+            "stair_walk",
+            "jump_off_50cm",
+            "dance",
+            "dance_M",
+        )
     ]
+    report = select_bones(rows, ("stair", "jump off 50cm"))
+    assert [e["sequence"] for e in report["clips"]] == [
+        "crawl",
+        "handstand",
+        "cartwheel",
+        "dance",
+        "dance_M",
+    ]
+    assert [e["sequence"] for e in report["excluded"]] == [
+        "stair_walk",
+        "jump_off_50cm",
+    ]
+    assert report["estimated_hours"] == pytest.approx(50 / 3600)
+    assert family(rows[-1]) == family(rows[-2])
+    with pytest.raises(ValueError, match="unique"):
+        select_bones(rows + rows[:1], ("chair",))
 
 
-def test_archive_extraction_copies_only_requested_regular_sources(tmp_path):
-    archive = tmp_path / "sources.tar.gz"
-    with tarfile.open(archive, "w:gz") as stream:
+def test_archive_streams_only_requested_regular_sources(tmp_path):
+    path = tmp_path / "sources.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
         for name in ("selected", "unused"):
             info = tarfile.TarInfo(f"soma_uniform/bvh/date/{name}.bvh")
             data = name.encode()
             info.size = len(data)
-            stream.addfile(info, io.BytesIO(data))
-    output = tmp_path / "output"
+            archive.addfile(info, io.BytesIO(data))
     entries = [
         {"sequence": "selected", "source_path": "soma_uniform/bvh/date/selected.bvh"}
     ]
-    extract_sources(archive, output, entries)
-    assert [p.name for p in output.iterdir()] == ["selected.bvh"]
-    assert (output / "selected.bvh").read_bytes() == b"selected"
+    assert list(archive_sources(path, entries)) == [(entries[0], b"selected")]
     with pytest.raises(ValueError, match="archive omits"):
-        extract_sources(
-            archive, output, [{"sequence": "missing", "source_path": "missing.bvh"}]
+        list(
+            archive_sources(
+                path, [{"sequence": "missing", "source_path": "missing.bvh"}]
+            )
+        )
+    with pytest.raises(ValueError, match="duplicate"):
+        list(archive_sources(path, entries * 2))
+
+
+def test_archive_rejects_selected_symlinks(tmp_path):
+    path = tmp_path / "sources.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        info = tarfile.TarInfo("source.bvh")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        archive.addfile(info)
+    with pytest.raises(ValueError, match="regular file"):
+        list(
+            archive_sources(path, [{"sequence": "source", "source_path": "source.bvh"}])
         )
 
 
-def test_quarantine_is_explicit_and_limited_by_both_clip_count_and_duration():
-    entries = [
-        {"sequence": f"{split}/{i}", "split": split, "estimated_seconds": 10.0}
-        for split in ("train", "evaluation")
-        for i in range(100)
-    ]
-    rejected = [{**entries[0], "failure_kind": "retargeting"}]
-    assert validate_quarantine(entries, rejected, 0.01)["train"]["quarantined"] == 1
-    with pytest.raises(ValueError, match="quarantine exceeds"):
-        validate_quarantine(entries, rejected, 0.0)
-    with pytest.raises(ValueError, match="unexpected preparation failure"):
-        validate_quarantine(
-            entries, [{**rejected[0], "failure_kind": "unexpected"}], 0.01
-        )
-    entries[0]["estimated_seconds"] = 1000.0
-    with pytest.raises(ValueError, match="duration="):
-        validate_quarantine(
-            entries, [{**entries[0], "failure_kind": "retargeting"}], 0.01
-        )
+def test_resume_only_discovers_atomically_completed_directories(tmp_path):
+    complete = clip_directory(tmp_path, "recording")
+    complete.mkdir(parents=True)
+    (complete.parent / ".unfinished").mkdir()
+    (complete.parent / "not-a-directory").touch()
+    assert completed_sequences(tmp_path) == {"recording"}
+
+
+@pytest.mark.parametrize("failure", [None, "physical", "unexpected"])
+def test_cache_commits_complete_receipt_or_leaves_no_resumable_partial(
+    tmp_path, monkeypatch, failure
+):
+    import json
+    from types import SimpleNamespace
+    from bello_mujoco.motion import bones
+    from bello_mujoco.motion.retarget import RetargetValidationError
+
+    config = SimpleNamespace(output_directory=tmp_path, fps=50, contact_height_m=0.03)
+    motion = SimpleNamespace(position=np.zeros((3, 1, 3)))
+    motion.resample = lambda fps: motion
+    monkeypatch.setattr(bones, "parse_bvh", lambda text: motion)
+
+    def convert(motion, path):
+        path.write_bytes(b"native")
+        return {"soma_sha256": "soma"}
+
+    converter = SimpleNamespace(
+        convert=convert,
+        reader=SimpleNamespace(
+            read=lambda *args: (np.zeros((3, 22, 3)), np.zeros((3, 22, 4)), 1.66)
+        ),
+    )
+    monkeypatch.setattr(bones, "_worker", (config, converter, object()))
+
+    def retarget(*args, **kwargs):
+        if failure == "physical":
+            raise RetargetValidationError("limits")
+        if failure == "unexpected":
+            raise RuntimeError("broken converter")
+        return object(), {"frames": 3}
+
+    monkeypatch.setattr(bones, "retarget_gmr", retarget)
+    monkeypatch.setattr(
+        bones, "save_motion_clip", lambda stream, clip: stream.write(b"mini")
+    )
+    entry = {"sequence": "take", "source_frames": 3}
+    if failure == "unexpected":
+        with pytest.raises(RuntimeError, match="broken converter"):
+            bones._prepare_job(entry, b"source")
+        assert completed_sequences(tmp_path) == set()
+        return
+    report = bones._prepare_job(entry, b"source")
+    directory = clip_directory(tmp_path, "take")
+    assert completed_sequences(tmp_path) == {"take"}
+    assert json.loads((directory / "preparation.json").read_text()) == report
+    assert report["status"] == ("rejected" if failure else "prepared")
+    assert (directory / "mini.npz").exists() is (failure is None)
+    assert list(directory.parent.iterdir()) == [directory]

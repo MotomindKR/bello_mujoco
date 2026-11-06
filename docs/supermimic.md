@@ -50,21 +50,30 @@ without SOMA assets or a body-model directory.
 
 ### BONES-SEED
 
-Prepare SOMA Uniform BVHs while retaining an existing verified LAFAN corpus:
+Cache the full SOMA Uniform archive through SOMA-X, native neutral SMPL-X, and
+stock Mini GMR:
 
 ```bash
-uv run bello-prepare-bones source_directory=/data/bones-seed \
-  output_directory=outputs/bones-mini \
-  lafan_corpus=outputs/lafan-mini/corpus
+uv run --group soma bello-prepare-bones source_directory=/data/bones-seed \
+  output_directory=/data/derived/bones-mini \
+  soma.asset_directory=/data/soma-assets \
+  smplx_model_directory=/data/body-models/SMPLX
 ```
 
-[prepare_bones.yaml](../configs/commands/prepare_bones.yaml) owns selection budgets
-and workers. The current command selects a duration-budgeted pilot, not the
-paper's full filtered dataset. Selection balances skills and keeps motion families
-split-disjoint. SOMA bind rotations are removed before GMR. `settings.json`,
-`selection.json`, and `preparation.jsonl` support resumption with identical inputs.
-An explicit `max_retarget_failure_fraction` permits bounded IK/position failures;
-all exclusions are recorded. Other failures prevent publication.
+[prepare_bones.yaml](../configs/commands/prepare_bones.yaml) owns name exclusions
+and resource limits. There is no duration cap or skill quota. Its exclusions use
+the examples in paper Appendix E, whose complete keyword list is not published
+there; this does not reproduce the authors' exact 129,514-motion subset.
+Robot-specific feasibility screening and training/evaluation corpus assembly
+follow this cache step.
+
+The command streams the compressed archive without extracting raw BVH copies.
+Two CPU workers reuse their body and robot models. Each atomically completed
+`clips/SHARD/SEQUENCE/` retains the SOMA pose, native `human.npz`, Mini `mini.npz`,
+and a checksum/diagnostics receipt. Physical IK or position-limit failures retain
+human exports with an explicit rejection receipt; other errors fail the job.
+Resuming with the same clean source commit, settings, metadata, bind rig and body
+assets skips completed recordings. Source datasets remain read-only.
 
 For AMASS, use the [AMASS preparation workflow](sonic_transfer.md#amass-research-corpus).
 

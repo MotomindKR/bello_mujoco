@@ -1,16 +1,18 @@
 source_directory: null
 output_directory: null
-lafan_corpus: null
 metadata_file: metadata/seed_metadata_v004.csv
 bind_file: soma_shapes/soma_base_rig/soma_base_skel_minimal.bvh
-training_hours: 7.0
-evaluation_hours: 0.5
-seed: 0
+# Appendix E gives examples, not the complete author filter. Record every exclusion.
+excluded_name_terms: [stair, ladder, box, chair, sit, climb, jump off 50cm, look over fence]
 fps: 50
-human_height_m: 1.8
-workers: 8
+workers: 2
 contact_height_m: 0.03
-max_retarget_failure_fraction: 0.0
+smplx_model_directory: null
+soma:
+  asset_directory: null
+  device: cpu
+  cpu_threads: 2
+  batch_size: 64
 hydra:
   job:
     chdir: false
