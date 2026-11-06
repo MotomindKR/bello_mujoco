@@ -246,26 +246,22 @@ class CheckpointPublisher:
             artifact_type=self.config.wandb_artifact_type,
         )
         artifact.wait()
-        print(
-            json.dumps(
-                {
-                    "checkpoint_uploaded": artifact.qualified_name,
-                    "checkpoint_path": str(path),
-                    "update": update,
-                    "timing/checkpoint_publication_seconds": perf_counter() - started,
-                }
-            ),
-            flush=True,
-        )
+        return {
+            "checkpoint_uploaded": artifact.qualified_name,
+            "checkpoint_path": str(path),
+            "update": update,
+            "timing/checkpoint_publication_seconds": perf_counter() - started,
+        }
 
     def check(self):
         for future, path in tuple(self.pending.items()):
             if future.done():
                 del self.pending[future]
                 try:
-                    future.result()
+                    report = future.result()
                 except Exception as error:
                     raise RuntimeError(f"checkpoint upload failed: {path}") from error
+                print(json.dumps(report), flush=True)
 
     def close(self):
         self.pool.shutdown(wait=True)
