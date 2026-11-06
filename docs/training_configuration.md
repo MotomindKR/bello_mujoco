@@ -59,76 +59,26 @@ in [SONIC transfer](sonic_transfer.md).
 
 ## SuperMimic configuration
 
-The `bello_mini_supermimic_lafan` recipe uses whole LAFAN sequences. Its
-`config.max_episode_steps` caps collection episodes, while reference arrays and
-native full-clip evaluation retain the complete recording. A null cap preserves
-the reference-end timeout behavior. `networks.matmul_precision` explicitly
-selects `float32`, `tensorfloat32`, or `bfloat16` matrix multiplication for the
-networks. LAFAN uses BF16 network operands/activations with FP32 accumulation,
-master parameters, normalization statistics, and optimizer state. Physical state,
-kinematics, rewards, and returns stay FP32. ONNX export preserves the network's
-BF16 rounding using CPU-supported casts around FP32 matrix multiplication.
-The LAFAN comparison uses the full 4,096-environment, ten-by-2,048 dynamics,
-and 4,096-imagination batches. Its transition target covers exactly 14,000
-update cycles after collection warmup with no wall-time cutoff. It disables
-command delay and feedback filtering/latency for reference comparison, inherited
-from the common SuperMimic recipe. Command delay is rejected by raw-action
-dynamics; hardware filtering/delay commissioning is a separate workflow. The
-return sampler uses alpha 0.2 and a 0.001 historical-difficulty EMA.
-The common SuperMimic recipe sets `asset_config.self_collisions: false`, matching
-the unofficial reproduction. Robot-ground contacts remain enabled. Other tasks
-retain the model's default self-collision setting.
-SuperMimic allocates a shared contact pool of 128 contacts per environment and
-1,024 constraint rows per environment. Collection reports usage and rejects an
-update if either physics capacity overflows.
-See [LAFAN preparation and training](supermimic.md) for corpus constraints and
-the separate training/held-out evaluation reports.
+The [base recipe](../configs/profiles/train/bello_mini_supermimic.yaml) owns
+`config`, `environment`, `observations`, `tracking`, `networks`, `sampling`,
+`dataset`, `warp`, checkpoint settings and W&B settings. It decodes into
+`SuperMimicTrainingRunConfig`, separately from PPO. The smoke, pilot, AMASS and
+LAFAN recipes inherit the base and specify only overrides.
 
-The [full profile](../configs/profiles/train/bello_mini_supermimic.yaml) owns
-`config` (learning/replay), `environment` (control, feedback, and randomization),
-`observations`, `tracking`, `networks`, `sampling`, `dataset`, `warp`,
-`checkpoint_config`, `checkpoint_evaluation`, and `wandb_config`. These decode into
-`SuperMimicTrainingRunConfig`; there is no PPO config in this task. The profile
-inherits only the Mini motion asset configuration, preserving its tuned gains,
-physical joint constraints and actuator torque limits. Simulation PD setpoints
-are unprojected, matching the reference control path; the hardware command
-limiter remains separate. The
-[smoke profile](../configs/profiles/train/bello_mini_supermimic_smoke.yaml)
-overrides model widths and learning sizes for a compiled-loop check.
-The [pilot profile](../configs/profiles/train/bello_mini_supermimic_pilot.yaml)
-retains the full networks and 32-step imagination, while reducing environment,
-replay, and optimizer batch sizes for initial single-GPU learning measurements.
-`checkpoint_evaluation` owns isolated CPU window checks: `enabled`, `cpu_cores`,
-`finish_timeout_seconds`, and explicit `windows` containing `clip`, `start_frame`,
-and `max_steps`. The LAFAN profile enables four fixed dynamic training windows;
-the common profile disables checks. These operational settings may change on
-resume. Reports contain tracking and contact-stratified model errors, with a
-separate W&B update clock; see [automatic checkpoint checks](supermimic.md#automatic-checkpoint-checks).
-The [AMASS profile](../configs/profiles/train/bello_mini_supermimic_amass.yaml)
-uses 1,024 environments with the full networks. Its `max_training_seconds` stops
-training after 75 minutes, including setup and compilation, and saves the full
-final state even when the transition target is unfinished. The deadline is
-checked between complete optimization iterations. This operational budget may
-change on resume; the learning contract remains fixed. An unset budget runs to
-`config.total_timesteps`.
+- `environment.control` owns physics timing and collection action clipping.
+  Simulation targets are unprojected PD setpoints; hardware limiting is separate.
+- `config.max_episode_steps` caps collection episodes without shortening source
+  references or full-clip evaluation. `max_training_seconds` bounds a run between
+  completed updates and saves its final state.
+- `networks.matmul_precision` selects network matmuls. Physical state, kinematics,
+  rewards, master parameters and optimizer state remain float32.
+- `config.replay_steps` counts vector steps. `config.max_replay_bytes` bounds replay
+  and `dataset.max_array_bytes` bounds reference arrays; neither covers total VRAM.
+- `checkpoint_evaluation` owns isolated CPU window checks and their resource
+  limits; see [automatic checks](supermimic.md#automatic-checkpoint-checks).
 
-Control timing has one owner, `environment.control`: physics timestep,
-decimation, command delay, and collection exploration clipping. Raw actions
-are retained in imagination, deterministic evaluation and actor export. The
-world model consumes invariant physical state, raw action and physical context;
-previous motor targets and sensor latency are excluded from its inputs.
-Observation delay is sampled in control steps; command delay must be zero.
-Supported physical randomization is friction, calibration, and torso
-COM, all explicitly supplied to the world model and privileged critic. Unknown
-dynamics randomization and unobserved pushes fail setup.
-
-`config.replay_steps` counts vector steps, so storage scales with `num_envs`.
-`config.max_replay_bytes` checks the actual transition footprint before replay
-allocation; `dataset.max_array_bytes` separately limits uncompressed reference
-arrays. Neither estimates all training VRAM. Warmup must hold a model window,
-and the training budget must permit actor updates after dynamics warmup.
-The complete observation, reward, normalization, sampling, resume, and export
-semantics are documented in [SuperMimic](supermimic.md).
+See the [workflow](supermimic.md) for data preparation, runtime semantics,
+evaluation, export and remote training. YAML is the parameter/default reference.
 
 ```bash
 uv run bello-train --cfg job
