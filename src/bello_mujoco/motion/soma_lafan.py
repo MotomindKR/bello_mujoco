@@ -16,6 +16,15 @@ from bello_mujoco.motion.smplx import SmplxMotionReader
 from bello_mujoco.sonic.corpus import file_sha256
 
 
+SOMA_ASSET_FILES = (
+    "SOMA_neutral.npz",
+    "SOMA_template_rig.usda",
+    "SOMA_procedural_transforms.json",
+    "SMPLX/SOMA_wrap.obj",
+    "SMPLX/base_body.obj",
+)
+
+
 _BODY_JOINTS = {
     "Hips": "pelvis",
     "Spine1": "spine1",
@@ -98,15 +107,9 @@ class SomaLafanConverter:
 
         if config.asset_directory is None:
             raise ValueError("SOMA conversion requires an explicit asset_directory")
-        paths = [
-            config.asset_directory / name
-            for name in (
-                "SOMA_neutral.npz",
-                "SOMA_template_rig.usda",
-                "SMPLX/SOMA_wrap.obj",
-                "SMPLX/base_body.obj",
-            )
-        ] + [model_directory / "SMPLX_NEUTRAL.npz"]
+        paths = [config.asset_directory / name for name in SOMA_ASSET_FILES] + [
+            model_directory / "SMPLX_NEUTRAL.npz"
+        ]
         for path in paths:
             if not path.is_file():
                 raise FileNotFoundError(path)
