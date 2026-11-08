@@ -17,7 +17,8 @@ LAFAN, BONES and AMASS use the pinned stock
 [Mini GMR profile](../deps/GMR/general_motion_retargeting/ik_configs/smplx_to_bello_mini.json).
 Offline IK retains the stock profile and adds floor inequalities from the
 runtime collision surfaces. Penetrating poses receive bounded convergence passes,
-reported as `floor_ik_extra_passes`; failure to converge rejects the sequence.
+reported as `floor_ik_extra_passes`, followed by a nonnegative root lift for any
+remaining penetration, reported as `max_floor_projection_m`.
 Airborne targets retain their height. A clip-wide height shift is insufficient:
 a low hand pose can otherwise lift every walking frame above the floor.
 Shared reconstruction

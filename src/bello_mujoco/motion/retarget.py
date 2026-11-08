@@ -204,22 +204,22 @@ class _OfflineGmrRetargeter(GmrRetargeter):
         self.floor = FloorLimit(env.model.mj_model)
         self.retargeter.ik_limits.append(self.floor)
         self.extra_floor_passes = 0
+        self.max_floor_projection_m = 0.0
 
     def _solve(self, targets):
         pose = super()._solve(targets)
         for attempt in range(self.retargeter.max_iter + 1):
             depth = self.floor.penetration(pose)
             if depth >= -self.floor.model.opt.tolerance:
-                if depth < 0:
-                    pose[self.floor.root_z] -= depth
-                    self.retargeter.configuration.update(pose)
-                return pose
+                break
             if attempt < self.retargeter.max_iter:
                 pose = super()._solve(targets)
                 self.extra_floor_passes += 1
-        raise RetargetValidationError(
-            f"floor-constrained IK did not converge: penetration={depth:.6g} m"
-        )
+        lift = max(0.0, -depth)
+        self.max_floor_projection_m = max(self.max_floor_projection_m, lift)
+        pose[self.floor.root_z] += lift
+        self.retargeter.configuration.update(pose)
+        return pose
 
 
 def retarget_gmr(model, targets: Mapping, *, fps, human_height_m, contact_height_m):
@@ -256,4 +256,8 @@ def retarget_gmr(model, targets: Mapping, *, fps, human_height_m, contact_height
         fps,
         contact_height_m,
     )
-    return clip, {**report, "floor_ik_extra_passes": wrapper.extra_floor_passes}
+    return clip, {
+        **report,
+        "floor_ik_extra_passes": wrapper.extra_floor_passes,
+        "max_floor_projection_m": wrapper.max_floor_projection_m,
+    }

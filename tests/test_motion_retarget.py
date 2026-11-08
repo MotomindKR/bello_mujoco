@@ -68,6 +68,7 @@ def test_offline_retarget_preserves_feasible_solver_poses_and_source_clock(
             profile=SimpleNamespace(source_body_names=("pelvis",)),
             retarget=solve,
             extra_floor_passes=0,
+            max_floor_projection_m=0.0,
         ),
     )
     monkeypatch.setattr(
@@ -118,9 +119,7 @@ def test_floor_ik_prevents_penetration_without_grounding_airborne_targets(model,
             )
         )
         for _ in range(8):
-            velocity = mink.solve_ik(
-                configuration, [task], dt, "daqp", limits=[floor]
-            )
+            velocity = mink.solve_ik(configuration, [task], dt, "daqp", limits=[floor])
             configuration.integrate_inplace(velocity, dt)
         if height < 0:
             assert configuration.q[2] > height
