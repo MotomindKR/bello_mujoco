@@ -414,6 +414,25 @@ def test_collection_stops_if_every_environment_is_invalid(toy_runner, monkeypatc
     assert int(result.learner.input_norm.count) == 0
 
 
+def test_nonfinite_policy_output_is_rejected_without_sending_nan_to_physics(toy_runner):
+    env, cfg, runner = toy_runner
+    actor = eqx.tree_at(
+        lambda a: a.decoder.layers[-1].bias,
+        runner.learner.actor,
+        jnp.full(env.action_size, jnp.nan),
+    )
+    runner = replace(runner, learner=replace(runner.learner, actor=actor))
+    collect, _, _ = compile_updates(env, cfg)
+    result, metrics = collect(runner, env.reference_bank)
+    assert int(metrics["collection/rejected"]) == cfg.num_envs
+    assert int(metrics["diagnostic/nonfinite/transition"]) == cfg.num_envs
+    assert int(metrics["diagnostic/nonfinite/actuator_force"]) == 0
+    assert int(metrics["diagnostic/nonfinite/feedback"]) == 0
+    assert not np.any(result.replay.valid)
+    with pytest.raises(RuntimeError, match="invalid/collection"):
+        require_valid_metrics(metrics)
+
+
 def test_compiled_collect_fit_imagine_loop_preserves_terminal_successors(toy_runner):
     env, config, runner = toy_runner
     collect, fit, improve = compile_updates(env, config)

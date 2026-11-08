@@ -169,7 +169,10 @@ def collect_step(runner, env, config):
         env.action_clip,
     )
     after, observation, reward, done, info = env.step_batch(
-        before, action, physics_key, reset=False
+        before,
+        jnp.where(finite_environments(action)[:, None], action, 0.0),
+        physics_key,
+        reset=False,
     )
     done, info = collection_termination(after.episode_length, done, info, config)
     transition = make_transition(

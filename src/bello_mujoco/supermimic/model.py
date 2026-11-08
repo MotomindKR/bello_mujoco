@@ -308,11 +308,19 @@ class Critic(eqx.Module):
 def world_model_loss(model, window, input_norm, output_norm, *, error_floor):
     tr = window.transitions
     initial = jax.tree.map(lambda x: x[:, 0], tr.state)
-    controls = (tr.action, tr.context)
+    controls = (tr.action, tr.context, window.mask)
     controls = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), controls)
 
     def step(state, inputs):
-        prediction = model.step(state, *inputs, input_norm, output_norm)
+        action, context, valid = inputs
+        prediction = model.step(state, action, context, input_norm, output_norm)
+        prediction = jax.tree.map(
+            lambda predicted, previous: jnp.where(
+                valid[:, None] > 0, predicted, previous
+            ),
+            prediction,
+            state,
+        )
         return prediction, prediction
 
     _, predicted = jax.lax.scan(
@@ -321,5 +329,6 @@ def world_model_loss(model, window, input_norm, output_norm, *, error_floor):
     predicted = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), predicted)
     scale = jnp.maximum(output_norm.std(1e-4), error_floor)
     error = state_delta(tr.successor, predicted) / scale
+    error = jnp.where(window.mask[..., None] > 0, error, 0.0)
     squared = jnp.mean(error**2, axis=-1)
     return (squared * window.mask).sum() / window.mask.shape[0]

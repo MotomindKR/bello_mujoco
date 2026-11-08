@@ -92,6 +92,28 @@ def test_rejected_replay_rows_never_train_windows_or_start_imagination():
     )
 
 
+def test_masked_world_model_tail_cannot_overflow_loss_or_gradients():
+    class UnstableModel(eqx.Module):
+        factor: jax.Array
+
+        def step(self, state, action, context, input_norm, output_norm):
+            return replace(
+                state, joint_position=self.factor * (state.joint_position + 1)
+            )
+
+    samples = jax.tree.map(lambda x: jnp.repeat(x[:, None], 8, axis=1), transition(0))
+    window = ReplayWindow(samples, jnp.tile(jnp.array([1.0] + [0.0] * 7), (2, 1)))
+    loss, gradient = eqx.filter_jit(eqx.filter_value_and_grad(world_model_loss))(
+        UnstableModel(jnp.array(1e4)),
+        window,
+        Moments.empty(1),
+        Moments.empty(14),
+        error_floor=jnp.ones(14),
+    )
+    assert float(loss) == pytest.approx(1e8 / 14, rel=1e-6)
+    assert float(gradient.factor) == pytest.approx(2e4 / 14, rel=1e-6)
+
+
 def test_replay_wrap_and_history_do_not_cross_episodes_or_evicted_records():
     replay = ReplayBuffer.empty(transition(0), 5)
     for time in range(9):
