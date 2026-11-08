@@ -213,6 +213,6 @@ class Kinematics:
             )
 
         result = jax.lax.fori_loop(
-            1, count, body_step, (position, quaternion, linear, angular)
+            1, count, body_step, (position, quaternion, linear, angular), unroll=True
         )
         return BodyState(*(value[self.tracked_indices] for value in result))

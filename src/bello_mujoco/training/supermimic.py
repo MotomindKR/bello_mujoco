@@ -191,14 +191,33 @@ def compile_updates(env, config):
     return jax.jit(collect), jax.jit(fit_model), jax.jit(improve)
 
 
-def require_valid_metrics(metrics):
-    for name, value in jax.device_get(metrics).items():
+def require_valid_metrics(metrics, *, clip_names=()):
+    metrics = jax.device_get(metrics)
+    diagnostics = {
+        name: np.asarray(value).item()
+        for name, value in metrics.items()
+        if name.startswith("diagnostic/")
+    }
+    clip = int(diagnostics.get("diagnostic/clip", -1))
+    if 0 <= clip < len(clip_names):
+        diagnostics["clip_name"] = clip_names[clip]
+    if metrics.get("collection/rejected", 0) > 0:
+        print(
+            json.dumps(
+                {
+                    "collection_rejection": diagnostics,
+                    "count": int(metrics["collection/rejected"]),
+                }
+            ),
+            flush=True,
+        )
+    for name, value in metrics.items():
         values = np.asarray(value)
         if not np.isfinite(values).all() or (
             name.startswith("invalid/") and np.any(values > 0)
         ):
             raise RuntimeError(
-                f"SuperMimic rejected {name}={values}; no further optimization was run"
+                f"SuperMimic rejected {name}={values}; diagnostics={diagnostics}; no further optimization was run"
             )
 
 
@@ -391,7 +410,7 @@ def run_training(run_config):
         vector_steps = int(jax.device_get(runner.collector.vector_steps))
         while vector_steps < cfg.warmup_steps:
             runner, metrics = collect(runner, bank)
-            require_valid_metrics(metrics)
+            require_valid_metrics(metrics, clip_names=bank.clip_names)
             vector_steps += 1
         while vector_steps < remaining:
             update = int(jax.device_get(runner.update))
@@ -416,7 +435,7 @@ def run_training(run_config):
             collection_started = perf_counter()
             for _ in range(min(after - before, remaining - vector_steps)):
                 runner, metrics = collect(runner, bank)
-                require_valid_metrics(metrics)
+                require_valid_metrics(metrics, clip_names=bank.clip_names)
                 vector_steps += 1
             collection_seconds = perf_counter() - collection_started
             model_started = perf_counter()
@@ -501,6 +520,16 @@ def run_training(run_config):
             if evaluator is not None:
                 evaluator.submit(final)
         succeeded = True
+    except BaseException as error:
+        failure = {"type": type(error).__name__, "message": str(error)}
+        run_config.checkpoint_config.directory.mkdir(parents=True, exist_ok=True)
+        (run_config.checkpoint_config.directory / "failure.json").write_text(
+            json.dumps(failure, indent=2) + "\n"
+        )
+        if run is not None:
+            run.summary["failure"] = failure
+        print(json.dumps({"training_failure": failure}), flush=True)
+        raise
     finally:
         try:
             if evaluator is not None:

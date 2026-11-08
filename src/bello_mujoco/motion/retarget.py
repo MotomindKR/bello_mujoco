@@ -119,8 +119,48 @@ def clip_from_poses(model, body_names, qpos, fps, contact_height_m):
     }
 
 
+def align_poses_to_ground(model, qpos):
+    """GMR dataset height alignment, measured at collision surfaces, once per clip."""
+    qpos = np.asarray(qpos, dtype=np.float64).copy()
+    if qpos.ndim != 2 or qpos.shape[1] != model.nq or not np.isfinite(qpos).all():
+        raise RetargetValidationError("ground alignment requires finite complete poses")
+    free = np.flatnonzero(model.jnt_type == mujoco.mjtJoint.mjJNT_FREE)
+    planes = np.flatnonzero(model.geom_type == mujoco.mjtGeom.mjGEOM_PLANE)
+    if len(free) != 1 or len(planes) != 1:
+        raise RetargetValidationError(
+            "ground alignment requires one free root and one plane"
+        )
+    root = model.jnt_bodyid[free[0]]
+    plane = planes[0]
+    collision = (
+        (model.geom_contype & model.geom_conaffinity[plane])
+        | (model.geom_conaffinity & model.geom_contype[plane])
+    ) != 0
+    geoms = np.flatnonzero(collision & (model.body_rootid[model.geom_bodyid] == root))
+    if not len(geoms):
+        raise RetargetValidationError(
+            "ground alignment requires robot floor collisions"
+        )
+    data = mujoco.MjData(model)
+    lowest = np.inf
+    for pose in qpos:
+        data.qpos[:] = pose
+        mujoco.mj_kinematics(model, data)
+        if not np.allclose(data.geom_xmat[plane].reshape(3, 3)[:, 2], [0, 0, 1]):
+            raise RetargetValidationError(
+                "ground alignment requires a horizontal plane"
+            )
+        lowest = min(
+            lowest,
+            *(geom_lower_z(model, data, g) - data.geom_xpos[plane, 2] for g in geoms),
+        )
+    offset = -float(lowest)
+    qpos[:, model.jnt_qposadr[free[0]] + 2] += offset
+    return qpos, offset
+
+
 def retarget_gmr(model, targets: Mapping, *, fps, human_height_m, contact_height_m):
-    """Run the pinned profile once per source frame, preserving its output poses."""
+    """Run the pinned profile, then apply GMR's clip-wide ground alignment."""
     wrapper = GmrRetargeter(
         SimpleNamespace(model=model, command_config=CommandConfig()),
         GmrLiveRetargetConfig(human_height_m=human_height_m),
@@ -146,10 +186,12 @@ def retarget_gmr(model, targets: Mapping, *, fps, human_height_m, contact_height
             received_at=0.0,
         )
         poses.append(wrapper.retarget(human).qpos)
-    return clip_from_poses(
+    poses, offset = align_poses_to_ground(model.mj_model, poses)
+    clip, report = clip_from_poses(
         model,
         motion_task_definition(model.robot.asset).beyondmimic_tracked_body_names,
         poses,
         fps,
         contact_height_m,
     )
+    return clip, {**report, "ground_alignment_offset_m": offset}

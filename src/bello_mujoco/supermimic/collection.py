@@ -124,8 +124,8 @@ def initialize_collection(env, config, learner, key):
             math.prod(value.shape) * value.dtype.itemsize
             for value in jax.tree.leaves(example)
         )
-        * config.replay_steps
-    )
+        + config.num_envs * jnp.dtype(bool).itemsize
+    ) * config.replay_steps
     if replay_bytes > config.max_replay_bytes:
         raise ValueError(
             f"replay needs {replay_bytes} bytes; config.max_replay_bytes={config.max_replay_bytes}"
@@ -147,13 +147,21 @@ def collect_step(runner, env, config):
     learner, collector = runner.learner, runner.collector
     before = collector.environment
     goals = jax.vmap(env.goal)(before.reference_time)
-    learner = replace(
-        learner,
-        observation_norm=learner.observation_norm.update(collector.observation),
-        goal_norm=learner.goal_norm.update(goals),
+    inputs_valid = finite_environments(
+        (collector.observation, collector.history, goals)
     )
-    action = learner.actor(
-        collector.history, goals, learner.observation_norm, learner.goal_norm
+    actor_learner = replace(
+        learner,
+        observation_norm=learner.observation_norm.update(
+            collector.observation, inputs_valid
+        ),
+        goal_norm=learner.goal_norm.update(goals, inputs_valid),
+    )
+    action = actor_learner.actor(
+        collector.history,
+        goals,
+        actor_learner.observation_norm,
+        actor_learner.goal_norm,
     )
     action = jnp.clip(
         action + config.action_noise * jax.random.normal(action_key, action.shape),
@@ -174,6 +182,30 @@ def collect_step(runner, env, config):
         reward,
         info,
     )
+    features = learner.model.features(
+        transition.state, transition.action, transition.context
+    )
+    delta = state_delta(transition.state, transition.successor)
+    fields = {
+        "transition": transition,
+        "observation": observation,
+        "history": collector.history,
+        "goal": goals,
+        "feedback": after.actor_feedback_history,
+        "actuator_force": after.data.actuator_force,
+        "episode_return": after.episode_return,
+        "model_input": features,
+        "model_target": delta,
+    }
+    rejected = {name: ~finite_environments(value) for name, value in fields.items()}
+    rejected["physics_state"] = info["done/nonfinite"]
+    rejected["reward"] = info["reward/nonfinite"]
+    valid = (
+        inputs_valid
+        & ~info["done/nonfinite"]
+        & ~jnp.any(jnp.stack(tuple(rejected.values())), axis=0)
+    )
+    done = done | ~valid
     discounted = (
         collector.discounted_returns + config.gamma**before.episode_length * reward
     )
@@ -189,7 +221,7 @@ def collect_step(runner, env, config):
             gamma=config.gamma,
             max_episode_steps=episode_horizon(env, config),
         ),
-        done,
+        done & valid,
         maximum_return(env, config),
     )
     dynamic_env = replace(
@@ -216,23 +248,17 @@ def collect_step(runner, env, config):
     )
     learner = replace(
         learner,
-        input_norm=learner.input_norm.update(
-            learner.model.features(
-                transition.state,
-                transition.action,
-                transition.context,
-            )
-        ),
-        output_norm=learner.output_norm.update(
-            state_delta(transition.state, transition.successor)
-        ),
+        observation_norm=learner.observation_norm.update(collector.observation, valid),
+        goal_norm=learner.goal_norm.update(goals, valid),
+        input_norm=learner.input_norm.update(features, valid),
+        output_norm=learner.output_norm.update(delta, valid),
     )
     result = replace(
         runner,
         learner=learner,
         collector=next_collector,
         sampling=sampling,
-        replay=runner.replay.insert(transition),
+        replay=runner.replay.insert(transition, valid),
         key=key,
     )
     commands = jax.vmap(env.mapping.command)(action, before.joint_default_offset)
@@ -245,22 +271,25 @@ def collect_step(runner, env, config):
                 jnp.all(jnp.isfinite(value))
                 for value in jax.tree.leaves(
                     (
-                        transition,
-                        observation,
-                        after.actor_feedback_history,
+                        next_collector.observation,
+                        next_collector.history,
+                        jax.vmap(env.physical_state)(next_collector.environment),
+                        next_collector.environment.actor_feedback_history,
                         learner.input_norm,
                         learner.output_norm,
                         learner.observation_norm,
                         learner.goal_norm,
-                        after.data.actuator_force,
+                        sampling,
                     )
                 )
             ]
         )
     )
+    first = jnp.argmax(~valid)
     return result, {
         **env.physics_metrics(after.data),
-        "collection/reward": reward.mean(),
+        "collection/reward": jnp.where(valid, reward, 0.0).sum()
+        / jnp.maximum(valid.sum(), 1),
         "collection/completed": done.sum(),
         "collection/failures": info["done/terminal"].sum(),
         "collection/limited_fraction": jnp.mean(
@@ -274,7 +303,27 @@ def collect_step(runner, env, config):
             f"motor/{name}_fraction": jnp.mean(flags, axis=0)
             for name, flags in limit_flags.items()
         },
-        "invalid/collection": (jnp.any(info["done/nonfinite"]) | ~finite).astype(
-            jnp.float32
-        ),
+        "collection/rejected": (~valid).sum(),
+        "diagnostic/environment": jnp.where(jnp.any(~valid), first, -1),
+        "diagnostic/clip": transition.clip_id[first],
+        "diagnostic/frame": transition.reference_frame[first]
+        - env.reference_bank.time_offsets[transition.clip_id[first]],
+        "diagnostic/vector_step": collector.vector_steps,
+        **{
+            f"diagnostic/nonfinite/{name}": mask.sum()
+            for name, mask in rejected.items()
+        },
+        "invalid/collection": (~jnp.any(valid) | ~finite).astype(jnp.float32),
     }
+
+
+def finite_environments(tree):
+    return jnp.all(
+        jnp.stack(
+            [
+                jnp.all(jnp.isfinite(value).reshape((value.shape[0], -1)), axis=1)
+                for value in jax.tree.leaves(tree)
+            ]
+        ),
+        axis=0,
+    )

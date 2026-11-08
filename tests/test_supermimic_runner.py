@@ -164,6 +164,7 @@ class ToyEnv:
                 "done/terminal": terminal,
                 "done/timeout": jnp.zeros_like(terminal),
                 "done/nonfinite": jnp.zeros_like(terminal),
+                "reward/nonfinite": ~jnp.isfinite(reward),
             },
         )
 
@@ -347,7 +348,7 @@ def test_collection_rejects_overflowed_physics_capacity():
         require_valid_metrics(metrics)
 
 
-def test_collection_rejects_nonfinite_feedback_before_replay_learning(
+def test_collection_resets_nonfinite_feedback_without_poisoning_replay_or_moments(
     toy_runner, monkeypatch
 ):
     env, cfg, runner = toy_runner
@@ -365,9 +366,52 @@ def test_collection_rejects_nonfinite_feedback_before_replay_learning(
 
     monkeypatch.setattr(ToyEnv, "step_batch", bad_feedback)
     collect, _, _ = compile_updates(env, cfg)
-    _, metrics = collect(runner, env.reference_bank)
-    with pytest.raises(RuntimeError, match="invalid/collection"):
+    result, metrics = collect(runner, env.reference_bank)
+    require_valid_metrics(metrics)
+    assert int(metrics["collection/rejected"]) == 1
+    assert int(metrics["diagnostic/environment"]) == 0
+    assert int(metrics["diagnostic/nonfinite/feedback"]) == 1
+    np.testing.assert_array_equal(result.replay.valid[0], [False, True])
+    np.testing.assert_array_equal(result.collector.environment.episode_length, [0, 1])
+    np.testing.assert_array_equal(result.collector.episode_ids, [1, 0])
+    for name in ("input_norm", "output_norm", "observation_norm", "goal_norm"):
+        moments = getattr(result.learner, name)
+        assert int(moments.count) == 1
+        assert np.isfinite(moments.mean).all()
+        assert np.isfinite(moments.variance).all()
+    assert all(np.isfinite(x).all() for x in jax.tree.leaves(result.replay))
+    starts = result.replay.sample_starts(
+        jax.random.key(9), 32, history_frames=2, feedback_frames=1, horizon=2
+    )
+    assert starts.valid
+    assert np.all(np.asarray(starts.transition.reward) != 0)
+
+
+def test_collection_stops_if_every_environment_is_invalid(toy_runner, monkeypatch):
+    env, cfg, runner = toy_runner
+    original = ToyEnv.step_batch
+
+    def bad_feedback(self, *args, **kwargs):
+        state, observation, reward, done, info = original(self, *args, **kwargs)
+        return (
+            replace(
+                state, actor_feedback_history=state.actor_feedback_history * jnp.nan
+            ),
+            observation,
+            reward,
+            done,
+            info,
+        )
+
+    monkeypatch.setattr(ToyEnv, "step_batch", bad_feedback)
+    collect, _, _ = compile_updates(env, cfg)
+    result, metrics = collect(runner, env.reference_bank)
+    with pytest.raises(
+        RuntimeError, match="invalid/collection.*diagnostics=.*feedback"
+    ):
         require_valid_metrics(metrics)
+    assert not np.any(result.replay.valid)
+    assert int(result.learner.input_norm.count) == 0
 
 
 def test_compiled_collect_fit_imagine_loop_preserves_terminal_successors(toy_runner):

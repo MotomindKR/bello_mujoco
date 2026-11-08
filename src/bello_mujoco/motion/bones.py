@@ -74,6 +74,19 @@ def family(row):
     return name
 
 
+def read_selection(path, excluded_name_terms):
+    payload = path.read_bytes()
+    previous_limit = csv.field_size_limit()
+    try:
+        csv.field_size_limit(max(previous_limit, len(payload)))
+        selection = select_bones(
+            csv.DictReader(io.StringIO(payload.decode("utf-8"))), excluded_name_terms
+        )
+    finally:
+        csv.field_size_limit(previous_limit)
+    return selection, hashlib.sha256(payload).hexdigest()
+
+
 def select_bones(rows, excluded_name_terms):
     """Keep whole recordings without duration caps or skill-dependent quotas."""
     clips, excluded, names = [], [], set()
@@ -259,12 +272,7 @@ def prepare_bones(config):
         flush=True,
     )
     metadata = config.source_directory / config.metadata_file
-    payload = metadata.read_bytes()
-    selection = select_bones(
-        csv.DictReader(io.StringIO(payload.decode("utf-8"))), config.excluded_name_terms
-    )
-    metadata_hash = hashlib.sha256(payload).hexdigest()
-    del payload
+    selection, metadata_hash = read_selection(metadata, config.excluded_name_terms)
     bind_path = config.source_directory / config.bind_file
     bind = read_bvh(bind_path)
     settings = json.loads(

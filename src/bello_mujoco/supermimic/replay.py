@@ -52,6 +52,7 @@ class ReplayStart:
 @dataclass(frozen=True)
 class ReplayBuffer:
     data: Transition
+    valid: jax.Array
     cursor: jax.Array
     size: jax.Array
 
@@ -66,6 +67,7 @@ class ReplayBuffer:
             raise ValueError("replay example fields require the same environment batch")
         return cls(
             jax.tree.map(lambda x: jnp.zeros((capacity,) + x.shape, x.dtype), example),
+            jnp.zeros((capacity, leaves[0].shape[0]), bool),
             jnp.asarray(0, jnp.int32),
             jnp.asarray(0, jnp.int32),
         )
@@ -78,12 +80,21 @@ class ReplayBuffer:
     def num_envs(self):
         return self.data.reward.shape[1]
 
-    def insert(self, transition):
+    def insert(self, transition, valid=None):
+        if valid is None:
+            valid = jnp.ones(self.num_envs, bool)
+        transition = jax.tree.map(
+            lambda x: jnp.where(
+                valid.reshape(valid.shape + (1,) * (x.ndim - 1)), x, jnp.zeros_like(x)
+            ),
+            transition,
+        )
         values = jax.tree.map(
             lambda x, y: x.at[self.cursor].set(y), self.data, transition
         )
         return ReplayBuffer(
             values,
+            self.valid.at[self.cursor].set(valid),
             (self.cursor + 1) % self.capacity,
             jnp.minimum(self.size + 1, self.capacity),
         )
@@ -108,6 +119,7 @@ class ReplayBuffer:
         )
         valid = (
             (ages < self.size)
+            & self.valid[rows, env[:, None]]
             & (transitions.episode_id == transitions.episode_id[:, :1])
             & (transitions.clip_id == transitions.clip_id[:, :1])
             & jnp.all(transitions.context == transitions.context[:, :1], axis=-1)
@@ -124,7 +136,11 @@ class ReplayBuffer:
             raise ValueError("replay cannot reconstruct the requested history")
         ages = jnp.arange(self.capacity)[:, None]
         rows = self.rows(ages[:, 0])
-        eligible = (ages < self.size) & (self.data.remaining_steps[rows] >= horizon)
+        eligible = (
+            (ages < self.size)
+            & self.valid[rows]
+            & (self.data.remaining_steps[rows] >= horizon)
+        )
         counts = jnp.cumsum(eligible.reshape(-1), dtype=jnp.int32)
         count = counts[-1]
         draw = jax.random.randint(key, (batch_size,), 0, jnp.maximum(1, count))

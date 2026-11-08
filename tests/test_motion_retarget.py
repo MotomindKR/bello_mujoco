@@ -12,7 +12,8 @@ from bello_mujoco.motion.retarget import clip_from_poses, pose_velocities
 @pytest.fixture
 def model():
     mj_model = mujoco.MjModel.from_xml_string(
-        '<mujoco><worldbody><body name="root"><freejoint/>'
+        '<mujoco><worldbody><geom type="plane" size="0 0 .1"/>'
+        '<body name="root"><freejoint/>'
         '<geom type="sphere" size=".1" pos=".2 0 0"/>'
         '<body name="arm" pos=".3 0 0"><joint name="joint" axis="0 0 1"/>'
         '<geom type="sphere" size=".1" pos=".15 0 0"/>'
@@ -28,7 +29,7 @@ def model():
             np.array([[-2.0, 2.0]]), np.array([[-2.0, 2.0]]), np.eye(1), np.ones(1)
         ),
         robot=SimpleNamespace(asset="synthetic", foot_body_names=("arm",)),
-        foot_geom_ids=np.array([1]),
+        foot_geom_ids=np.array([2]),
     )
 
 
@@ -47,7 +48,9 @@ def test_cached_body_twists_are_at_link_origins_with_offset_centres_of_mass(mode
     assert abs(com[4]) > 0.1
 
 
-def test_offline_retarget_preserves_each_gmr_pose_and_source_clock(model, monkeypatch):
+def test_offline_retarget_aligns_ground_preserving_joint_motion_and_source_clock(
+    model, monkeypatch
+):
     poses = np.tile(model.mj_model.qpos0, (4, 1))
     poses[:, 2] = [-0.1, 0.2, 0.5, 0.2]
     poses[:, 7] = [0.0, 0.1, -0.1, 0.0]
@@ -71,14 +74,21 @@ def test_offline_retarget_preserves_each_gmr_pose_and_source_clock(model, monkey
     )
     position = np.arange(12).reshape(4, 3)
     quaternion = np.tile([1.0, 0.0, 0.0, 0.0], (4, 1))
-    clip, _ = retarget.retarget_gmr(
+    clip, report = retarget.retarget_gmr(
         model,
         {"pelvis": (position, quaternion)},
         fps=50,
         human_height_m=1.8,
         contact_height_m=0.03,
     )
-    np.testing.assert_allclose(clip.qpos, poses)
+    expected = poses.copy()
+    expected[:, 2] += 0.2
+    np.testing.assert_allclose(clip.qpos, expected)
+    np.testing.assert_allclose(
+        clip.qvel, pose_velocities(model.mj_model, poses, 50), atol=1e-6
+    )
+    assert report["ground_alignment_offset_m"] == pytest.approx(0.2)
+    assert report["worst_floor_penetration_m"] >= -1e-8
     assert len(calls) == len(poses)
     assert [frame.source_timestamp_ns for frame in calls] == [
         1,
@@ -89,6 +99,18 @@ def test_offline_retarget_preserves_each_gmr_pose_and_source_clock(model, monkey
     np.testing.assert_array_equal(
         [frame.transforms["pelvis"][0] for frame in calls], position
     )
+
+
+def test_ground_alignment_uses_rotated_collision_surfaces_and_preserves_flight(model):
+    poses = np.tile(model.mj_model.qpos0, (3, 1))
+    poses[:, 2] = [0.3, 0.9, 0.4]
+    poses[:, 3:7] = [np.sqrt(0.5), 0, np.sqrt(0.5), 0]
+    aligned, offset = retarget.align_poses_to_ground(model.mj_model, poses)
+    # Rotating the arm's offset sphere puts its bottom .55 m below the root.
+    assert offset == pytest.approx(0.25)
+    np.testing.assert_allclose(np.diff(aligned[:, 2]), np.diff(poses[:, 2]))
+    np.testing.assert_array_equal(aligned[:, 3:], poses[:, 3:])
+    np.testing.assert_allclose(poses[:, 2], [0.3, 0.9, 0.4])
 
 
 def test_reference_velocities_use_central_differences_in_the_current_root_frame():

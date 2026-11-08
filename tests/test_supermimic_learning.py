@@ -70,6 +70,28 @@ def test_replay_masks_terminal_successors_and_unfilled_storage():
     assert np.all(window.transitions.terminal[:, 2])
 
 
+def test_rejected_replay_rows_never_train_windows_or_start_imagination():
+    replay = ReplayBuffer.empty(transition(0), 4)
+    for time in range(3):
+        sample = transition(time)
+        valid = jnp.array([True, time != 1])
+        if time == 1:
+            sample = replace(sample, action=sample.action.at[1].set(jnp.nan))
+        replay = replay.insert(sample, valid)
+    window = replay.sample_windows(jax.random.key(3), 64, 3)
+    assert np.any(np.asarray(window.mask[:, 1]) == 0)
+    assert np.all(np.asarray(window.mask[:, 1]) == np.asarray(window.mask[:, 2]))
+    assert np.isfinite(window.transitions.action).all()
+    starts = replay.sample_starts(
+        jax.random.key(4), 128, history_frames=1, feedback_frames=1, horizon=1
+    )
+    assert starts.valid
+    assert not np.any(
+        (np.asarray(starts.transition.reference_frame) == 1)
+        & (np.asarray(starts.transition.state.position[:, 1]) == 1)
+    )
+
+
 def test_replay_wrap_and_history_do_not_cross_episodes_or_evicted_records():
     replay = ReplayBuffer.empty(transition(0), 5)
     for time in range(9):

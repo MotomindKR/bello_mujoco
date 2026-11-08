@@ -25,6 +25,7 @@ class Moments:
     def update(self, values, mask=None):
         values = values.reshape((-1, self.mean.shape[0]))
         weights = jnp.ones(values.shape[0]) if mask is None else mask.reshape(-1)
+        values = jnp.where(weights[:, None] > 0, values, 0.0)
         batch_count = weights.sum()
         batch_mean = (values * weights[:, None]).sum(axis=0) / jnp.maximum(
             batch_count, 1
@@ -118,34 +119,28 @@ class MLP(eqx.Module):
         mixed = self.matmul_precision == "bfloat16"
         for i, layer in enumerate(self.layers):
             dtype = jnp.bfloat16 if mixed else jnp.float32
-            value = (
-                jnp.matmul(
-                    value.astype(dtype),
-                    layer.weight.T.astype(dtype),
-                    precision=(
-                        jax.lax.Precision.HIGHEST
-                        if self.matmul_precision == "float32"
-                        else jax.lax.Precision.HIGH
-                    ),
-                    preferred_element_type=jnp.float32,
-                )
-                + layer.bias.astype(dtype).astype(jnp.float32)
-            ).astype(dtype)
+            value = jnp.matmul(
+                value.astype(dtype),
+                layer.weight.T.astype(dtype),
+                precision=(
+                    jax.lax.Precision.HIGHEST
+                    if self.matmul_precision == "float32"
+                    else jax.lax.Precision.HIGH
+                ),
+            ) + layer.bias.astype(dtype)
             if i < len(self.layers) - 1:
                 if self.norms:
                     shape = value.shape
-                    value = (
-                        jax.vmap(self.norms[i])(
-                            value.astype(jnp.float32).reshape((-1, shape[-1]))
-                        )
-                        .reshape(shape)
-                        .astype(dtype)
-                    )
+                    value = jax.vmap(self.norms[i])(
+                        value.astype(jnp.float32).reshape((-1, shape[-1]))
+                    ).reshape(shape)
                 value = (
                     jax.nn.silu(value.astype(jnp.float32))
                     if self.activation == "silu"
                     else jax.nn.elu(value.astype(jnp.float32))
-                ).astype(dtype)
+                )
+                if not self.norms:
+                    value = value.astype(dtype)
         return value.astype(jnp.float32)
 
 

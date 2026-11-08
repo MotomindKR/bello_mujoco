@@ -13,6 +13,7 @@ from bello_mujoco.motion.bones import (
     family,
     safe_member,
     select_bones,
+    read_selection,
 )
 from bello_mujoco.motion.bvh import BvhMotion, soma_targets
 
@@ -26,6 +27,23 @@ def metadata_row(name, **overrides):
         "is_mirror": "False",
         **overrides,
     }
+
+
+def test_metadata_accepts_long_annotations_without_changing_csv_process_limit(tmp_path):
+    import csv
+    import hashlib
+
+    path = tmp_path / "metadata.csv"
+    row = metadata_row("dance", annotation="x" * (csv.field_size_limit() + 1))
+    with path.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=tuple(row))
+        writer.writeheader()
+        writer.writerow(row)
+    previous = csv.field_size_limit()
+    selection, digest = read_selection(path, ("stair",))
+    assert [clip["sequence"] for clip in selection["clips"]] == ["dance"]
+    assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert csv.field_size_limit() == previous
 
 
 def test_soma_bind_removes_independent_limb_axes_and_preserves_global_turns():

@@ -15,7 +15,11 @@ with `python -m bello_mujoco.sonic.corpus prepare DIRECTORY --splits SPLITS.json
 
 LAFAN, BONES and AMASS use the pinned stock
 [Mini GMR profile](../deps/GMR/general_motion_retargeting/ik_configs/smplx_to_bello_mini.json).
-Each frame receives one GMR call; output poses are preserved. Shared reconstruction
+Each frame receives one GMR call. Following GMR's dataset exporter, the whole
+clip receives one constant vertical shift to place its lowest point on the floor.
+Mini uses floor-colliding surfaces rather than body origins for this measurement;
+joint poses, rotations, flight height differences and velocities are preserved.
+The shift is recorded as `ground_alignment_offset_m`. Shared reconstruction
 computes central-difference velocities, native link-origin FK/twists, geometric
 foot-contact labels, position-envelope validation, and penetration diagnostics.
 Source datasets remain read-only. Build a new corpus after changing preparation
@@ -122,7 +126,16 @@ shutdown drains pending uploads before closing W&B.
   delay is rejected. Replay windows and actor history do not cross resets.
 - Collection episode caps are bootstrapped timeouts. Full-clip evaluation retains
   the original recording length. Height/tilt errors and nonfinite states cause
-  hard failures; horizontal drift and joint RMS are reported separately.
+  episode failures; horizontal drift and joint RMS are reported separately.
+- Nonfinite collection transitions reset their environments and are excluded
+  from replay, normalizers and curriculum scoring. Rejection reports identify
+  the environment, clip index, source frame and affected fields. Invalid resets,
+  an entirely invalid collection batch, corrupt global statistics and physics
+  capacity overflows stop training. Fatal errors are saved in `failure.json`
+  and the W&B run summary before shutdown.
+- BF16 networks keep master parameters, normalization and optimizer state in
+  FP32. Dense forward/backward matrix products use BF16; LayerNorm and its
+  following activation retain FP32 intermediates.
 - Precision, gains, rewards, termination thresholds and memory guards belong in
   the recipe. A changed recipe does not alter saved policies. Physical hardware
   commissioning remains pending.

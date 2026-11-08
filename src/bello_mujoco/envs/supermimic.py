@@ -471,7 +471,7 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             "done/nonfinite": nonfinite,
             "done/terminal": terminal,
             "done/timeout": timeout,
-            "done/any": terminal | timeout,
+            "done/any": terminal | timeout | nonfinite,
         }
 
     def _info(self, state, observation, reward_info, done_flags):
@@ -492,7 +492,11 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         # Tracking diagnostics are not additive reward components.
         invalid = done_flags["done/nonfinite"] | ~jnp.isfinite(reward)
         return jnp.where(invalid, 0.0, reward), {
-            name: jnp.where(invalid, 0.0, value) for name, value in reward_info.items()
+            **{
+                name: jnp.where(invalid, 0.0, value)
+                for name, value in reward_info.items()
+            },
+            "reward/nonfinite": invalid,
         }
 
     def context(self, state, world_id):

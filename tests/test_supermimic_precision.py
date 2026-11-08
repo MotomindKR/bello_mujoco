@@ -52,6 +52,99 @@ def test_bfloat16_layer_norm_and_optimizer_keep_float32_parameters():
     assert np.isfinite(trained(value)).all()
 
 
+def test_bfloat16_backward_uses_matching_dot_operand_types():
+    import equinox as eqx
+
+    network = MLP(
+        (4, 8, 2), key=jax.random.key(0), matmul_precision="bfloat16", layer_norm=True
+    )
+    graph = eqx.filter_make_jaxpr(eqx.filter_grad(lambda net, x: jnp.sum(net(x) ** 2)))
+    closed, _, _ = graph(network, jnp.ones((3, 4)))
+    dots = [e for e in closed.jaxpr.eqns if e.primitive.name == "dot_general"]
+    assert len(dots) > len(network.layers)
+    assert all(
+        e.invars[0].aval.dtype == e.invars[1].aval.dtype == jnp.bfloat16 for e in dots
+    )
+
+
+def test_masked_nonfinite_samples_do_not_enter_running_moments():
+    from bello_mujoco.supermimic.model import Moments
+
+    moments = jax.jit(
+        lambda values: Moments.empty(2).update(values, jnp.array([True, False, True]))
+    )(jnp.array([[1.0, 2.0], [jnp.nan, jnp.inf], [3.0, 6.0]]))
+    np.testing.assert_allclose(moments.mean, [2, 4])
+    np.testing.assert_allclose(moments.variance, [1, 4])
+    assert moments.count == 2
+
+
+@pytest.mark.parametrize("precision", ["float32", "bfloat16"])
+@pytest.mark.parametrize("layer_norm,activation", [(True, "silu"), (False, "elu")])
+def test_network_outputs_and_gradients_match_torch_with_identical_weights(
+    precision, layer_norm, activation
+):
+    import equinox as eqx
+
+    torch = pytest.importorskip("torch")
+    functional = torch.nn.functional
+    network = MLP(
+        (16, 32, 24, 5),
+        key=jax.random.key(12),
+        layer_norm=layer_norm,
+        activation=activation,
+        matmul_precision=precision,
+    )
+    leaves, structure = jax.tree.flatten(eqx.filter(network, eqx.is_inexact_array))
+    parameters = [
+        torch.tensor(np.asarray(x).copy(), requires_grad=True) for x in leaves
+    ]
+    reference = jax.tree.unflatten(structure, parameters)
+    value = np.random.default_rng(7).normal(size=(24, 16)).astype(np.float32)
+    expected = torch.tensor(value, requires_grad=True)
+    dtype = torch.bfloat16 if precision == "bfloat16" else torch.float32
+    result = expected
+    for i, layer in enumerate(reference.layers):
+        result = functional.linear(
+            result.to(dtype), layer.weight.to(dtype), layer.bias.to(dtype)
+        )
+        if i < len(reference.layers) - 1:
+            if layer_norm:
+                norm = reference.norms[i]
+                result = functional.layer_norm(
+                    result.float(),
+                    (result.shape[-1],),
+                    norm.weight,
+                    norm.bias,
+                    norm.eps,
+                )
+            result = (
+                functional.silu(result)
+                if activation == "silu"
+                else functional.elu(result)
+            )
+    result = result.float()
+    result.square().mean().backward()
+    _, (gradient, input_gradient) = eqx.filter_jit(
+        eqx.filter_value_and_grad(lambda pair: jnp.square(pair[0](pair[1])).mean())
+    )((network, jnp.asarray(value)))
+    pairs = [
+        (network(value), result.detach().numpy()),
+        (input_gradient, expected.grad.numpy()),
+    ]
+    pairs.extend(
+        zip(
+            jax.tree.leaves(eqx.filter(gradient, eqx.is_inexact_array)),
+            (p.grad.numpy() for p in parameters),
+            strict=True,
+        )
+    )
+    for actual, expected in pairs:
+        error = np.linalg.norm(np.asarray(actual) - expected) / max(
+            np.linalg.norm(expected), 1e-12
+        )
+        assert error < (0.025 if precision == "bfloat16" else 1e-5)
+
+
 def test_invalid_network_precision_is_rejected():
     with pytest.raises(ValueError, match="matmul_precision"):
         NetworkConfig(matmul_precision="automatic")
