@@ -148,6 +148,11 @@ def update_world_model(learner, window, config, update):
 
 
 def update_actor_critic(learner, starts, env, config, update, key):
+    # Unroll the differentiable tree separately from MJX collection compilation.
+    kinematics = replace(env.kinematics, unroll=True)
+    env = replace(
+        env, kinematics=kinematics, mdp=replace(env.mdp, kinematics=kinematics)
+    )
     actor_key, critic_key = jax.random.split(key)
     norms = (
         learner.input_norm,

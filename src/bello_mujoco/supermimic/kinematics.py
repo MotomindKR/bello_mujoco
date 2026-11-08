@@ -31,6 +31,7 @@ class Kinematics:
     joint_qpos_address: jax.Array
     joint_qvel_address: jax.Array
     tracked_indices: jax.Array
+    unroll: bool = field(default=False, metadata={"static": True})
 
     @classmethod
     def from_model(cls, model, joint_names, body_names, *, root_body_name):
@@ -213,6 +214,10 @@ class Kinematics:
             )
 
         result = jax.lax.fori_loop(
-            1, count, body_step, (position, quaternion, linear, angular), unroll=True
+            1,
+            count,
+            body_step,
+            (position, quaternion, linear, angular),
+            unroll=self.unroll,
         )
         return BodyState(*(value[self.tracked_indices] for value in result))

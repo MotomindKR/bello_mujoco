@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import mujoco
+import mink
 import numpy as np
 import pytest
 
@@ -48,11 +49,11 @@ def test_cached_body_twists_are_at_link_origins_with_offset_centres_of_mass(mode
     assert abs(com[4]) > 0.1
 
 
-def test_offline_retarget_aligns_ground_preserving_joint_motion_and_source_clock(
+def test_offline_retarget_preserves_feasible_solver_poses_and_source_clock(
     model, monkeypatch
 ):
     poses = np.tile(model.mj_model.qpos0, (4, 1))
-    poses[:, 2] = [-0.1, 0.2, 0.5, 0.2]
+    poses[:, 2] = [0.1, 0.2, 0.5, 0.2]
     poses[:, 7] = [0.0, 0.1, -0.1, 0.0]
     calls = []
 
@@ -62,9 +63,11 @@ def test_offline_retarget_aligns_ground_preserving_joint_motion_and_source_clock
 
     monkeypatch.setattr(
         retarget,
-        "GmrRetargeter",
+        "_OfflineGmrRetargeter",
         lambda *a, **k: SimpleNamespace(
-            profile=SimpleNamespace(source_body_names=("pelvis",)), retarget=solve
+            profile=SimpleNamespace(source_body_names=("pelvis",)),
+            retarget=solve,
+            extra_floor_passes=0,
         ),
     )
     monkeypatch.setattr(
@@ -81,13 +84,11 @@ def test_offline_retarget_aligns_ground_preserving_joint_motion_and_source_clock
         human_height_m=1.8,
         contact_height_m=0.03,
     )
-    expected = poses.copy()
-    expected[:, 2] += 0.2
-    np.testing.assert_allclose(clip.qpos, expected)
+    np.testing.assert_allclose(clip.qpos, poses)
     np.testing.assert_allclose(
         clip.qvel, pose_velocities(model.mj_model, poses, 50), atol=1e-6
     )
-    assert report["ground_alignment_offset_m"] == pytest.approx(0.2)
+    assert report["floor_ik_extra_passes"] == 0
     assert report["worst_floor_penetration_m"] >= -1e-8
     assert len(calls) == len(poses)
     assert [frame.source_timestamp_ns for frame in calls] == [
@@ -101,16 +102,31 @@ def test_offline_retarget_aligns_ground_preserving_joint_motion_and_source_clock
     )
 
 
-def test_ground_alignment_uses_rotated_collision_surfaces_and_preserves_flight(model):
-    poses = np.tile(model.mj_model.qpos0, (3, 1))
-    poses[:, 2] = [0.3, 0.9, 0.4]
-    poses[:, 3:7] = [np.sqrt(0.5), 0, np.sqrt(0.5), 0]
-    aligned, offset = retarget.align_poses_to_ground(model.mj_model, poses)
-    # Rotating the arm's offset sphere puts its bottom .55 m below the root.
-    assert offset == pytest.approx(0.25)
-    np.testing.assert_allclose(np.diff(aligned[:, 2]), np.diff(poses[:, 2]))
-    np.testing.assert_array_equal(aligned[:, 3:], poses[:, 3:])
-    np.testing.assert_allclose(poses[:, 2], [0.3, 0.9, 0.4])
+@pytest.mark.parametrize("dt", [0.002, 0.02])
+def test_floor_ik_prevents_penetration_without_grounding_airborne_targets(model, dt):
+    mj = model.mj_model
+    configuration = mink.Configuration(mj)
+    pose = mj.qpos0.copy()
+    pose[2] = 0.3
+    configuration.update(pose)
+    floor = retarget.FloorLimit(mj)
+    task = mink.FrameTask("root", "body", position_cost=1.0, orientation_cost=1.0)
+    for height, expected in ((-0.5, 0.1), (0.7, 0.7)):
+        task.set_target(
+            mink.SE3.from_rotation_and_translation(
+                mink.SO3.identity(), np.array([0.0, 0.0, height])
+            )
+        )
+        for _ in range(8):
+            velocity = mink.solve_ik(
+                configuration, [task], dt, "daqp", limits=[floor]
+            )
+            configuration.integrate_inplace(velocity, dt)
+        if height < 0:
+            assert configuration.q[2] > height
+        else:
+            assert configuration.q[2] == pytest.approx(expected, abs=1e-6)
+        assert floor.penetration(configuration.q) >= -1e-8
 
 
 def test_reference_velocities_use_central_differences_in_the_current_root_frame():

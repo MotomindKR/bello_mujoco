@@ -117,6 +117,27 @@ def test_fk_is_equivariant_and_has_correct_velocity_derivatives(chain):
     np.testing.assert_allclose(batched.position[1], expected.position, atol=1e-6)
 
 
+def test_collection_and_imagination_fk_have_identical_values_and_gradients(chain):
+    model, kin, _ = chain
+    state = kin.from_qpos(jnp.asarray(model.qpos0), jnp.ones(model.nv))
+
+    def evaluate(kin):
+        return jax.jit(
+            jax.value_and_grad(
+                lambda state: sum(
+                    jnp.sum(x**2) for x in jax.tree.leaves(kin.forward(state))
+                )
+            )
+        )(state)
+
+    for rolled, unrolled in zip(
+        jax.tree.leaves(evaluate(kin)),
+        jax.tree.leaves(evaluate(replace(kin, unroll=True))),
+        strict=True,
+    ):
+        np.testing.assert_allclose(rolled, unrolled, rtol=1e-5, atol=1e-5)
+
+
 def test_rotations_and_state_roundtrip_have_finite_zero_angle_gradients():
     for vector in (jnp.zeros(3), jnp.array([1e-7, -1e-6, 0.2])):
         np.testing.assert_allclose(rot.log(rot.exp(vector)), vector, atol=1e-6)

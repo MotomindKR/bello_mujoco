@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from types import SimpleNamespace
 
 import mujoco
+import mink
 import numpy as np
 
 from bello_mujoco.envs.rewards import CommandConfig
@@ -119,49 +120,111 @@ def clip_from_poses(model, body_names, qpos, fps, contact_height_m):
     }
 
 
-def align_poses_to_ground(model, qpos):
-    """GMR dataset height alignment, measured at collision surfaces, once per clip."""
-    qpos = np.asarray(qpos, dtype=np.float64).copy()
-    if qpos.ndim != 2 or qpos.shape[1] != model.nq or not np.isfinite(qpos).all():
-        raise RetargetValidationError("ground alignment requires finite complete poses")
-    free = np.flatnonzero(model.jnt_type == mujoco.mjtJoint.mjJNT_FREE)
-    planes = np.flatnonzero(model.geom_type == mujoco.mjtGeom.mjGEOM_PLANE)
-    if len(free) != 1 or len(planes) != 1:
-        raise RetargetValidationError(
-            "ground alignment requires one free root and one plane"
-        )
-    root = model.jnt_bodyid[free[0]]
-    plane = planes[0]
-    collision = (
-        (model.geom_contype & model.geom_conaffinity[plane])
-        | (model.geom_conaffinity & model.geom_contype[plane])
-    ) != 0
-    geoms = np.flatnonzero(collision & (model.body_rootid[model.geom_bodyid] == root))
-    if not len(geoms):
-        raise RetargetValidationError(
-            "ground alignment requires robot floor collisions"
-        )
-    data = mujoco.MjData(model)
-    lowest = np.inf
-    for pose in qpos:
-        data.qpos[:] = pose
-        mujoco.mj_kinematics(model, data)
-        if not np.allclose(data.geom_xmat[plane].reshape(3, 3)[:, 2], [0, 0, 1]):
+class FloorLimit(mink.Limit):
+    """Linearized nonpenetration in Mink's displacement coordinates, G dq <= h."""
+
+    def __init__(self, model):
+        self.model = model
+        self.data = mujoco.MjData(model)
+        free = np.flatnonzero(model.jnt_type == mujoco.mjtJoint.mjJNT_FREE)
+        planes = np.flatnonzero(model.geom_type == mujoco.mjtGeom.mjGEOM_PLANE)
+        if len(free) != 1 or len(planes) != 1:
             raise RetargetValidationError(
-                "ground alignment requires a horizontal plane"
+                "offline IK requires one free root and one floor"
             )
-        lowest = min(
-            lowest,
-            *(geom_lower_z(model, data, g) - data.geom_xpos[plane, 2] for g in geoms),
+        self.plane = int(planes[0])
+        self.root_z = int(model.jnt_qposadr[free[0]]) + 2
+        root = model.jnt_bodyid[free[0]]
+        collides = (
+            (model.geom_contype & model.geom_conaffinity[self.plane])
+            | (model.geom_conaffinity & model.geom_contype[self.plane])
+        ) != 0
+        self.geoms = np.flatnonzero(
+            collides & (model.body_rootid[model.geom_bodyid] == root)
         )
-    offset = -float(lowest)
-    qpos[:, model.jnt_qposadr[free[0]] + 2] += offset
-    return qpos, offset
+        self._update(model.qpos0)
+        if (
+            not len(self.geoms)
+            or not np.allclose(
+                self.data.geom_xmat[self.plane].reshape(3, 3)[:, 2], [0, 0, 1]
+            )
+            or model.geom_bodyid[self.plane] != 0
+        ):
+            raise RetargetValidationError(
+                "offline IK requires a fixed horizontal colliding floor"
+            )
+
+    def _update(self, qpos):
+        self.data.qpos[:] = qpos
+        mujoco.mj_kinematics(self.model, self.data)
+        mujoco.mj_comPos(self.model, self.data)
+
+    def compute_qp_inequalities(self, configuration, dt):
+        del dt
+        self._update(configuration.q)
+        rows, bounds = [], []
+        points, jacobian = np.empty(6), np.empty((3, self.model.nv))
+        for geom in self.geoms:
+            distance = mujoco.mj_geomDistance(
+                self.model,
+                self.data,
+                int(geom),
+                self.plane,
+                float(self.model.stat.extent),
+                points,
+            )
+            if distance >= self.model.stat.extent:
+                continue
+            mujoco.mj_jac(
+                self.model,
+                self.data,
+                jacobian,
+                None,
+                points[:3],
+                int(self.model.geom_bodyid[geom]),
+            )
+            rows.append(-jacobian[2].copy())
+            bounds.append(distance)
+        return mink.Constraint(
+            G=np.asarray(rows).reshape(-1, self.model.nv), h=np.asarray(bounds)
+        )
+
+    def penetration(self, qpos):
+        self._update(qpos)
+        mujoco.mj_collision(self.model, self.data)
+        return min(
+            (float(c.dist) for c in self.data.contact if self.plane in c.geom),
+            default=0.0,
+        )
+
+
+class _OfflineGmrRetargeter(GmrRetargeter):
+    def __init__(self, env, config):
+        super().__init__(env, config)
+        self.floor = FloorLimit(env.model.mj_model)
+        self.retargeter.ik_limits.append(self.floor)
+        self.extra_floor_passes = 0
+
+    def _solve(self, targets):
+        pose = super()._solve(targets)
+        for attempt in range(self.retargeter.max_iter + 1):
+            depth = self.floor.penetration(pose)
+            if depth >= -self.floor.model.opt.tolerance:
+                if depth < 0:
+                    pose[self.floor.root_z] -= depth
+                    self.retargeter.configuration.update(pose)
+                return pose
+            if attempt < self.retargeter.max_iter:
+                pose = super()._solve(targets)
+                self.extra_floor_passes += 1
+        raise RetargetValidationError(
+            f"floor-constrained IK did not converge: penetration={depth:.6g} m"
+        )
 
 
 def retarget_gmr(model, targets: Mapping, *, fps, human_height_m, contact_height_m):
-    """Run the pinned profile, then apply GMR's clip-wide ground alignment."""
-    wrapper = GmrRetargeter(
+    """Run the stock profile with native collision-surface floor constraints."""
+    wrapper = _OfflineGmrRetargeter(
         SimpleNamespace(model=model, command_config=CommandConfig()),
         GmrLiveRetargetConfig(human_height_m=human_height_m),
     )
@@ -186,7 +249,6 @@ def retarget_gmr(model, targets: Mapping, *, fps, human_height_m, contact_height
             received_at=0.0,
         )
         poses.append(wrapper.retarget(human).qpos)
-    poses, offset = align_poses_to_ground(model.mj_model, poses)
     clip, report = clip_from_poses(
         model,
         motion_task_definition(model.robot.asset).beyondmimic_tracked_body_names,
@@ -194,4 +256,4 @@ def retarget_gmr(model, targets: Mapping, *, fps, human_height_m, contact_height
         fps,
         contact_height_m,
     )
-    return clip, {**report, "ground_alignment_offset_m": offset}
+    return clip, {**report, "floor_ik_extra_passes": wrapper.extra_floor_passes}
