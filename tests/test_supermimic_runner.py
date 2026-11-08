@@ -32,6 +32,7 @@ class ToyData:
     qvel: jax.Array
     ctrl: jax.Array
     actuator_force: jax.Array
+    qacc: jax.Array
 
 
 @jax.tree_util.register_dataclass
@@ -117,7 +118,11 @@ class ToyEnv:
     def reset_batch(self, count, rng):
         qpos = jnp.broadcast_to(self.reference_bank.qpos[0], (count, 8))
         data = ToyData(
-            qpos, jnp.zeros((count, 7)), jnp.zeros((count, 1)), jnp.zeros((count, 1))
+            qpos,
+            jnp.zeros((count, 7)),
+            jnp.zeros((count, 1)),
+            jnp.zeros((count, 1)),
+            jnp.zeros((count, 7)),
         )
         physical = jax.vmap(self.kinematics.from_qpos)(data.qpos, data.qvel)
         state = ToyState(
@@ -138,7 +143,9 @@ class ToyEnv:
         command = jax.vmap(self.mapping.command)(action, state.joint_default_offset)
         qpos = state.data.qpos.at[:, 7:].add(self.control_timestep * command.accepted)
         qvel = state.data.qvel.at[:, 6:].set(command.accepted)
-        data = ToyData(qpos, qvel, command.accepted, command.accepted)
+        data = ToyData(
+            qpos, qvel, command.accepted, command.accepted, jnp.zeros_like(qvel)
+        )
         physical = jax.vmap(self.kinematics.from_qpos)(qpos, qvel)
         stepped = replace(
             state,
@@ -164,7 +171,7 @@ class ToyEnv:
                 "done/terminal": terminal,
                 "done/timeout": jnp.zeros_like(terminal),
                 "done/nonfinite": jnp.zeros_like(terminal),
-                "reward/nonfinite": ~jnp.isfinite(reward),
+                "reward/invalid": ~jnp.isfinite(reward),
             },
         )
 
@@ -370,7 +377,7 @@ def test_collection_resets_nonfinite_feedback_without_poisoning_replay_or_moment
     require_valid_metrics(metrics)
     assert int(metrics["collection/rejected"]) == 1
     assert int(metrics["diagnostic/environment"]) == 0
-    assert int(metrics["diagnostic/nonfinite/feedback"]) == 1
+    assert int(metrics["diagnostic/invalid/feedback"]) == 1
     np.testing.assert_array_equal(result.replay.valid[0], [False, True])
     np.testing.assert_array_equal(result.collector.environment.episode_length, [0, 1])
     np.testing.assert_array_equal(result.collector.episode_ids, [1, 0])
@@ -414,20 +421,61 @@ def test_collection_stops_if_every_environment_is_invalid(toy_runner, monkeypatc
     assert int(result.learner.input_norm.count) == 0
 
 
-def test_nonfinite_policy_output_is_rejected_without_sending_nan_to_physics(toy_runner):
+@pytest.mark.parametrize("field", ["qvel", "qacc"])
+def test_finite_divergent_physics_cannot_poison_running_statistics(
+    toy_runner, monkeypatch, field
+):
+    env, cfg, runner = toy_runner
+    original = ToyEnv.step_batch
+
+    def divergent_step(self, *args, **kwargs):
+        state, observation, reward, done, info = original(self, *args, **kwargs)
+        value = getattr(state.data, field).at[0, 0].set(2 * mujoco.mjMAXVAL)
+        return (
+            replace(state, data=replace(state.data, **{field: value})),
+            observation,
+            reward,
+            done,
+            info,
+        )
+
+    monkeypatch.setattr(ToyEnv, "step_batch", divergent_step)
+    collect, _, _ = compile_updates(env, cfg)
+    result, metrics = collect(runner, env.reference_bank)
+    require_valid_metrics(metrics)
+    assert int(metrics["collection/rejected"]) == 1
+    assert int(metrics["diagnostic/invalid/physics"]) == 1
+    np.testing.assert_array_equal(result.replay.valid[0], [False, True])
+    np.testing.assert_array_equal(result.collector.environment.episode_length, [0, 1])
+    for name in ("input_norm", "output_norm", "observation_norm", "goal_norm"):
+        assert getattr(result.learner, name).count == 1
+    good = result.replay.data
+    from bello_mujoco.supermimic.model import state_delta
+
+    expected = state_delta(
+        jax.tree.map(lambda x: x[0, 1], good.state),
+        jax.tree.map(lambda x: x[0, 1], good.successor),
+    )
+    np.testing.assert_allclose(result.learner.output_norm.mean, expected)
+
+
+@pytest.mark.parametrize("value", [jnp.nan, jnp.inf, 2 * mujoco.mjMAXVAL])
+def test_nonfinite_policy_output_is_rejected_without_sending_nan_to_physics(
+    toy_runner, value
+):
     env, cfg, runner = toy_runner
     actor = eqx.tree_at(
         lambda a: a.decoder.layers[-1].bias,
         runner.learner.actor,
-        jnp.full(env.action_size, jnp.nan),
+        jnp.full(env.action_size, value),
     )
     runner = replace(runner, learner=replace(runner.learner, actor=actor))
     collect, _, _ = compile_updates(env, cfg)
     result, metrics = collect(runner, env.reference_bank)
     assert int(metrics["collection/rejected"]) == cfg.num_envs
-    assert int(metrics["diagnostic/nonfinite/transition"]) == cfg.num_envs
-    assert int(metrics["diagnostic/nonfinite/actuator_force"]) == 0
-    assert int(metrics["diagnostic/nonfinite/feedback"]) == 0
+    assert int(metrics["diagnostic/invalid/policy_output"]) == cfg.num_envs
+    assert int(metrics["diagnostic/invalid/actuator_force"]) == 0
+    assert int(metrics["diagnostic/invalid/feedback"]) == 0
     assert not np.any(result.replay.valid)
     with pytest.raises(RuntimeError, match="invalid/collection"):
         require_valid_metrics(metrics)

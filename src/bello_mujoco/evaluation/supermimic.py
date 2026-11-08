@@ -148,9 +148,9 @@ def render_supermimic_checkpoint(
                 state, observation, reward, done, info = native_step(
                     data, state, action
                 )
-                if bool(info["done/nonfinite"]):
+                if bool(info["done/numerical"]):
                     raise RuntimeError(
-                        "SuperMimic native evaluation encountered nonfinite state"
+                        "SuperMimic native evaluation encountered invalid numerical state"
                     )
                 flags = flags_at(
                     proposal, data.actuator_force, env.model.actuator_peak_force

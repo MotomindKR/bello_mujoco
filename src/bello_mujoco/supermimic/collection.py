@@ -6,7 +6,7 @@ import math
 import jax
 import jax.numpy as jnp
 
-from bello_mujoco.envs.geometry import tree_where
+from bello_mujoco.envs.geometry import mujoco_values_valid, tree_where
 from bello_mujoco.supermimic.control import motor_limit_flags
 from bello_mujoco.supermimic.replay import ReplayBuffer, Transition
 from bello_mujoco.supermimic.model import state_delta
@@ -147,9 +147,7 @@ def collect_step(runner, env, config):
     learner, collector = runner.learner, runner.collector
     before = collector.environment
     goals = jax.vmap(env.goal)(before.reference_time)
-    inputs_valid = finite_environments(
-        (collector.observation, collector.history, goals)
-    )
+    inputs_valid = valid_environments((collector.observation, collector.history, goals))
     actor_learner = replace(
         learner,
         observation_norm=learner.observation_norm.update(
@@ -163,14 +161,17 @@ def collect_step(runner, env, config):
         actor_learner.observation_norm,
         actor_learner.goal_norm,
     )
+    policy_output = action + config.action_noise * jax.random.normal(
+        action_key, action.shape
+    )
     action = jnp.clip(
-        action + config.action_noise * jax.random.normal(action_key, action.shape),
+        policy_output,
         -env.action_clip,
         env.action_clip,
     )
     after, observation, reward, done, info = env.step_batch(
         before,
-        jnp.where(finite_environments(action)[:, None], action, 0.0),
+        jnp.where(valid_environments(policy_output)[:, None], action, 0.0),
         physics_key,
         reset=False,
     )
@@ -191,6 +192,8 @@ def collect_step(runner, env, config):
     delta = state_delta(transition.state, transition.successor)
     fields = {
         "transition": transition,
+        "policy_output": policy_output,
+        "physics": (after.data.qpos, after.data.qvel, after.data.qacc),
         "observation": observation,
         "history": collector.history,
         "goal": goals,
@@ -200,9 +203,9 @@ def collect_step(runner, env, config):
         "model_input": features,
         "model_target": delta,
     }
-    rejected = {name: ~finite_environments(value) for name, value in fields.items()}
+    rejected = {name: ~valid_environments(value) for name, value in fields.items()}
     rejected["physics_state"] = info["done/nonfinite"]
-    rejected["reward"] = info["reward/nonfinite"]
+    rejected["reward"] = info["reward/invalid"]
     valid = (
         inputs_valid
         & ~info["done/nonfinite"]
@@ -312,19 +315,18 @@ def collect_step(runner, env, config):
         "diagnostic/frame": transition.reference_frame[first]
         - env.reference_bank.time_offsets[transition.clip_id[first]],
         "diagnostic/vector_step": collector.vector_steps,
-        **{
-            f"diagnostic/nonfinite/{name}": mask.sum()
-            for name, mask in rejected.items()
-        },
+        **{f"diagnostic/invalid/{name}": mask.sum() for name, mask in rejected.items()},
         "invalid/collection": (~jnp.any(valid) | ~finite).astype(jnp.float32),
     }
 
 
-def finite_environments(tree):
+def valid_environments(tree):
     return jnp.all(
         jnp.stack(
             [
-                jnp.all(jnp.isfinite(value).reshape((value.shape[0], -1)), axis=1)
+                jnp.all(
+                    mujoco_values_valid(value).reshape((value.shape[0], -1)), axis=1
+                )
                 for value in jax.tree.leaves(tree)
             ]
         ),

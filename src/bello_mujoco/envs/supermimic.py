@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
+from bello_mujoco.envs.geometry import mujoco_values_valid
 from bello_mujoco.envs.motion_tracking import BelloMotionTrackingEnv
 from bello_mujoco.motion.clip import MotionClip
 from bello_mujoco.robot_tasks import motion_task_definition
@@ -462,6 +463,14 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             - 1
         )
         nonfinite = ~jnp.all(jnp.isfinite(physical.flatten()))
+        numerical = nonfinite | ~jnp.all(
+            jnp.concatenate(
+                tuple(
+                    mujoco_values_valid(value)
+                    for value in (state.data.qpos, state.data.qvel, state.data.qacc)
+                )
+            )
+        )
         terminal = self.mdp.terminal(physical, reference)
         timeout = state.reference_time >= end
         return {
@@ -469,9 +478,10 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             "done/orientation": tilt > self.mdp.config.tilt_error,
             "done/end_effector": jnp.asarray(False),
             "done/nonfinite": nonfinite,
+            "done/numerical": numerical,
             "done/terminal": terminal,
             "done/timeout": timeout,
-            "done/any": terminal | timeout | nonfinite,
+            "done/any": terminal | timeout | numerical,
         }
 
     def _info(self, state, observation, reward_info, done_flags):
@@ -490,13 +500,13 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
 
     def _sanitize_nonfinite_reward(self, reward, reward_info, done_flags):
         # Tracking diagnostics are not additive reward components.
-        invalid = done_flags["done/nonfinite"] | ~jnp.isfinite(reward)
+        invalid = done_flags["done/numerical"] | ~jnp.isfinite(reward)
         return jnp.where(invalid, 0.0, reward), {
             **{
                 name: jnp.where(invalid, 0.0, value)
                 for name, value in reward_info.items()
             },
-            "reward/nonfinite": invalid,
+            "reward/invalid": invalid,
         }
 
     def context(self, state, world_id):

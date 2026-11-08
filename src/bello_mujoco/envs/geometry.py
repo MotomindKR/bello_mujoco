@@ -2,6 +2,14 @@
 
 import jax
 import jax.numpy as jnp
+import mujoco
+
+
+def mujoco_values_valid(value):
+    """MuJoCo's numerical validity range, including finite divergent values."""
+    return (
+        jnp.isfinite(value) & (value >= -mujoco.mjMAXVAL) & (value <= mujoco.mjMAXVAL)
+    )
 
 
 def quat_rotate_inverse(quat_wxyz: jax.Array, vec: jax.Array) -> jax.Array:

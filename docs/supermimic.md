@@ -129,12 +129,14 @@ shutdown drains pending uploads before closing W&B.
 - Collection episode caps are bootstrapped timeouts. Full-clip evaluation retains
   the original recording length. Height/tilt errors and nonfinite states cause
   episode failures; horizontal drift and joint RMS are reported separately.
-- Nonfinite collection transitions reset their environments and are excluded
+- Numerically invalid collection transitions reset their environments and are excluded
   from replay, normalizers and curriculum scoring. Rejection reports identify
   the environment, clip index, source frame and affected fields. Invalid resets,
   an entirely invalid collection batch, corrupt global statistics and physics
   capacity overflows stop training. Fatal errors are saved in `failure.json`
   and the W&B run summary before shutdown.
+  Validity includes MuJoCo's `mjMAXVAL` magnitude bound and raw accelerations;
+  finite divergent states must not enter replay or running statistics.
 - BF16 networks keep master parameters, normalization and optimizer state in
   FP32. Dense forward/backward matrix products use BF16; LayerNorm and its
   following activation retain FP32 intermediates.
