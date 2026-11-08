@@ -267,10 +267,11 @@ published optimal hyperparameters or a complete semantic classifier.
 
 Rotations are resampled with shortest-arc SLERP. Shape-dependent SMPL-X joint FK
 feeds the pinned stock Mini GMR profile. AMASS, LAFAN and BONES share the same
-retarget and clip reconstruction functions. GMR output poses are preserved,
-without floor translation, pose calibration or contact projection. The AMASS
-quality thresholds in `AmassPreparationConfig` reject excessive joint speed or
-penetration; source data and rejected poses are never silently corrected.
+retarget and clip reconstruction functions. Offline IK adds collision-surface
+floor constraints to the stock profile, with bounded convergence passes and a
+recorded residual root lift. Airborne targets retain their height; source data
+remains read-only. The AMASS quality thresholds in `AmassPreparationConfig`
+reject excessive joint speed or penetration.
 Shared reconstruction checks canonical motor/joint positions and computes
 central-difference velocities and native link-origin FK/twists. Foot labels use
 sole proximity, not measured forces. These checks do not certify dynamic
