@@ -193,12 +193,22 @@ def test_cache_commits_complete_receipt_or_leaves_no_resumable_partial(
     from bello_mujoco.motion import bones
     from bello_mujoco.motion.retarget import RetargetValidationError
 
-    config = SimpleNamespace(output_directory=tmp_path, fps=50, contact_height_m=0.03)
+    output = tmp_path / "output"
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    config = SimpleNamespace(
+        output_directory=output,
+        staging_directory=scratch,
+        fps=50,
+        contact_height_m=0.03,
+    )
     motion = SimpleNamespace(position=np.zeros((3, 1, 3)))
     motion.resample = lambda fps: motion
     monkeypatch.setattr(bones, "parse_bvh", lambda text: motion)
 
     def convert(motion, path):
+        assert path.is_relative_to(scratch)
+        assert not output.exists()
         path.write_bytes(b"native")
         return {"soma_sha256": "soma"}
 
@@ -225,12 +235,56 @@ def test_cache_commits_complete_receipt_or_leaves_no_resumable_partial(
     if failure == "unexpected":
         with pytest.raises(RuntimeError, match="broken converter"):
             bones._prepare_job(entry, b"source")
-        assert completed_sequences(tmp_path) == set()
+        assert completed_sequences(output) == set()
+        assert not list(scratch.iterdir())
         return
     report = bones._prepare_job(entry, b"source")
-    directory = clip_directory(tmp_path, "take")
-    assert completed_sequences(tmp_path) == {"take"}
+    directory = clip_directory(output, "take")
+    assert completed_sequences(output) == {"take"}
     assert json.loads((directory / "preparation.json").read_text()) == report
     assert report["status"] == ("rejected" if failure else "prepared")
     assert (directory / "mini.npz").exists() is (failure is None)
     assert list(directory.parent.iterdir()) == [directory]
+    assert not list(scratch.iterdir())
+
+
+def test_failed_publication_cannot_be_mistaken_for_a_completed_clip(
+    tmp_path, monkeypatch
+):
+    from bello_mujoco.motion import bones
+
+    staging = tmp_path / "scratch"
+    staging.mkdir()
+    (staging / "human.npz").write_bytes(b"human")
+    output = tmp_path / "output"
+    destination = clip_directory(output, "take")
+
+    def interrupted_copy(source, target):
+        target.write_bytes(b"partial")
+        assert completed_sequences(output) == set()
+        raise OSError("NAS connection interrupted")
+
+    monkeypatch.setattr(bones.shutil, "copyfile", interrupted_copy)
+    with pytest.raises(OSError, match="NAS connection interrupted"):
+        bones.publish_clip(staging, destination)
+    assert completed_sequences(output) == set()
+    assert not list(destination.parent.iterdir())
+    assert (staging / "human.npz").read_bytes() == b"human"
+
+
+def test_preparation_never_stages_files_inside_the_read_only_source(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+    from bello_mujoco.motion import bones
+
+    monkeypatch.setattr(bones, "capture_repository_commit", lambda: "a" * 40)
+    source = tmp_path / "source"
+    config = SimpleNamespace(
+        source_directory=source,
+        output_directory=tmp_path / "output",
+        staging_directory=source / "scratch",
+    )
+    with pytest.raises(ValueError, match="staging_directory.*read-only source"):
+        bones.prepare_bones(config)
+    assert not source.exists()

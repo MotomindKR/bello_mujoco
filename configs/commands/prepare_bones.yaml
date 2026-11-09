@@ -1,5 +1,6 @@
 source_directory: null
 output_directory: null
+staging_directory: outputs/bones-staging
 metadata_file: metadata/seed_metadata_v004.csv
 bind_file: soma_shapes/soma_base_rig/soma_base_skel_minimal.bvh
 # Appendix E gives examples, not the complete author filter. Record every exclusion.

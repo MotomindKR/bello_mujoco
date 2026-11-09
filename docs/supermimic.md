@@ -62,6 +62,7 @@ stock Mini GMR:
 ```bash
 uv run --group soma bello-prepare-bones source_directory=/data/bones-seed \
   output_directory=/data/derived/bones-mini \
+  staging_directory=/local-ssd/bones-staging \
   soma.asset_directory=/data/soma-assets \
   smplx_model_directory=/data/body-models/SMPLX
 ```
@@ -74,7 +75,10 @@ Robot-specific feasibility screening and training/evaluation corpus assembly
 follow this cache step.
 
 The command streams the compressed archive without extracting raw BVH copies.
-Two CPU workers reuse their body and robot models. Each atomically completed
+Use a local SSD for `staging_directory`: conversion, validation and checksums run
+there. Completed files are copied into a temporary output directory and exposed
+with one atomic rename, so NAS outputs avoid intermediate reads and ZIP seeks.
+Workers reuse their body and robot models. Each atomically completed
 `clips/SHARD/SEQUENCE/` retains the SOMA pose, native `human.npz`, Mini `mini.npz`,
 and a checksum/diagnostics receipt. Physical IK or position-limit failures retain
 human exports with an explicit rejection receipt; other errors fail the job.

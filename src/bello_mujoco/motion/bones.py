@@ -10,6 +10,7 @@ import math
 import multiprocessing
 import os
 from pathlib import Path, PurePosixPath
+import shutil
 import tarfile
 import tempfile
 from time import perf_counter
@@ -37,6 +38,7 @@ from bello_mujoco.terrain import FLAT_TERRAIN
 class BonesPreparationConfig:
     source_directory: Path
     output_directory: Path
+    staging_directory: Path
     metadata_file: str
     bind_file: str
     excluded_name_terms: tuple[str, ...]
@@ -165,6 +167,19 @@ def clip_directory(output, sequence):
     return output / "clips" / shard / sequence
 
 
+def publish_clip(staging, destination):
+    """Expose a completed clip only after its files have reached the output store."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{destination.name}-", dir=destination.parent
+    ) as temporary:
+        complete = Path(temporary) / "complete"
+        complete.mkdir()
+        for path in staging.iterdir():
+            shutil.copyfile(path, complete / path.name)
+        complete.rename(destination)
+
+
 _worker = None
 
 
@@ -187,9 +202,8 @@ def _prepare_job(entry, payload):
         raise ValueError("source BVH frame count differs from pinned metadata")
     motion = motion.resample(config.fps)
     destination = clip_directory(config.output_directory, entry["sequence"])
-    destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
-        prefix=f".{entry['sequence']}-", dir=destination.parent
+        prefix=f"{entry['sequence']}-", dir=config.staging_directory
     ) as temporary:
         staging = Path(temporary) / "complete"
         staging.mkdir()
@@ -234,7 +248,7 @@ def _prepare_job(entry, payload):
         (staging / "preparation.json").write_text(
             json.dumps(report, allow_nan=False) + "\n"
         )
-        staging.rename(destination)
+        publish_clip(staging, destination)
     return report
 
 
@@ -256,10 +270,10 @@ def prepare_bones(config):
     commit = capture_repository_commit()
     output = config.output_directory
     source = config.source_directory.resolve()
-    if output.resolve().is_relative_to(source):
-        raise ValueError(
-            "output_directory must be outside the read-only source dataset"
-        )
+    for name in ("output_directory", "staging_directory"):
+        if getattr(config, name).resolve().is_relative_to(source):
+            raise ValueError(f"{name} must be outside the read-only source dataset")
+    config.staging_directory.mkdir(parents=True, exist_ok=True)
     assets = {
         path.name: file_sha256(path)
         for path in soma_asset_paths(config.soma, config.smplx_model_directory)
