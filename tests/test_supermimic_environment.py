@@ -230,6 +230,13 @@ def test_native_mini_collection_uses_new_codec_reward_and_terminal_successors(
         first.last_action,
     )
     np.testing.assert_allclose(expected_reward, reward, atol=1e-6)
+    np.testing.assert_array_equal(state.data.qacc, data.qacc.astype(np.float32))
+    divergent = state.replace(
+        data=replace(state.data, qacc=state.data.qacc.at[0].set(2 * mujoco.mjMAXVAL))
+    )
+    flags = jax.jit(env.termination_flags)(divergent)
+    assert not bool(flags["done/nonfinite"])
+    assert bool(flags["done/numerical"]) and bool(flags["done/any"])
     terminal = replace(
         env.physical_state(state),
         position=env.physical_state(state).position + jnp.array([0.0, 0.0, 1.0]),

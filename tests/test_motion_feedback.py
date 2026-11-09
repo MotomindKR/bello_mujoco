@@ -280,6 +280,7 @@ def test_native_contact_view_pads_without_changing_active_contacts(env):
             for name in (
                 "qpos",
                 "qvel",
+                "qacc",
                 "ctrl",
                 "xpos",
                 "xquat",

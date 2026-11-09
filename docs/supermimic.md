@@ -137,6 +137,8 @@ shutdown drains pending uploads before closing W&B.
   and the W&B run summary before shutdown.
   Validity includes MuJoCo's `mjMAXVAL` magnitude bound and raw accelerations;
   finite divergent states must not enter replay or running statistics.
+  Native evaluation retains these accelerations and applies the same numerical
+  termination.
 - BF16 networks keep master parameters, normalization and optimizer state in
   FP32. Dense forward/backward matrix products use BF16; LayerNorm and its
   following activation retain FP32 intermediates.

@@ -22,6 +22,7 @@ class NativeContactData:
 class NativeMotionData:
     qpos: jax.Array
     qvel: jax.Array
+    qacc: jax.Array
     ctrl: jax.Array
     xpos: jax.Array
     xquat: jax.Array

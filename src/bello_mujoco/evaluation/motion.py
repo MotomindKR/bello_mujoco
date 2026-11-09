@@ -389,6 +389,9 @@ def native_motion_state(
         qvel=jax.numpy.asarray(
             np.asarray(mj_data.qvel).copy(), dtype=jax.numpy.float32
         ),
+        qacc=jax.numpy.asarray(
+            np.asarray(mj_data.qacc).copy(), dtype=jax.numpy.float32
+        ),
         ctrl=jax.numpy.asarray(
             np.asarray(mj_data.ctrl).copy(), dtype=jax.numpy.float32
         ),
