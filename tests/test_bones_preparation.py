@@ -185,7 +185,7 @@ def test_resume_only_discovers_atomically_completed_directories(tmp_path):
 
 
 @pytest.mark.parametrize("failure", [None, "physical", "unexpected"])
-def test_cache_commits_complete_receipt_or_leaves_no_resumable_partial(
+def test_worker_finishes_locally_before_coordinator_publishes_complete_receipt(
     tmp_path, monkeypatch, failure
 ):
     import json
@@ -238,14 +238,18 @@ def test_cache_commits_complete_receipt_or_leaves_no_resumable_partial(
         assert completed_sequences(output) == set()
         assert not list(scratch.iterdir())
         return
-    report = bones._prepare_job(entry, b"source")
+    report, staging = bones._prepare_job(entry, b"source")
+    assert completed_sequences(output) == set()
+    assert staging.is_relative_to(scratch)
+    assert json.loads((staging / "preparation.json").read_text()) == report
+    bones.publish_clip(staging, clip_directory(output, "take"))
     directory = clip_directory(output, "take")
     assert completed_sequences(output) == {"take"}
     assert json.loads((directory / "preparation.json").read_text()) == report
     assert report["status"] == ("rejected" if failure else "prepared")
     assert (directory / "mini.npz").exists() is (failure is None)
     assert list(directory.parent.iterdir()) == [directory]
-    assert not list(scratch.iterdir())
+    assert staging.exists()
 
 
 def test_failed_publication_cannot_be_mistaken_for_a_completed_clip(

@@ -76,8 +76,9 @@ follow this cache step.
 
 The command streams the compressed archive without extracting raw BVH copies.
 Use a local SSD for `staging_directory`: conversion, validation and checksums run
-there. Completed files are copied into a temporary output directory and exposed
-with one atomic rename, so NAS outputs avoid intermediate reads and ZIP seeks.
+there. The coordinator publishes completed clips while workers process the next
+recordings; the bounded queue limits local disk use. Files reach a temporary NAS
+directory before one atomic rename, avoiding intermediate NAS reads and ZIP seeks.
 Workers reuse their body and robot models. Each atomically completed
 `clips/SHARD/SEQUENCE/` retains the SOMA pose, native `human.npz`, Mini `mini.npz`,
 and a checksum/diagnostics receipt. Physical IK or position-limit failures retain

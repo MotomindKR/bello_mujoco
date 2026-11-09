@@ -2,7 +2,7 @@
 
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import csv
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import io
 import json
@@ -201,12 +201,10 @@ def _prepare_job(entry, payload):
     if len(motion.position) != entry["source_frames"]:
         raise ValueError("source BVH frame count differs from pinned metadata")
     motion = motion.resample(config.fps)
-    destination = clip_directory(config.output_directory, entry["sequence"])
-    with tempfile.TemporaryDirectory(
-        prefix=f"{entry['sequence']}-", dir=config.staging_directory
-    ) as temporary:
-        staging = Path(temporary) / "complete"
-        staging.mkdir()
+    staging = Path(
+        tempfile.mkdtemp(prefix=f"{entry['sequence']}-", dir=config.staging_directory)
+    )
+    try:
         native_path = staging / "human.npz"
         provenance = converter.convert(motion, native_path)
         converted = perf_counter()
@@ -248,8 +246,10 @@ def _prepare_job(entry, payload):
         (staging / "preparation.json").write_text(
             json.dumps(report, allow_nan=False) + "\n"
         )
-        publish_clip(staging, destination)
-    return report
+    except BaseException:
+        shutil.rmtree(staging)
+        raise
+    return report, staging
 
 
 def completed_sequences(output):
@@ -330,11 +330,14 @@ def prepare_bones(config):
     if not pending:
         return
     with (
+        tempfile.TemporaryDirectory(
+            prefix="bones-", dir=config.staging_directory
+        ) as staging_run,
         ProcessPoolExecutor(
             max_workers=config.workers,
             mp_context=multiprocessing.get_context("spawn"),
             initializer=_initialize_worker,
-            initargs=(config, bind),
+            initargs=(replace(config, staging_directory=Path(staging_run)), bind),
         ) as pool,
         (output / "preparation.jsonl").open("a") as journal,
     ):
@@ -344,7 +347,11 @@ def prepare_bones(config):
             nonlocal jobs
             finished, jobs = wait(jobs, return_when=FIRST_COMPLETED)
             for future in finished:
-                report = future.result()
+                report, staging = future.result()
+                try:
+                    publish_clip(staging, clip_directory(output, report["sequence"]))
+                finally:
+                    shutil.rmtree(staging)
                 journal.write(json.dumps(report, allow_nan=False) + "\n")
                 journal.flush()
                 done.add(report["sequence"])
