@@ -259,7 +259,6 @@ export WARP_CACHE_PATH="$PWD/.warp-cache"
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
-export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
 export TF_GPU_ALLOCATOR=cuda_malloc_async
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export JAX_PLATFORMS=cuda

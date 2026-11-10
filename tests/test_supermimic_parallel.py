@@ -24,7 +24,8 @@ def test_two_device_training_numerics():
 
 
 @pytest.mark.integration
-def test_two_cuda_devices_collect_fit_imagine(tmp_path):
+@pytest.mark.parametrize("randomization", [True, False])
+def test_two_cuda_devices_collect_fit_imagine(tmp_path, randomization):
     from dataclasses import replace
     import jax
     import numpy as np
@@ -44,6 +45,13 @@ def test_two_cuda_devices_collect_fit_imagine(tmp_path):
     run = replace(
         supermimic_training_profile(path.parent, name="bello_mini_supermimic_smoke"),
         num_devices=2,
+    )
+    run = replace(
+        run,
+        environment=replace(
+            run.environment,
+            randomization=replace(run.environment.randomization, enabled=randomization),
+        ),
     )
     cfg = replace(run.config, num_envs=4)
     run = replace(run, config=cfg)

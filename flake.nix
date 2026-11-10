@@ -46,7 +46,6 @@
             export XLA_PYTHON_CLIENT_PREALLOCATE="''${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
             export MUJOCO_GL=${mujocoGl}
             ${pkgs.lib.optionalString training ''
-              export XLA_FLAGS="--xla_gpu_triton_gemm_any=true"
               export TF_GPU_ALLOCATOR=cuda_malloc_async
             ''}
             ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''

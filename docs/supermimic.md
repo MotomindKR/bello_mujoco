@@ -130,6 +130,10 @@ distinct slices of the randomized worlds. Normalization and the return curriculu
 aggregate all devices, and global learning losses synchronize parameter gradients.
 Collection uses `pmap` with the pinned MJX-Warp runtime; replay sampling and learning
 use sharded JAX arrays.
+Use the matched JAX, MuJoCo and Warp releases in `uv.lock`; upgrading JAX alone
+does not establish CUDA compatibility. Keep XLA's default kernel selection.
+The CUDA check exercises randomized and nominal physics through collection,
+model fitting and policy updates.
 Reference arrays are replicated, so each GPU must fit the whole reference bank plus
 its training state. Checkpoints preserve the partitioned replay and require the same
 device count when resuming. Other training tasks remain single-GPU.

@@ -266,7 +266,7 @@ class DataParallel:
             axis_name=AXIS,
             devices=devices,
             axis_size=self.count,
-            in_axes=(None, None, None, pmap_axes(physics_specs), None),
+            in_axes=(None, 0, None, pmap_axes(physics_specs), None),
             out_axes=pmap_axes(specs),
         )
         collect = jax.pmap(
@@ -283,7 +283,11 @@ class DataParallel:
         @jax.jit
         def initialize_global(learner, key, bank, physical, environment):
             result = initialize(
-                learner, key, bank, self.pack(physical, physics_specs), environment
+                learner,
+                jnp.broadcast_to(key, (self.count,) + key.shape),
+                bank,
+                self.pack(physical, physics_specs),
+                environment,
             )
             return self.unpack(result, layout)
 
