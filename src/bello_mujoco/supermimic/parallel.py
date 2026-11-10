@@ -313,13 +313,16 @@ class DataParallel:
         environment_axes = (None, physics_axes, None)
 
         def mapped(function, inputs, outputs):
-            return jax.pmap(
-                function,
-                axis_name=AXIS,
-                devices=devices,
-                axis_size=self.count,
-                in_axes=inputs + environment_axes,
-                out_axes=outputs,
+            # JIT canonicalizes zero-size MJX buffers at each pmap boundary.
+            return jax.jit(
+                jax.pmap(
+                    function,
+                    axis_name=AXIS,
+                    devices=devices,
+                    axis_size=self.count,
+                    in_axes=inputs + environment_axes,
+                    out_axes=outputs,
+                )
             )
 
         initialize = mapped(initialize, (None, 0), runner_axes)

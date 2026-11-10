@@ -233,6 +233,19 @@ def exercise_parallel_training():
         model: object = None
         motion: object = None
 
+        def reset_batch(self, count, rng):
+            state, observation = super().reset_batch(count, rng)
+            return replace(
+                state, data=replace(state.data, qacc=state.data.qacc[:, :0])
+            ), observation
+
+        def step_batch(self, state, action, rng, *, reset):
+            stepped, *outputs = super().step_batch(state, action, rng, reset=reset)
+            stepped = replace(
+                stepped, data=replace(stepped.data, qacc=stepped.data.qacc[:, :0])
+            )
+            return stepped, *outputs
+
         def context(self, state, world_id):
             return jnp.concatenate(
                 (
@@ -280,11 +293,13 @@ def exercise_parallel_training():
         )
         return result, reduce_collection_metrics(metrics, config.num_envs // 2)
 
-    fused_collect = jax.pmap(
-        fused_collect,
-        axis_name=AXIS,
-        in_axes=(pmap_axes(runner_specs()), None, pmap_axes(physics_specs), None),
-        out_axes=(pmap_axes(runner_specs()), None),
+    fused_collect = jax.jit(
+        jax.pmap(
+            fused_collect,
+            axis_name=AXIS,
+            in_axes=(pmap_axes(runner_specs()), None, pmap_axes(physics_specs), None),
+            out_axes=(pmap_axes(runner_specs()), None),
+        )
     )
     expected_runner = parallel.pack(collection_runner, collection_layout())
     for _ in range(4):
@@ -305,6 +320,7 @@ def exercise_parallel_training():
     assert int(collection_runner.collector.vector_steps) == 4
     assert float(collection_metrics["invalid/collection"]) == 0
     assert collection_runner.collector.environment.data.qpos.shape[:2] == (2, 1)
+    assert collection_runner.collector.environment.data.qacc.shape == (2, 1, 0)
     large_bank = replace(
         env.reference_bank,
         time_offsets=jnp.array([50_000_000]),
