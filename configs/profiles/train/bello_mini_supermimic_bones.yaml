@@ -1,0 +1,9 @@
+num_devices: 2
+dataset:
+  max_array_bytes: 68719476736
+checkpoint_config:
+  name: bello_mini_supermimic_bones_seed${config.seed}
+  every_updates: 10000
+wandb_config:
+  group: bello-mini-supermimic-bones
+  run_name: bello_mini_supermimic_bones_seed${config.seed}

@@ -131,8 +131,9 @@ rental teardown. Closing a local monitor does not destroy a running job.
 `num_envs` optionally overrides the selected profile on the remote host.
 The public `offer` tree exposes `gpu_name`, `min_gpu_ram_gb`, `min_cpu_ram_gb`,
 `disk_gb` and the existing marketplace filters.
-Training supports exactly one GPU per instance. Use `dry_run=true` to inspect
-selection without renting.
+SuperMimic supports multiple GPUs per instance through `offer.num_gpus`, forwarded
+as the trainer's `num_devices`. Other tasks require one GPU. Use `dry_run=true`
+to inspect selection without renting.
 SuperMimic evaluation accepts `evaluation_split=held_out` (default) or
 `evaluation_split=training`, with manifest membership checked in both cases.
 Training-motion reports are explicitly labelled as reconstruction rather than

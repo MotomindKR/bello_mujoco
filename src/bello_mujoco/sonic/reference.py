@@ -46,6 +46,8 @@ class ReferenceBank:
     def from_clips(
         cls,
         clips: Iterable[tuple[str, MotionClip, SplitName]],
+        *,
+        device=None,
     ) -> ReferenceBank:
         entries = tuple(clips)
         if not entries:
@@ -80,11 +82,12 @@ class ReferenceBank:
         )
 
         def concatenate(field: str) -> jax.Array:
-            return jnp.asarray(
+            return jax.device_put(
                 np.concatenate(
                     tuple(np.asarray(getattr(clip, field)) for _, clip, _ in entries),
                     axis=0,
-                )
+                ),
+                device,
             )
 
         split_lookup = {"train": 0, "evaluation": 1}
@@ -95,11 +98,15 @@ class ReferenceBank:
             clip_names=names,
             max_clip_frames=int(lengths.max()),
             clock_end=int(time_offsets[-1] + lengths[-1]),
-            offsets=jnp.asarray(offsets),
-            time_offsets=jnp.asarray(time_offsets),
-            lengths=jnp.asarray(lengths),
-            split_ids=jnp.asarray(
-                [split_lookup[split_name] for _, _, split_name in entries]
+            offsets=jax.device_put(offsets, device),
+            time_offsets=jax.device_put(time_offsets, device),
+            lengths=jax.device_put(lengths, device),
+            split_ids=jax.device_put(
+                np.asarray(
+                    [split_lookup[split_name] for _, _, split_name in entries],
+                    dtype=np.int32,
+                ),
+                device,
             ),
             split_counts=(
                 sum(split_name == "train" for _, _, split_name in entries),
@@ -149,7 +156,7 @@ class ReferenceBank:
 
     def sample_global_frame(self, global_frame: jax.Array) -> MotionSample:
         """Sample a frame clock without a lossy frame/seconds round trip."""
-        global_frame = jnp.maximum(jnp.asarray(global_frame), 0.0)
+        global_frame = jnp.maximum(jnp.asarray(global_frame), 0)
         clip_id = jnp.clip(
             jnp.searchsorted(self.time_offsets, global_frame, side="right") - 1,
             0,
@@ -254,6 +261,7 @@ def load_reference_bank(
     model,
     *,
     evaluation_names: Iterable[str] = (),
+    device=None,
 ) -> ReferenceBank:
     paths = tuple(Path(path).expanduser().resolve() for path in paths)
     evaluation = frozenset(evaluation_names)
@@ -265,4 +273,4 @@ def load_reference_bank(
     unknown = sorted(evaluation - {path.stem for path in paths})
     if unknown:
         raise ValueError(f"evaluation clips were not found in the corpus: {unknown}")
-    return ReferenceBank.from_clips(clips)
+    return ReferenceBank.from_clips(clips, device=device)

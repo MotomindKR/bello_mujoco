@@ -642,7 +642,11 @@ def test_wall_budget_publishes_partial_final_checkpoint_after_actor_update(
     monkeypatch.setattr(
         training,
         "compile_updates",
-        lambda *a: (collect, lambda s: (s, {"invalid/model_update": 0.0}), improve),
+        lambda *a, **k: (
+            collect,
+            lambda s: (s, {"invalid/model_update": 0.0}),
+            improve,
+        ),
     )
     monkeypatch.setattr(training, "checkpoint_path", lambda *a: tmp_path / "saved")
     saved = []

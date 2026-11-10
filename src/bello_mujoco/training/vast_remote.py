@@ -193,7 +193,7 @@ dataset_experiment=false
 supermimic_experiment=false
 case "$experiment" in
   bello_mini_sonic_transfer) dataset_experiment=true ;;
-  bello_mini_supermimic|bello_mini_supermimic_smoke|bello_mini_supermimic_pilot|bello_mini_supermimic_amass|bello_mini_supermimic_lafan)
+  bello_mini_supermimic|bello_mini_supermimic_smoke|bello_mini_supermimic_pilot|bello_mini_supermimic_amass|bello_mini_supermimic_lafan|bello_mini_supermimic_bones)
     dataset_experiment=true
     supermimic_experiment=true
     ;;
@@ -346,6 +346,9 @@ if [ -n "$learning_rate" ]; then
 fi
 if [ -n "${BELLO_NUM_ENVS:-}" ]; then
   training_overrides+=("num_envs=$BELLO_NUM_ENVS")
+fi
+if [ "$supermimic_experiment" = true ]; then
+  training_overrides+=("num_devices=$BELLO_NUM_DEVICES")
 fi
 if [ "$dataset_experiment" = true ]; then
   training_overrides+=(
@@ -681,6 +684,7 @@ def run_remote_training(
                 "WANDB_API_KEY": wandb_key,
                 "GITHUB_TOKEN": github_token,
                 "BELLO_NUM_ENVS": str(config.num_envs or ""),
+                "BELLO_NUM_DEVICES": str(config.offer.num_gpus),
             },
             "dataset_training": {
                 "motion_dataset_artifact": config.motion_dataset_artifact or "",

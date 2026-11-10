@@ -34,8 +34,9 @@ def validate_frame_clock(bank, control_timestep):
         raise ValueError(
             "SuperMimic clips must use a power-of-two multiple of the control rate"
         )
-    if bank.clock_end >= 2**24 * min(1.0, step):
-        raise ValueError("SuperMimic corpus exceeds exact float32 frame-clock capacity")
+    capacity = 2**31 if step.is_integer() else 2**24 * min(1.0, step)
+    if bank.clock_end >= capacity:
+        raise ValueError("SuperMimic corpus exceeds exact frame-clock capacity")
 
 
 def align_reference(state, xy, yaw):
@@ -138,6 +139,7 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         batch_size=1,
         use_viewer_model=False,
         load_mjx=True,
+        reference_device=None,
     ):
         if load_mjx and env_config.observation_low_pass_filter.enabled:
             raise ValueError(
@@ -153,7 +155,9 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             use_viewer_model=use_viewer_model,
             load_mjx=load_mjx,
         )
-        bank = load_reference_bank(paths, model, evaluation_names=evaluation_names)
+        bank = load_reference_bank(
+            paths, model, evaluation_names=evaluation_names, device=reference_device
+        )
         kin = Kinematics.from_model(
             model.mj_model,
             model.actuator_joint_names,
@@ -177,7 +181,10 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             control.timestep,
             tracking_config,
         )
-        first = bank.sample_frames(jnp.asarray(0), jnp.arange(int(bank.lengths[0])))
+        first = bank.sample_frames(
+            jnp.asarray(0, device=reference_device),
+            jnp.arange(int(bank.lengths[0]), device=reference_device),
+        )
         motion = MotionClip(
             bank.fps,
             bank.joint_names,
@@ -302,9 +309,18 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         )
 
     def advance_reference_time(self, frame):
+        frame = jnp.asarray(frame, dtype=self.reference_time_dtype)
         return self.reference_bank.advance_global_frame(
-            frame, self.reference_bank.fps * self.control_timestep
+            frame,
+            jnp.asarray(
+                self.reference_bank.fps * self.control_timestep, dtype=frame.dtype
+            ),
         )
+
+    @property
+    def reference_time_dtype(self):
+        step = self.reference_bank.fps * self.control_timestep
+        return jnp.int32 if step.is_integer() else jnp.float32
 
     def reference_time_seconds(self, frame):
         return frame / self.reference_bank.fps

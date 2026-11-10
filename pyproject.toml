@@ -13,7 +13,7 @@ dependencies = [
   "grpcio>=1.83,<2",
   "hydra-core>=1.3.2",
   "imageio-ffmpeg>=0.6.0",
-  "jax>=0.6.0",
+  "jax>=0.10.2",
   "keyring>=25.6.0",
   "mujoco==3.12.0",
   "mujoco-mjx[warp]==3.12.0",
@@ -52,7 +52,7 @@ bello-audit-world-model = "bello_mujoco.evaluation.world_model_audit:main"
 
 [dependency-groups]
 training = [
-  "jax[cuda13]>=0.6.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "jax[cuda13]>=0.10.2; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 dev = [
   "grpcio-tools>=1.83,<2",

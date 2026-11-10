@@ -39,6 +39,7 @@ class TrainCommandConfig:
     seed: int | None
     total_timesteps: int | None
     num_envs: int | None
+    num_devices: int | None
     learning_rate: float | None
     contact_budget_per_env: int | None
     motion_path: Path | None
@@ -143,6 +144,10 @@ def train_entrypoint() -> None:
 )
 def _train_hydra(config: DictConfig) -> None:
     command = command_config(TrainCommandConfig, config)
+    if command.num_devices is not None and not is_supermimic_experiment(
+        command.experiment
+    ):
+        raise ValueError("num_devices is only supported for SuperMimic training")
     if command.resume_path is not None and command.motion_path is not None:
         raise ValueError(
             "resume uses the checkpoint's bundled motion; do not set motion_path"
@@ -167,6 +172,9 @@ def _train_hydra(config: DictConfig) -> None:
         learning = _ppo_overrides(run_config.config, command)
         run_config = replace(
             run_config,
+            num_devices=run_config.num_devices
+            if command.num_devices is None
+            else command.num_devices,
             config=learning,
             dataset=replace(
                 run_config.dataset,

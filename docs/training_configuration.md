@@ -63,7 +63,11 @@ The [base recipe](../configs/profiles/train/bello_mini_supermimic.yaml) owns
 `config`, `environment`, `observations`, `tracking`, `networks`, `sampling`,
 `dataset`, `warp`, checkpoint settings and W&B settings. It decodes into
 `SuperMimicTrainingRunConfig`, separately from PPO. The smoke, pilot, AMASS and
-LAFAN recipes inherit the base and specify only overrides.
+LAFAN and BONES recipes inherit the base and specify only overrides.
+
+- `num_devices` selects single-host data parallelism. Environment, model and
+  imagination batch sizes are global and must divide evenly across devices.
+  Reference data is replicated; replay is partitioned along its environment axis.
 
 - `environment.control` owns physics timing and collection action clipping.
   Simulation targets are unprojected PD setpoints; hardware limiting is separate.

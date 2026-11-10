@@ -91,8 +91,10 @@ def make_transition(env, before, after, observation, action, episode_ids, reward
     )
 
 
-def initialize_collection(env, config, learner, key):
+def initialize_collection(env, config, learner, key, *, axis_name=None):
     key, reset_key = jax.random.split(key)
+    if axis_name is not None:
+        reset_key = jax.random.fold_in(reset_key, jax.lax.axis_index(axis_name))
     state, observation = env.reset_batch(config.num_envs, reset_key)
     history = jax.vmap(env.codec.initial_history)(observation)
     bins = jnp.searchsorted(env.sampler.starts, state.reference_time, side="right") - 1
@@ -142,8 +144,14 @@ def initialize_collection(env, config, learner, key):
     )
 
 
-def collect_step(runner, env, config):
+def collect_step(runner, env, config, *, axis_name=None):
     key, action_key, physics_key, reset_key = jax.random.split(runner.key, 4)
+    if axis_name is not None:
+        rank = jax.lax.axis_index(axis_name)
+        action_key, physics_key, reset_key = (
+            jax.random.fold_in(value, rank)
+            for value in (action_key, physics_key, reset_key)
+        )
     learner, collector = runner.learner, runner.collector
     before = collector.environment
     goals = jax.vmap(env.goal)(before.reference_time)
@@ -151,9 +159,9 @@ def collect_step(runner, env, config):
     actor_learner = replace(
         learner,
         observation_norm=learner.observation_norm.update(
-            collector.observation, inputs_valid
+            collector.observation, inputs_valid, axis_name=axis_name
         ),
-        goal_norm=learner.goal_norm.update(goals, inputs_valid),
+        goal_norm=learner.goal_norm.update(goals, inputs_valid, axis_name=axis_name),
     )
     action = actor_learner.actor(
         collector.history,
@@ -229,6 +237,7 @@ def collect_step(runner, env, config):
         ),
         done & valid,
         maximum_return(env, config),
+        axis_name=axis_name,
     )
     dynamic_env = replace(
         env,
@@ -254,10 +263,12 @@ def collect_step(runner, env, config):
     )
     learner = replace(
         learner,
-        observation_norm=learner.observation_norm.update(collector.observation, valid),
-        goal_norm=learner.goal_norm.update(goals, valid),
-        input_norm=learner.input_norm.update(features, valid),
-        output_norm=learner.output_norm.update(delta, valid),
+        observation_norm=learner.observation_norm.update(
+            collector.observation, valid, axis_name=axis_name
+        ),
+        goal_norm=learner.goal_norm.update(goals, valid, axis_name=axis_name),
+        input_norm=learner.input_norm.update(features, valid, axis_name=axis_name),
+        output_norm=learner.output_norm.update(delta, valid, axis_name=axis_name),
     )
     result = replace(
         runner,
@@ -292,10 +303,13 @@ def collect_step(runner, env, config):
         )
     )
     first = jnp.argmax(~valid)
+    reward_sum, valid_count = jnp.where(valid, reward, 0.0).sum(), valid.sum()
+    if axis_name is not None:
+        reward_sum, valid_count = jax.lax.psum((reward_sum, valid_count), axis_name)
+        finite = jax.lax.pmin(finite.astype(jnp.int32), axis_name).astype(bool)
     return result, {
         **env.physics_metrics(after.data),
-        "collection/reward": jnp.where(valid, reward, 0.0).sum()
-        / jnp.maximum(valid.sum(), 1),
+        "collection/reward": reward_sum / jnp.maximum(valid_count, 1),
         "collection/completed": done.sum(),
         "collection/failures": info["done/terminal"].sum(),
         "collection/limited_fraction": jnp.mean(
@@ -316,7 +330,7 @@ def collect_step(runner, env, config):
         - env.reference_bank.time_offsets[transition.clip_id[first]],
         "diagnostic/vector_step": collector.vector_steps,
         **{f"diagnostic/invalid/{name}": mask.sum() for name, mask in rejected.items()},
-        "invalid/collection": (~jnp.any(valid) | ~finite).astype(jnp.float32),
+        "invalid/collection": ((valid_count == 0) | ~finite).astype(jnp.float32),
     }
 
 

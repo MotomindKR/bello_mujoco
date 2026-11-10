@@ -220,7 +220,7 @@ def reset_native_motion_rollout(
     contact_capacity: int | None = None,
     force_capacity: int | None = None,
 ) -> tuple[MotionTrackingState, jax.Array]:
-    reference_time = jax.numpy.asarray(0.0, dtype=jax.numpy.float32)
+    reference_time = jax.numpy.asarray(0, dtype=env.reference_time_dtype)
     source = env.aligned_reference(
         reference_time,
         jax.numpy.zeros(2, dtype=jax.numpy.float32),

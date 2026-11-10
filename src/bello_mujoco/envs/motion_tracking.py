@@ -540,7 +540,7 @@ class BelloMotionTrackingEnv:
                 )
             else:
                 reference_time = jnp.asarray(0.0, dtype=jnp.float32)
-        reference_time = jnp.asarray(reference_time, dtype=jnp.float32)
+        reference_time = jnp.asarray(reference_time, dtype=self.reference_time_dtype)
         source = self.unaligned_reference(reference_time)
         desired_xy = jnp.zeros(2, dtype=jnp.float32)
         alignment_yaw = jnp.asarray(0.0, dtype=jnp.float32)
@@ -1206,6 +1206,10 @@ class BelloMotionTrackingEnv:
 
     def advance_reference_time(self, time: jax.Array) -> jax.Array:
         return time + self.control_timestep
+
+    @property
+    def reference_time_dtype(self):
+        return jnp.float32
 
     def reference_time_seconds(self, time: jax.Array) -> jax.Array:
         return time

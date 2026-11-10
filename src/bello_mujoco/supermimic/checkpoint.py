@@ -46,6 +46,15 @@ def _serialise_leaf(stream, value):
         stream.write(memoryview(chunk).cast("B"))
 
 
+def _deserialise_leaf(stream, like):
+    if not isinstance(like, jax.Array):
+        return eqx.default_deserialise_filter_spec(stream, like)
+    value = np.load(stream, allow_pickle=False)
+    if value.shape != like.shape or value.dtype != like.dtype:
+        raise ValueError("Checkpoint leaf shape or dtype differs from its template")
+    return jax.device_put(value, like.sharding)
+
+
 def resume_contract(run_config):
     value = to_builtin(run_config)
     value.pop("checkpoint_config")
@@ -159,7 +168,9 @@ def restore_checkpoint(path, template, run_config, *, git_commit, dataset_digest
         raise ValueError("SuperMimic resume configuration changed")
     if file_sha256(path / "state.eqx") != document["state_sha256"]:
         raise ValueError("checkpoint state checksum mismatch")
-    restored = eqx.tree_deserialise_leaves(path / "state.eqx", template)
+    restored = eqx.tree_deserialise_leaves(
+        path / "state.eqx", template, filter_spec=_deserialise_leaf
+    )
     if (
         int(restored.update) != document["update"]
         or int(restored.collector.vector_steps) != document["vector_steps"]

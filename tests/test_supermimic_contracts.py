@@ -188,7 +188,10 @@ def test_corpus_frame_clock_rejects_rounding_and_fractional_drift():
 
     for fps in (25.0, 50.0, 100.0):
         validate_frame_clock(SimpleNamespace(fps=fps, clock_end=1000), 0.02)
+    validate_frame_clock(SimpleNamespace(fps=50.0, clock_end=50_000_000), 0.02)
     with pytest.raises(ValueError, match="power-of-two"):
         validate_frame_clock(SimpleNamespace(fps=60.0, clock_end=1000), 0.02)
     with pytest.raises(ValueError, match="capacity"):
         validate_frame_clock(SimpleNamespace(fps=25.0, clock_end=2**23), 0.02)
+    with pytest.raises(ValueError, match="capacity"):
+        validate_frame_clock(SimpleNamespace(fps=50.0, clock_end=2**31), 0.02)

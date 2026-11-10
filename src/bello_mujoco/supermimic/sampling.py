@@ -120,9 +120,16 @@ class ReturnSampler:
             len(self.starts) - 1,
         )
         offset = jax.random.randint(frame_key, (), 0, self.lengths[index])
-        return (self.starts[index] + offset).astype(jnp.float32)
+        return (self.starts[index] + offset).astype(jnp.int32)
 
-    def update(self, state, start_bins, returns, completed, maximum_return):
+    def update(
+        self, state, start_bins, returns, completed, maximum_return, *, axis_name=None
+    ):
+        if axis_name is not None:
+            start_bins, returns, completed = jax.tree.map(
+                lambda x: jax.lax.all_gather(x, axis_name, tiled=True, to="invarying"),
+                (start_bins, returns, completed),
+            )
         counts = (
             jnp.zeros_like(state.visits).at[start_bins].add(completed.astype(jnp.int32))
         )

@@ -62,6 +62,7 @@ class DatasetConfig:
 class SuperMimicTrainingRunConfig:
     asset_config: ModelConfig
     dataset: DatasetConfig
+    num_devices: int = 1
     max_training_seconds: float | None = None
     config: LearningConfig = field(default_factory=LearningConfig)
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
@@ -77,6 +78,11 @@ class SuperMimicTrainingRunConfig:
     wandb_config: WandbConfig = field(default_factory=WandbConfig)
 
     def __post_init__(self):
+        if type(self.num_devices) is not int or self.num_devices <= 0:
+            raise ValueError("num_devices must be a positive integer")
+        for name in ("num_envs", "model_batch_size", "imagined_batch_size"):
+            if getattr(self.config, name) % self.num_devices:
+                raise ValueError(f"{name} must divide evenly across num_devices")
         if self.max_training_seconds is not None and (
             not math.isfinite(self.max_training_seconds)
             or self.max_training_seconds <= 0
@@ -105,7 +111,13 @@ class SuperMimicTrainingRunConfig:
 
 
 def load_environment(
-    run_config, *, load_mjx, paths=None, evaluation_names=None, use_viewer_model=False
+    run_config,
+    *,
+    load_mjx,
+    paths=None,
+    evaluation_names=None,
+    use_viewer_model=False,
+    reference_device=None,
 ):
     if paths is None:
         paths = tuple(sorted(run_config.dataset.directory.glob("*.npz")))
@@ -123,10 +135,11 @@ def load_environment(
         batch_size=run_config.config.num_envs if load_mjx else 1,
         load_mjx=load_mjx,
         use_viewer_model=use_viewer_model,
+        reference_device=reference_device,
     )
 
 
-def compile_updates(env, config):
+def compile_updates(env, config, *, parallel=None, parallel_collect=None):
     def collect(runner, bank):
         return collect_step(runner, replace(env, reference_bank=bank), config)
 
@@ -134,8 +147,17 @@ def compile_updates(env, config):
         def batch(carry, _):
             learner, key = carry
             key, sample_key = jax.random.split(key)
-            window = runner.replay.sample_windows(
-                sample_key, config.model_batch_size, config.window_length
+            window = (
+                runner.replay.sample_windows(
+                    sample_key, config.model_batch_size, config.window_length
+                )
+                if parallel is None
+                else parallel.sample_windows(
+                    runner.replay,
+                    sample_key,
+                    config.model_batch_size,
+                    config.window_length,
+                )
             )
             learner, metrics = update_world_model(
                 learner, window, config, runner.update
@@ -151,7 +173,14 @@ def compile_updates(env, config):
 
     def improve(runner, bank):
         key, start_key, update_key = jax.random.split(runner.key, 3)
-        starts = runner.replay.sample_starts(
+        sample_starts = (
+            runner.replay.sample_starts
+            if parallel is None
+            else lambda key, size, **kwargs: parallel.sample_starts(
+                runner.replay, key, size, **kwargs
+            )
+        )
+        starts = sample_starts(
             start_key,
             config.imagined_batch_size,
             history_frames=env.codec.config.history_frames,
@@ -188,7 +217,20 @@ def compile_updates(env, config):
             + (1.0 - metrics["imagination/skipped"]).astype(jnp.int32),
         ), metrics
 
-    return jax.jit(collect), jax.jit(fit_model), jax.jit(improve)
+    compile_learning = jax.jit
+    if parallel is not None:
+        from functools import partial
+        from bello_mujoco.supermimic.parallel import runner_specs
+
+        compile_learning = partial(
+            jax.jit,
+            out_shardings=(parallel.shardings(runner_specs()), parallel.replicated),
+        )
+    return (
+        jax.jit(collect) if parallel_collect is None else parallel_collect,
+        compile_learning(fit_model),
+        compile_learning(improve),
+    )
 
 
 def require_valid_metrics(metrics, *, clip_names=()):
@@ -363,7 +405,20 @@ def run_training(run_config):
                 raise ValueError(
                     "dataset manifest changed during artifact verification"
                 )
-        env = load_environment(run_config, load_mjx=True)
+        from bello_mujoco.supermimic.parallel import DataParallel
+
+        parallel = (
+            DataParallel.create(run_config.num_devices)
+            if run_config.num_devices > 1
+            else None
+        )
+        env = load_environment(
+            run_config,
+            load_mjx=True,
+            reference_device=None if parallel is None else parallel.replicated,
+        )
+        if parallel is not None:
+            env = parallel.environment(env)
         bank = env.reference_bank
         train_lengths = jnp.where(bank.split_ids == 0, bank.lengths - 1, 0)
         if (
@@ -375,7 +430,17 @@ def run_training(run_config):
         learner = initialize_learner(
             env, cfg, run_config.networks, env.action_size + 5, init_key
         )
-        runner = initialize_collection(env, cfg, learner, collect_key)
+        parallel_collect = None
+        if parallel is None:
+            runner = initialize_collection(env, cfg, learner, collect_key)
+        else:
+            learner = jax.device_put(learner, parallel.replicated)
+            collect_key = jax.device_put(collect_key, parallel.replicated)
+            physics, physics_specs = parallel.physics(env)
+            initialize, parallel_collect = parallel.collection(
+                env, cfg, physics, physics_specs
+            )
+            runner = initialize(learner, collect_key, bank, physics)
         if run_config.checkpoint_config.resume_path is not None:
             runner = restore_checkpoint(
                 run_config.checkpoint_config.resume_path,
@@ -384,7 +449,9 @@ def run_training(run_config):
                 git_commit=commit,
                 dataset_digest=digest,
             )
-        collect, fit, improve = compile_updates(env, cfg)
+        collect, fit, improve = compile_updates(
+            env, cfg, parallel=parallel, parallel_collect=parallel_collect
+        )
         log_config(
             run,
             {

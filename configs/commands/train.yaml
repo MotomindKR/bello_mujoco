@@ -2,6 +2,7 @@ experiment: smoke
 seed: null
 total_timesteps: null
 num_envs: null
+num_devices: null
 learning_rate: null
 contact_budget_per_env: null
 motion_path: null

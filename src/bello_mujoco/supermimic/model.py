@@ -22,17 +22,19 @@ class Moments:
     def empty(cls, size):
         return cls(jnp.zeros(size), jnp.ones(size), jnp.asarray(0.0))
 
-    def update(self, values, mask=None):
+    def update(self, values, mask=None, *, axis_name=None):
         values = values.reshape((-1, self.mean.shape[0]))
         weights = jnp.ones(values.shape[0]) if mask is None else mask.reshape(-1)
         values = jnp.where(weights[:, None] > 0, values, 0.0)
         batch_count = weights.sum()
-        batch_mean = (values * weights[:, None]).sum(axis=0) / jnp.maximum(
-            batch_count, 1
-        )
-        batch_var = (((values - batch_mean) ** 2) * weights[:, None]).sum(
-            axis=0
-        ) / jnp.maximum(batch_count, 1)
+        batch_sum = (values * weights[:, None]).sum(axis=0)
+        if axis_name is not None:
+            batch_count, batch_sum = jax.lax.psum((batch_count, batch_sum), axis_name)
+        batch_mean = batch_sum / jnp.maximum(batch_count, 1)
+        squared = (((values - batch_mean) ** 2) * weights[:, None]).sum(axis=0)
+        if axis_name is not None:
+            squared = jax.lax.psum(squared, axis_name)
+        batch_var = squared / jnp.maximum(batch_count, 1)
         total = self.count + batch_count
         delta = batch_mean - self.mean
         mean = self.mean + delta * batch_count / jnp.maximum(total, 1)

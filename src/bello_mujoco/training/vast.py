@@ -206,10 +206,10 @@ def validate_config(config: VastTrainConfig) -> None:
         raise ValueError("--total-timesteps must be positive")
     if config.num_envs is not None and config.num_envs <= 0:
         raise ValueError("num_envs must be positive")
-    if config.offer.num_gpus != 1:
-        raise ValueError(
-            "training currently supports exactly one GPU, not distributed PPO"
-        )
+    if config.offer.num_gpus <= 0:
+        raise ValueError("offer.num_gpus must be positive")
+    if config.offer.num_gpus != 1 and not is_supermimic_experiment(config.experiment):
+        raise ValueError("multiple GPUs currently require a SuperMimic experiment")
     if (
         config.offer.min_gpu_ram_gb < 0
         or config.offer.min_cpu_ram_gb <= 0

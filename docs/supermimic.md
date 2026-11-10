@@ -90,8 +90,7 @@ For AMASS, use the [AMASS preparation workflow](sonic_transfer.md#amass-research
 
 ## Train and resume
 
-Use a clean checkout with pinned submodules on Linux x86 CUDA. The current trainer
-and Vast launcher support one GPU. Start with the smoke profile:
+Use a clean checkout with pinned submodules on Linux x86 CUDA. Start with the smoke profile:
 
 ```bash
 nix develop .#training
@@ -120,6 +119,33 @@ checkout for historical policies; checkpoint migration is not supported.
 Local checkpoint saves complete before training continues. Artifact registration
 and uploads run serially in a background worker; failures stop the run, and
 shutdown drains pending uploads before closing W&B.
+
+### Multiple GPUs
+
+`num_devices` selects GPUs within one host process. Environments, replay and sampled
+learning batches are partitioned; batch settings remain global. Physics receives
+distinct slices of the randomized worlds. Normalization and the return curriculum
+aggregate all devices, and global learning losses synchronize parameter gradients.
+Collection uses `pmap` with the pinned MJX-Warp runtime; replay sampling and learning
+use sharded JAX arrays.
+Reference arrays are replicated, so each GPU must fit the whole reference bank plus
+its training state. Checkpoints preserve the partitioned replay and require the same
+device count when resuming. Other training tasks remain single-GPU.
+
+The [BONES profile](../configs/profiles/train/bello_mini_supermimic_bones.yaml) selects
+two devices and a full-corpus array budget, inheriting the base learning recipe.
+Use `offer.num_gpus=2` with Vast; the launcher forwards that count to the trainer.
+On a local CUDA host:
+
+```bash
+uv run --group training bello-train experiment=bello_mini_supermimic_bones \
+  motion_dataset=/data/bones-mini evaluation_clips='[held_out_clip]'
+```
+
+Whole-frame collection clocks use int32 indices, retaining every frame in corpora
+larger than the float32 integer range. Fractional power-of-two control steps retain
+the bounded float32 clock. GPU integration is checked with
+`JAX_PLATFORMS=cuda uv run --group training pytest -m integration tests/test_supermimic_parallel.py`.
 
 ## Runtime contract
 
