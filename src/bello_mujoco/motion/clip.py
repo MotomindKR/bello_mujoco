@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO
 
@@ -50,11 +50,12 @@ class MotionSample:
     foot_contacts: jax.Array
 
 
+@jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class MotionClip:
-    fps: float
-    joint_names: tuple[str, ...]
-    body_names: tuple[str, ...]
+    fps: float = field(metadata={"static": True})
+    joint_names: tuple[str, ...] = field(metadata={"static": True})
+    body_names: tuple[str, ...] = field(metadata={"static": True})
     qpos: jax.Array
     qvel: jax.Array
     body_pos: jax.Array

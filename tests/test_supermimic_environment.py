@@ -141,6 +141,27 @@ def mini_corpus(tmp_path):
     return asset, path
 
 
+def test_real_environment_arrays_transfer_and_compile(mini_corpus):
+    from bello_mujoco.configuration import supermimic_training_profile
+    from bello_mujoco.supermimic.parallel import DataParallel, EnvironmentArrays
+    from bello_mujoco.training.supermimic import load_environment
+
+    _, path = mini_corpus
+    config = supermimic_training_profile(
+        path.parent, name="bello_mini_supermimic_smoke"
+    )
+    env = load_environment(config, load_mjx=False, paths=(path,))
+    parallel = DataParallel.create(1)
+    placed = parallel.environment(env)
+    arrays = EnvironmentArrays.from_environment(placed)
+    for value in jax.tree.leaves(arrays):
+        assert value.sharding == parallel.replicated
+    goal = jax.jit(lambda inputs: inputs.apply(env).goal(jnp.asarray(0, jnp.int32)))(
+        arrays
+    )
+    np.testing.assert_allclose(goal, env.goal(jnp.asarray(0, jnp.int32)))
+
+
 def test_filtered_gpu_training_is_rejected_before_loading_assets():
     from bello_mujoco.envs.feedback import ObservationLowPassFilterConfig
 
