@@ -124,6 +124,10 @@ so retaining a recovery checkpoint does not require extra staging and cache copi
 
 ### Multiple GPUs
 
+Multi-GPU collection is experimental: alternating simulator collection and
+learning can hang in Warp's CUDA graph cleanup. Use one sufficiently large GPU
+for full-corpus training while that runtime issue remains unresolved.
+
 `num_devices` selects GPUs within one host process. Environments, replay and sampled
 learning batches are partitioned; batch settings remain global. Physics receives
 distinct slices of the randomized worlds. Normalization and the return curriculum
@@ -139,8 +143,8 @@ its training state. Checkpoints preserve the partitioned replay and require the 
 device count when resuming. Other training tasks remain single-GPU.
 
 The [BONES profile](../configs/profiles/train/bello_mini_supermimic_bones.yaml) selects
-two devices and a full-corpus array budget, inheriting the base learning recipe.
-Use `offer.num_gpus=2` with Vast; the launcher forwards that count to the trainer.
+one device and a full-corpus array budget, inheriting the base learning recipe.
+Vast forwards `offer.num_gpus` to the trainer.
 On a local CUDA host:
 
 ```bash
