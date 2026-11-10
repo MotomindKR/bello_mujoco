@@ -182,6 +182,17 @@ the bounded float32 clock. GPU integration is checked with
   finite divergent states must not enter replay or running statistics.
   Native evaluation retains these accelerations and applies the same numerical
   termination.
+- `config.max_joint_velocity` rejects finite simulator joint-speed spikes before
+  they enter replay, running statistics or curriculum updates. The default
+  1000 rad/s ceiling is a numerical guard; it does not filter motion files or
+  change the tracking height/tilt criteria.
+- Imagined trajectories become absorbing once cumulative survival is exactly zero.
+  The first terminal transition keeps its reward. Unreachable later states do not
+  enter critic normalization or fitting; states with positive soft survival keep
+  the unweighted critic loss. This is an explicit robustness change from the
+  paper's literal full-horizon critic fit. Return arithmetic never bootstraps
+  through a fully terminated transition. Critic target/value magnitudes and
+  imagined survival are logged for failure diagnosis.
 - BF16 networks keep master parameters, normalization and optimizer state in
   FP32. Dense forward/backward matrix products use BF16; LayerNorm and its
   following activation retain FP32 intermediates.

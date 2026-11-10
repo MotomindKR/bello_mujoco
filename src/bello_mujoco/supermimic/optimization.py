@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import optax
 
 from bello_mujoco.supermimic.imagination import actor_loss
-from bello_mujoco.supermimic.mdp import lambda_returns
+from bello_mujoco.supermimic.mdp import lambda_returns, survival_weights
 from bello_mujoco.supermimic.model import (
     Actor,
     Critic,
@@ -182,19 +182,22 @@ def update_actor_critic(learner, starts, env, config, update, key):
     )
     actor_valid &= jnp.isfinite(loss) & finite_tree(rollout)
     detached = jax.tree.map(jax.lax.stop_gradient, rollout)
-    norm = learner.critic_norm.update(detached.critic_inputs)
-    values = learner.critic(detached.critic_inputs, norm)
+    reachable = survival_weights(detached.terminations) > 0
+    critic_inputs = jnp.where(reachable[..., None], detached.critic_inputs, 0.0)
+    norm = learner.critic_norm.update(critic_inputs, reachable)
+    values = jnp.where(reachable, learner.critic(critic_inputs, norm), 0.0)
     targets = jax.lax.stop_gradient(
         lambda_returns(
-            detached.rewards,
+            jnp.where(reachable[:-1], detached.rewards, 0.0),
             detached.terminations,
             values,
             config.gamma,
             config.gae_lambda,
         )
     )
-    features = detached.critic_inputs[:-1].reshape((-1, norm.mean.size))
+    features = critic_inputs[:-1].reshape((-1, norm.mean.size))
     targets = targets.reshape(-1)
+    reachable = reachable[:-1].reshape(-1)
     batches = features.shape[0] // config.critic_minibatches
 
     def epoch(carry, rng):
@@ -207,11 +210,19 @@ def update_actor_critic(learner, starts, env, config, update, key):
             network, state = carry
 
             def objective(net):
-                return jnp.mean((net(features[index], norm) - targets[index]) ** 2)
+                error = jnp.where(
+                    reachable[index], net(features[index], norm) - targets[index], 0.0
+                )
+                return jnp.sum(error**2) / jnp.maximum(reachable[index].sum(), 1)
 
             value, grad = eqx.filter_value_and_grad(objective)(network)
-            network, state, valid = apply_optimizer(
+            updated, next_state, valid = apply_optimizer(
                 network, grad, state, critic_opt, learning_rate(config, update)
+            )
+            network, state = jax.lax.cond(
+                jnp.any(reachable[index]),
+                lambda: (updated, next_state),
+                lambda: (network, state),
             )
             return (network, state), (value, valid & jnp.isfinite(value))
 
@@ -236,6 +247,14 @@ def update_actor_critic(learner, starts, env, config, update, key):
         "actor/loss": loss,
         "critic/loss": critic_losses.mean(),
         "actor/gradient_norm": optax.global_norm(gradient),
-        "imagination/reward": rollout.rewards.mean(),
+        "imagination/reward": (
+            rollout.rewards * survival_weights(rollout.terminations)[:-1]
+        ).mean(),
+        "diagnostic/imagined_reward_abs_max": jnp.abs(rollout.rewards).max(),
+        "diagnostic/critic_target_abs_max": jnp.abs(targets).max(),
+        "diagnostic/critic_value_abs_max": jnp.abs(values).max(),
+        "diagnostic/imagined_survival": survival_weights(rollout.terminations)[
+            -1
+        ].mean(),
         "invalid/actor_critic_update": (~valid).astype(jnp.float32),
     }

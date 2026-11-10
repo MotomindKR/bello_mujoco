@@ -10,7 +10,11 @@ from bello_mujoco.supermimic.feedback import (
     add_actor_noise,
     advance_feedback,
 )
-from bello_mujoco.supermimic.mdp import critic_features, imagined_return
+from bello_mujoco.supermimic.mdp import (
+    critic_features,
+    imagined_return,
+    survival_weights,
+)
 
 
 @jax.tree_util.register_dataclass
@@ -49,16 +53,48 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
         references = jax.vmap(lambda f: env.reference_state(f, xy, yaw))(frames)
         goals = jax.vmap(env.goal)(frames)
         latents = actor.encode_goal(goals[:-1], goal_norm)
+        clips = jax.vmap(env.clip_id)(frames[1:])
+        ends = (
+            env.reference_bank.time_offsets[clips]
+            + env.reference_bank.lengths[clips]
+            - 1
+        )
+        at_end = frames[1:] >= ends
 
         def step(carry, inputs):
-            state, observations, feedback, rng = carry
-            latent, reference_quaternion = inputs
+            state, observations, feedback, rng, survival = carry
+            latent, reference, clip_end = inputs
+            active = survival > 0
+            model_state = jax.tree.map(
+                lambda value, initial: jnp.where(active, value, initial),
+                state,
+                start.state,
+            )
+            observations = jnp.where(active, observations, history)
+            feedback = jax.tree.map(
+                lambda value, initial: jnp.where(active, value, initial),
+                feedback,
+                feedback_history,
+            )
             rng, feedback_key, observation_key = jax.random.split(rng, 3)
-            action = actor.decode(observations, latent, observation_norm)
-            successor = model.step(state, action, context, input_norm, output_norm)
+            action = jnp.where(
+                active, actor.decode(observations, latent, observation_norm), 0.0
+            )
+            predicted = model.step(
+                model_state, action, context, input_norm, output_norm
+            )
+            successor = jax.tree.map(
+                lambda value, previous: jnp.where(active, value, previous),
+                predicted,
+                state,
+            )
+            termination = jnp.where(
+                active, env.mdp.soft_termination(predicted, reference), 1.0
+            )
+            termination = jnp.where(clip_end, 1.0, termination)
             feedback = advance_feedback(
                 feedback,
-                successor,
+                predicted,
                 feedback_key,
                 noise=env.config.observation_noise,
                 filtering=env.config.observation_low_pass_filter,
@@ -69,7 +105,7 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
                 env.codec,
                 measured,
                 action,
-                reference_quaternion,
+                reference.quaternion,
                 context[:count],
                 observation_key,
                 noise=env.config.observation_noise,
@@ -81,16 +117,18 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
                 observations,
                 feedback,
                 rng,
-            ), (successor, action)
+                survival * (1.0 - termination),
+            ), (successor, action, termination)
 
         initial = (
             start.state,
             history,
             feedback_history,
             noise_key,
+            jnp.asarray(1.0),
         )
-        _, (states, actions) = jax.lax.scan(
-            step, initial, (latents, references.quaternion[1:])
+        _, (states, actions, terminations) = jax.lax.scan(
+            step, initial, (latents, jax.tree.map(lambda x: x[1:], references), at_end)
         )
         states = jax.tree.map(
             lambda first, rest: jnp.concatenate((first[None], rest)),
@@ -98,7 +136,7 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
             states,
         )
         previous = jnp.concatenate((start.previous_action[None], actions[:-1]))
-        return states, actions, previous, frames, references, goals
+        return states, actions, previous, frames, references, goals, terminations
 
     trajectories = jax.vmap(single)(
         tr,
@@ -106,9 +144,25 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
         starts.feedback_history,
         jax.random.split(key, tr.action.shape[0]),
     )
-    states, actions, previous, frames, references, goals = jax.tree.map(
+    states, actions, previous, frames, references, goals, terminals = jax.tree.map(
         lambda x: jnp.swapaxes(x, 0, 1), trajectories
     )
+
+    survival = survival_weights(terminals)
+    # Keep the first terminal successor for its reward; later states are unreachable.
+    reached = jnp.concatenate((jnp.ones_like(survival[:1]), survival[:-1]), axis=0) > 0
+    states = jax.tree.map(
+        lambda values, initial: jnp.where(
+            reached.reshape(reached.shape + (1,) * (values.ndim - 2)),
+            values,
+            initial[None],
+        ),
+        states,
+        tr.state,
+    )
+    active = survival[:-1] > 0
+    actions = jnp.where(active[..., None], actions, 0.0)
+    previous = jnp.where(active[..., None], previous, 0.0)
 
     def flatten(value):
         return value.reshape((-1,) + value.shape[2:])
@@ -142,6 +196,8 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
         )
     )
 
+    critic_inputs = jnp.where(survival[..., None] > 0, critic_inputs, 0.0)
+
     def reward(state, reference, action, previous_action, body, target):
         return env.mdp.reward(
             state, reference, action, previous_action, bodies=body, targets=target
@@ -156,12 +212,7 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
             (successors, next_references, actions, previous, next_bodies, next_targets),
         )
     ).reshape((horizon, tr.action.shape[0]))
-    terminals = jax.vmap(env.mdp.soft_termination)(
-        *jax.tree.map(flatten, (successors, next_references))
-    ).reshape(rewards.shape)
-    clips = jax.vmap(env.clip_id)(frames[1:].reshape(-1)).reshape(rewards.shape)
-    end = env.reference_bank.time_offsets[clips] + env.reference_bank.lengths[clips] - 1
-    terminals = jnp.where(frames[1:] >= end, 1.0, terminals)
+    rewards = jnp.where(active, rewards, 0.0)
     return ImaginedRollout(rewards, terminals, critic_inputs)
 
 

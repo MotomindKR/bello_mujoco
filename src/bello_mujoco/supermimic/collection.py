@@ -175,7 +175,11 @@ def prepare_collection(runner, env, config, *, axis_name=None):
     learner, collector = runner.learner, runner.collector
     before = collector.environment
     goals = jax.vmap(env.goal)(before.reference_time)
-    inputs_valid = valid_environments((collector.observation, collector.history, goals))
+    inputs_valid = valid_environments(
+        (collector.observation, collector.history, goals)
+    ) & valid_joint_speeds(
+        jax.vmap(env.physical_state)(before), config.max_joint_velocity
+    )
     actor_learner = replace(
         learner,
         observation_norm=learner.observation_norm.update(
@@ -251,6 +255,10 @@ def update_collection(runner, policy, outcome, env, config, *, axis_name=None):
         "model_target": delta,
     }
     rejected = {name: ~valid_environments(value) for name, value in fields.items()}
+    rejected["joint_velocity"] = ~(
+        valid_joint_speeds(transition.state, config.max_joint_velocity)
+        & valid_joint_speeds(transition.successor, config.max_joint_velocity)
+    )
     rejected["physics_state"] = info["done/nonfinite"]
     rejected["reward"] = info["reward/invalid"]
     valid = (
@@ -409,6 +417,10 @@ def collect_step(runner, env, config, *, axis_name=None):
     )
     reset = reset_collection(update, env, config, axis_name=axis_name)
     return finish_collection(update, reset, env, axis_name=axis_name)
+
+
+def valid_joint_speeds(state, limit):
+    return jnp.all(jnp.abs(state.joint_velocity) <= limit, axis=-1)
 
 
 def valid_environments(tree):

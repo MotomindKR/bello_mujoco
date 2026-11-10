@@ -203,6 +203,10 @@ def compile_updates(env, config, *, parallel=None, parallel_collect=None):
                     "critic/loss",
                     "actor/gradient_norm",
                     "imagination/reward",
+                    "diagnostic/imagined_reward_abs_max",
+                    "diagnostic/critic_target_abs_max",
+                    "diagnostic/critic_value_abs_max",
+                    "diagnostic/imagined_survival",
                     "invalid/actor_critic_update",
                 )
             }

@@ -85,6 +85,7 @@ class LearningConfig:
     gae_lambda: float = 0.95
     max_gradient_norm: float = 1.0
     actor_gradient_clip: float = 0.1
+    max_joint_velocity: float = 1000.0
 
     def __post_init__(self):
         if self.max_episode_steps is not None and (
@@ -116,6 +117,7 @@ class LearningConfig:
             "learning_rate",
             "max_gradient_norm",
             "actor_gradient_clip",
+            "max_joint_velocity",
         ):
             if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive and finite")

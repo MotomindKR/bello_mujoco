@@ -191,7 +191,10 @@ def lambda_returns(rewards, terminations, values, gamma, lam):
 
     def backward(carry, inputs):
         reward, done, next_value = inputs
-        target = reward + gamma * (1 - done) * ((1 - lam) * next_value + lam * carry)
+        continuation = 1 - done
+        next_value = jnp.where(continuation > 0, next_value, 0.0)
+        carry = jnp.where(continuation > 0, carry, 0.0)
+        target = reward + gamma * continuation * ((1 - lam) * next_value + lam * carry)
         return target, target
 
     _, targets = jax.lax.scan(
@@ -200,13 +203,17 @@ def lambda_returns(rewards, terminations, values, gamma, lam):
     return targets
 
 
+def survival_weights(terminations):
+    after = jnp.cumprod(1.0 - terminations, axis=0)
+    return jnp.concatenate((jnp.ones_like(after[:1]), after), axis=0)
+
+
 def imagined_return(rewards, terminations, bootstrap, gamma):
-    alive_after = jnp.cumprod(1.0 - terminations, axis=0)
-    alive_before = jnp.concatenate(
-        (jnp.ones_like(alive_after[:1]), alive_after[:-1]), axis=0
-    )
+    survival = survival_weights(terminations)
+    rewards = jnp.where(survival[:-1] > 0, rewards, 0.0)
+    bootstrap = jnp.where(survival[-1] > 0, bootstrap, 0.0)
     discounts = gamma ** jnp.arange(rewards.shape[0])
     discounts = discounts.reshape((rewards.shape[0],) + (1,) * (rewards.ndim - 1))
-    return (discounts * alive_before * rewards).sum(axis=0) + gamma ** rewards.shape[
+    return (discounts * survival[:-1] * rewards).sum(axis=0) + gamma ** rewards.shape[
         0
-    ] * alive_after[-1] * bootstrap
+    ] * survival[-1] * bootstrap
