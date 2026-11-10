@@ -80,11 +80,16 @@ def test_two_cuda_devices_collect_fit_imagine(tmp_path, randomization):
     _, fit, improve = compile_updates(
         env, cfg, parallel=parallel, parallel_collect=collect
     )
-    runner, metrics = fit(runner)
-    require_valid_metrics(metrics)
-    runner, metrics = improve(runner, env.reference_bank)
-    require_valid_metrics(metrics)
-    assert int(runner.actor_updates) == 1
+    for _ in range(2):
+        runner, metrics = fit(runner)
+        require_valid_metrics(metrics)
+        runner, metrics = collect(runner, env.reference_bank)
+        require_valid_metrics(metrics)
+        runner, metrics = improve(runner, env.reference_bank)
+        require_valid_metrics(metrics)
+        runner, metrics = collect(runner, env.reference_bank)
+        require_valid_metrics(metrics)
+    assert int(runner.actor_updates) == 2
     assert runner.collector.environment.reference_time.dtype == np.int32
     qpos = runner.collector.environment.data.qpos
     assert qpos.shape[:2] == (parallel.count, cfg.num_envs // parallel.count)
@@ -116,6 +121,13 @@ def exercise_parallel_training():
     from bello_mujoco.supermimic.optimization import (
         update_world_model,
         update_actor_critic,
+    )
+    from bello_mujoco.supermimic.collection import collect_step
+    from bello_mujoco.supermimic.parallel import (
+        EnvironmentArrays,
+        collection_layout,
+        pmap_axes,
+        reduce_collection_metrics,
     )
     from bello_mujoco.supermimic.parallel import AXIS, DataParallel, runner_specs
     from bello_mujoco.supermimic.replay import ReplayBuffer
@@ -258,13 +270,39 @@ def exercise_parallel_training():
         collection_env.reference_bank,
         physics,
     )
-    collection_runner, collection_metrics = distributed_collect(
-        collection_runner, collection_env.reference_bank
+
+    def fused_collect(state, bank, physical, arrays):
+        current = physical.apply(
+            replace(arrays.apply(collection_env), reference_bank=bank)
+        )
+        result, metrics = collect_step(
+            state, current, parallel.local_config(config), axis_name=AXIS
+        )
+        return result, reduce_collection_metrics(metrics, config.num_envs // 2)
+
+    fused_collect = jax.pmap(
+        fused_collect,
+        axis_name=AXIS,
+        in_axes=(pmap_axes(runner_specs()), None, pmap_axes(physics_specs), None),
+        out_axes=(pmap_axes(runner_specs()), None),
     )
+    expected_runner = parallel.pack(collection_runner, collection_layout())
+    for _ in range(4):
+        expected_runner, expected_metrics = fused_collect(
+            expected_runner,
+            collection_env.reference_bank,
+            parallel.pack(physics, physics_specs),
+            EnvironmentArrays.from_environment(collection_env),
+        )
+        collection_runner, collection_metrics = distributed_collect(
+            collection_runner, collection_env.reference_bank
+        )
+        equal(collection_runner, parallel.unpack(expected_runner, collection_layout()))
+        equal(collection_metrics, expected_metrics)
     np.testing.assert_allclose(
         collection_runner.replay.data.context[0, :, 1], [0.6, 1.1]
     )
-    assert int(collection_runner.collector.vector_steps) == 1
+    assert int(collection_runner.collector.vector_steps) == 4
     assert float(collection_metrics["invalid/collection"]) == 0
     assert collection_runner.collector.environment.data.qpos.shape[:2] == (2, 1)
     large_bank = replace(

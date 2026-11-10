@@ -124,9 +124,11 @@ so retaining a recovery checkpoint does not require extra staging and cache copi
 
 ### Multiple GPUs
 
-Multi-GPU collection is experimental: alternating simulator collection and
-learning can hang in Warp's CUDA graph cleanup. Use one sufficiently large GPU
-for full-corpus training while that runtime issue remains unresolved.
+Multi-GPU collection separates policy preparation, physics stepping, replay and
+curriculum updates, physics reset, and final metrics into compiled phases. Device
+fences keep Warp's CUDA graph cleanup from overlapping cross-device collectives.
+Validate the alternating collect-fit-collect-policy-collect loop on the target
+CUDA host before starting a full run.
 
 `num_devices` selects GPUs within one host process. Environments, replay and sampled
 learning batches are partitioned; batch settings remain global. Physics receives
@@ -136,8 +138,8 @@ Collection uses `pmap` with the pinned MJX-Warp runtime; replay sampling and lea
 use sharded JAX arrays.
 Use the matched JAX, MuJoCo and Warp releases in `uv.lock`; upgrading JAX alone
 does not establish CUDA compatibility. Keep XLA's default kernel selection.
-The CUDA check exercises randomized and nominal physics through collection,
-model fitting and policy updates.
+The CUDA check exercises randomized and nominal physics, including collection
+after both model fitting and policy updates.
 Reference arrays are replicated, so each GPU must fit the whole reference bank plus
 its training state. Checkpoints preserve the partitioned replay and require the same
 device count when resuming. Other training tasks remain single-GPU.

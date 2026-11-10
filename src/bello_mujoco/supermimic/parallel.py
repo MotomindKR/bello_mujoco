@@ -10,7 +10,13 @@ from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from bello_mujoco.supermimic.collection import (
     CollectorState,
     RunnerState,
-    collect_step,
+    CollectionPolicy,
+    CollectionUpdate,
+    prepare_collection,
+    step_collection,
+    update_collection,
+    reset_collection,
+    finish_collection,
     initialize_collection,
 )
 from bello_mujoco.supermimic.replay import ReplayBuffer, ReplayStart
@@ -253,30 +259,75 @@ class DataParallel:
             )
             return initialize_collection(current, local, learner, key, axis_name=AXIS)
 
-        def collect(runner, bank, physical, environment):
-            current = physical.apply(
-                replace(environment.apply(env), reference_bank=bank)
+        def current_environment(bank, physical, environment):
+            return physical.apply(replace(environment.apply(env), reference_bank=bank))
+
+        def prepare(runner, bank, physical, environment):
+            return prepare_collection(
+                runner,
+                current_environment(bank, physical, environment),
+                local,
+                axis_name=AXIS,
             )
-            runner, metrics = collect_step(runner, current, local, axis_name=AXIS)
+
+        def step(runner, policy, bank, physical, environment):
+            return step_collection(
+                runner.collector,
+                policy,
+                current_environment(bank, physical, environment),
+                axis_name=AXIS,
+            )
+
+        def update(runner, policy, outcome, bank, physical, environment):
+            return update_collection(
+                runner,
+                policy,
+                outcome,
+                current_environment(bank, physical, environment),
+                local,
+                axis_name=AXIS,
+            )
+
+        def reset(pending, bank, physical, environment):
+            return reset_collection(
+                pending,
+                current_environment(bank, physical, environment),
+                local,
+                axis_name=AXIS,
+            )
+
+        def finish(pending, reset, bank, physical, environment):
+            runner, metrics = finish_collection(
+                pending,
+                reset,
+                current_environment(bank, physical, environment),
+                axis_name=AXIS,
+            )
             return runner, reduce_collection_metrics(metrics, local.num_envs)
 
         devices = tuple(self.mesh.devices.flat)
-        initialize = jax.pmap(
-            initialize,
-            axis_name=AXIS,
-            devices=devices,
-            axis_size=self.count,
-            in_axes=(None, 0, None, pmap_axes(physics_specs), None),
-            out_axes=pmap_axes(specs),
-        )
-        collect = jax.pmap(
-            collect,
-            axis_name=AXIS,
-            devices=devices,
-            axis_size=self.count,
-            in_axes=(pmap_axes(specs), None, pmap_axes(physics_specs), None),
-            out_axes=(pmap_axes(specs), None),
-        )
+        runner_axes = pmap_axes(specs)
+        physics_axes = pmap_axes(physics_specs)
+        policy_axes = CollectionPolicy(None, None, None, 0, 0, 0, 0)
+        pending_axes = CollectionUpdate(runner_axes, 0, None, None, 0, None)
+        environment_axes = (None, physics_axes, None)
+
+        def mapped(function, inputs, outputs):
+            return jax.pmap(
+                function,
+                axis_name=AXIS,
+                devices=devices,
+                axis_size=self.count,
+                in_axes=inputs + environment_axes,
+                out_axes=outputs,
+            )
+
+        initialize = mapped(initialize, (None, 0), runner_axes)
+        prepare = mapped(prepare, (runner_axes,), policy_axes)
+        step = mapped(step, (runner_axes, policy_axes), 0)
+        update = mapped(update, (runner_axes, policy_axes, 0), pending_axes)
+        reset = mapped(reset, (pending_axes,), 0)
+        finish = mapped(finish, (pending_axes, 0), (runner_axes, None))
         packed_physics = self.pack(physics, physics_specs)
         layout = collection_layout()
 
@@ -291,18 +342,26 @@ class DataParallel:
             )
             return self.unpack(result, layout)
 
-        @jax.jit
-        def collect_global(runner, bank, physical, environment):
-            result, metrics = collect(
-                self.pack(runner, layout), bank, physical, environment
-            )
-            return self.unpack(result, layout), metrics
+        pack_runner = jax.jit(lambda runner: self.pack(runner, layout))
+        unpack_runner = jax.jit(lambda runner: self.unpack(runner, layout))
+
+        def collect_global(runner, bank):
+            arguments = (bank, packed_physics, arrays)
+            packed = jax.block_until_ready(pack_runner(runner))
+            policy = jax.block_until_ready(prepare(packed, *arguments))
+            # Warp graph eviction may synchronize a device while holding its shared
+            # FFI lock. No cross-device collective may be pending during physics.
+            outcome = jax.block_until_ready(step(packed, policy, *arguments))
+            pending = jax.block_until_ready(update(packed, policy, outcome, *arguments))
+            restarted = jax.block_until_ready(reset(pending, *arguments))
+            result, metrics = finish(pending, restarted, *arguments)
+            return unpack_runner(result), metrics
 
         return (
-            lambda learner, key, bank, physical: initialize_global(
-                learner, key, bank, physical, arrays
+            lambda learner, key, bank, physical: jax.block_until_ready(
+                initialize_global(learner, key, bank, physical, arrays)
             ),
-            lambda runner, bank: collect_global(runner, bank, packed_physics, arrays),
+            collect_global,
         )
 
     def sample_windows(self, replay, key, batch_size, length):

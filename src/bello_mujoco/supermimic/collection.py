@@ -38,6 +38,29 @@ class RunnerState:
     actor_updates: jax.Array
 
 
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class CollectionPolicy:
+    key: jax.Array
+    physics_key: jax.Array
+    reset_key: jax.Array
+    goals: jax.Array
+    inputs_valid: jax.Array
+    policy_output: jax.Array
+    action: jax.Array
+
+
+@jax.tree_util.register_dataclass
+@dataclass(frozen=True)
+class CollectionUpdate:
+    runner: RunnerState
+    done: jax.Array
+    reset_key: jax.Array
+    reset_probabilities: jax.Array
+    metrics: dict
+    valid_count: jax.Array
+
+
 def maximum_return(env, config):
     if config.gamma < 1:
         return 5.0 * env.control_timestep / (1.0 - config.gamma)
@@ -144,14 +167,11 @@ def initialize_collection(env, config, learner, key, *, axis_name=None):
     )
 
 
-def collect_step(runner, env, config, *, axis_name=None):
+def prepare_collection(runner, env, config, *, axis_name=None):
     key, action_key, physics_key, reset_key = jax.random.split(runner.key, 4)
     if axis_name is not None:
         rank = jax.lax.axis_index(axis_name)
-        action_key, physics_key, reset_key = (
-            jax.random.fold_in(value, rank)
-            for value in (action_key, physics_key, reset_key)
-        )
+        action_key = jax.random.fold_in(action_key, rank)
     learner, collector = runner.learner, runner.collector
     before = collector.environment
     goals = jax.vmap(env.goal)(before.reference_time)
@@ -177,12 +197,31 @@ def collect_step(runner, env, config, *, axis_name=None):
         -env.action_clip,
         env.action_clip,
     )
-    after, observation, reward, done, info = env.step_batch(
-        before,
-        jnp.where(valid_environments(policy_output)[:, None], action, 0.0),
+    return CollectionPolicy(
+        key, physics_key, reset_key, goals, inputs_valid, policy_output, action
+    )
+
+
+def step_collection(collector, policy, env, *, axis_name=None):
+    physics_key = policy.physics_key
+    if axis_name is not None:
+        physics_key = jax.random.fold_in(physics_key, jax.lax.axis_index(axis_name))
+    return env.step_batch(
+        collector.environment,
+        jnp.where(
+            valid_environments(policy.policy_output)[:, None], policy.action, 0.0
+        ),
         physics_key,
         reset=False,
     )
+
+
+def update_collection(runner, policy, outcome, env, config, *, axis_name=None):
+    learner, collector = runner.learner, runner.collector
+    before = collector.environment
+    key, goals, inputs_valid = policy.key, policy.goals, policy.inputs_valid
+    action, policy_output = policy.action, policy.policy_output
+    after, observation, reward, done, info = outcome
     done, info = collection_termination(after.episode_length, done, info, config)
     transition = make_transition(
         env,
@@ -239,25 +278,13 @@ def collect_step(runner, env, config, *, axis_name=None):
         maximum_return(env, config),
         axis_name=axis_name,
     )
-    dynamic_env = replace(
-        env,
-        reset_probabilities=env.sampler.probabilities(
-            sampling, maximum_return(env, config)
-        ),
-    )
-    reset_state, reset_observation = dynamic_env.reset_batch(config.num_envs, reset_key)
     next_history = jax.vmap(env.codec.advance_history)(collector.history, observation)
-    reset_history = jax.vmap(env.codec.initial_history)(reset_observation)
-    bins = (
-        jnp.searchsorted(env.sampler.starts, reset_state.reference_time, side="right")
-        - 1
-    )
     next_collector = CollectorState(
-        tree_where(done, reset_state, after),
-        jnp.where(done[:, None], reset_observation, observation),
-        jnp.where(done[:, None, None], reset_history, next_history),
+        after,
+        observation,
+        next_history,
         collector.episode_ids + done.astype(jnp.int32),
-        jnp.where(done, bins, collector.start_bins),
+        collector.start_bins,
         jnp.where(done, 0.0, discounted),
         collector.vector_steps + 1,
     )
@@ -282,32 +309,11 @@ def collect_step(runner, env, config, *, axis_name=None):
     limit_flags = motor_limit_flags(
         commands, after.data.actuator_force, env.model.actuator_peak_force
     )
-    finite = jnp.all(
-        jnp.stack(
-            [
-                jnp.all(jnp.isfinite(value))
-                for value in jax.tree.leaves(
-                    (
-                        next_collector.observation,
-                        next_collector.history,
-                        jax.vmap(env.physical_state)(next_collector.environment),
-                        next_collector.environment.actor_feedback_history,
-                        learner.input_norm,
-                        learner.output_norm,
-                        learner.observation_norm,
-                        learner.goal_norm,
-                        sampling,
-                    )
-                )
-            ]
-        )
-    )
     first = jnp.argmax(~valid)
     reward_sum, valid_count = jnp.where(valid, reward, 0.0).sum(), valid.sum()
     if axis_name is not None:
         reward_sum, valid_count = jax.lax.psum((reward_sum, valid_count), axis_name)
-        finite = jax.lax.pmin(finite.astype(jnp.int32), axis_name).astype(bool)
-    return result, {
+    metrics = {
         **env.physics_metrics(after.data),
         "collection/reward": reward_sum / jnp.maximum(valid_count, 1),
         "collection/completed": done.sum(),
@@ -330,8 +336,79 @@ def collect_step(runner, env, config, *, axis_name=None):
         - env.reference_bank.time_offsets[transition.clip_id[first]],
         "diagnostic/vector_step": collector.vector_steps,
         **{f"diagnostic/invalid/{name}": mask.sum() for name, mask in rejected.items()},
-        "invalid/collection": ((valid_count == 0) | ~finite).astype(jnp.float32),
     }
+
+    return CollectionUpdate(
+        result,
+        done,
+        policy.reset_key,
+        env.sampler.probabilities(sampling, maximum_return(env, config)),
+        metrics,
+        valid_count,
+    )
+
+
+def reset_collection(update, env, config, *, axis_name=None):
+    reset_key = update.reset_key
+    if axis_name is not None:
+        reset_key = jax.random.fold_in(reset_key, jax.lax.axis_index(axis_name))
+    return replace(env, reset_probabilities=update.reset_probabilities).reset_batch(
+        config.num_envs, reset_key
+    )
+
+
+def finish_collection(update, reset, env, *, axis_name=None):
+    runner, done = update.runner, update.done
+    collector = runner.collector
+    reset_state, reset_observation = reset
+    reset_history = jax.vmap(env.codec.initial_history)(reset_observation)
+    bins = (
+        jnp.searchsorted(env.sampler.starts, reset_state.reference_time, side="right")
+        - 1
+    )
+    next_collector = replace(
+        collector,
+        environment=tree_where(done, reset_state, collector.environment),
+        observation=jnp.where(done[:, None], reset_observation, collector.observation),
+        history=jnp.where(done[:, None, None], reset_history, collector.history),
+        start_bins=jnp.where(done, bins, collector.start_bins),
+    )
+    finite = jnp.all(
+        jnp.stack(
+            [
+                jnp.all(jnp.isfinite(value))
+                for value in jax.tree.leaves(
+                    (
+                        next_collector.observation,
+                        next_collector.history,
+                        jax.vmap(env.physical_state)(next_collector.environment),
+                        next_collector.environment.actor_feedback_history,
+                        runner.learner.input_norm,
+                        runner.learner.output_norm,
+                        runner.learner.observation_norm,
+                        runner.learner.goal_norm,
+                        runner.sampling,
+                    )
+                )
+            ]
+        )
+    )
+    if axis_name is not None:
+        finite = jax.lax.pmin(finite.astype(jnp.int32), axis_name).astype(bool)
+    return replace(runner, collector=next_collector), {
+        **update.metrics,
+        "invalid/collection": ((update.valid_count == 0) | ~finite).astype(jnp.float32),
+    }
+
+
+def collect_step(runner, env, config, *, axis_name=None):
+    policy = prepare_collection(runner, env, config, axis_name=axis_name)
+    outcome = step_collection(runner.collector, policy, env, axis_name=axis_name)
+    update = update_collection(
+        runner, policy, outcome, env, config, axis_name=axis_name
+    )
+    reset = reset_collection(update, env, config, axis_name=axis_name)
+    return finish_collection(update, reset, env, axis_name=axis_name)
 
 
 def valid_environments(tree):
