@@ -371,7 +371,20 @@ preflight_overrides=(
   wandb_enabled=false
 )
 if [ "$supermimic_experiment" = true ]; then
-  preflight_overrides+=(experiment=bello_mini_supermimic_smoke total_timesteps=1024 num_envs=16)
+  uv run --no-sync python - "$job_dir" <<'PY'
+import json
+import sys
+from pathlib import Path
+from bello_mujoco.sonic.corpus import prepare_preflight_corpus
+root = Path(sys.argv[1])
+evaluation = prepare_preflight_corpus(root / "motion_dataset", root / "preflight_dataset")
+(root / "preflight_evaluation.json").write_text(json.dumps(evaluation))
+PY
+  preflight_overrides+=(
+    experiment=bello_mini_supermimic_smoke total_timesteps=1024 num_envs=16
+    "motion_dataset=$job_dir/preflight_dataset" motion_dataset_artifact=null
+    "evaluation_clips=$(cat "$job_dir/preflight_evaluation.json")"
+  )
 else
   preflight_overrides+=(video_enabled=false)
 fi
@@ -481,7 +494,7 @@ fi
 
 if [ "$supermimic_experiment" = true ]; then
   JAX_PLATFORMS=cpu uv run --no-sync python - \
-    "checkpoints/vast-preflight-$run_name" "$job_dir/motion_dataset" <<'PY'
+    "checkpoints/vast-preflight-$run_name" "$job_dir/preflight_dataset" <<'PY'
 import json
 import sys
 from pathlib import Path

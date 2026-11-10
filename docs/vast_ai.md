@@ -34,6 +34,9 @@ Motion preflight also restores the saved policy, renders a short CPU evaluation,
 and exports its deployment bundle before the full run can start.
 SONIC preflight performs the same restore/render/export gate after downloading
 the versioned W&B corpus artifact and the exact Hugging Face checkpoint revision.
+SuperMimic preflight uses the largest training clip and up to two held-out clips
+in a separate, checksum-verified directory. The selected experiment then trains
+on the complete artifact and evaluates its complete held-out list.
 
 - Completion, setup/training failure, or a disappearing job process triggers
   automatic destruction.
@@ -168,10 +171,9 @@ two-hour job for evaluation and uploads. The host supervisor still owns teardown
 The `bello_mini_supermimic_lafan` comparison instead uses the full unofficial
 batches to 14,000 update cycles without a profile time cap. Do not assume a
 two-hour rental fits this workload. Budget setup, full training, native
-training/held-out evaluation, and uploads before launching. A single
-high-memory GPU is the initial candidate. This trainer does not yet distribute
-replay or gradients across devices; multiple cards do not automatically pool
-memory or accelerate this code.
+training/held-out evaluation, and uploads before launching. SuperMimic supports
+multiple GPUs on one host through `offer.num_gpus`; see
+[partitioning and memory requirements](supermimic.md#multiple-gpus).
 
 Non-dry execution reads:
 

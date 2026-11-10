@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 
@@ -128,6 +129,45 @@ def verify_corpus(directory: Path, evaluation_clips: tuple[str, ...]) -> str:
         if path.is_symlink() or file_sha256(path) != entry["sha256"]:
             raise ValueError(f"corpus content changed: {path.name}")
     return file_sha256(directory / MANIFEST)
+
+
+def prepare_preflight_corpus(directory: Path, destination: Path) -> tuple[str, ...]:
+    """Make a bounded smoke corpus from an already downloaded training artifact."""
+    document = json.loads((directory / MANIFEST).read_text())
+    _validate_document(document)
+    training = max(
+        (entry for entry in document["clips"] if entry["split"] == "train"),
+        key=lambda entry: (entry["array_bytes"], entry["file"]),
+    )
+    evaluation = sorted(
+        (entry for entry in document["clips"] if entry["split"] == "evaluation"),
+        key=lambda entry: entry["file"],
+    )[:2]
+    selected = [training, *evaluation]
+    destination.mkdir()
+    for entry in selected:
+        source = directory / entry["file"]
+        if source.is_symlink():
+            raise ValueError(f"corpus clip is a symlink: {source.name}")
+        os.link(source, destination / entry["file"])
+    subset = prepare_corpus(
+        destination,
+        {
+            Path(entry["file"]).stem: {
+                "split": entry["split"],
+                "source_sequence": entry["source_sequence"],
+            }
+            for entry in selected
+        },
+        provenance={
+            "preflight_source_manifest_sha256": file_sha256(directory / MANIFEST)
+        },
+    )
+    expected = {entry["file"]: entry["sha256"] for entry in selected}
+    for entry in subset["clips"]:
+        if entry["sha256"] != expected[entry["file"]]:
+            raise ValueError(f"corpus content changed: {entry['file']}")
+    return tuple(Path(entry["file"]).stem for entry in evaluation)
 
 
 def verify_artifact(
