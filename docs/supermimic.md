@@ -119,6 +119,8 @@ checkout for historical policies; checkpoint migration is not supported.
 Local checkpoint saves complete before training continues. Artifact registration
 and uploads run serially in a background worker; failures stop the run, and
 shutdown drains pending uploads before closing W&B.
+Uploads read the immutable checkpoint files directly and skip W&B's local cache,
+so retaining a recovery checkpoint does not require extra staging and cache copies.
 
 ### Multiple GPUs
 

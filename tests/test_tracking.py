@@ -111,7 +111,7 @@ def test_track_checkpoint_artifact_logs_directory(monkeypatch, tmp_path) -> None
             self.dirs = []
             artifacts.append(self)
 
-        def add_dir(self, path) -> None:
+        def add_dir(self, path, **kwargs) -> None:
             self.dirs.append(path)
 
     class FakeWandb:

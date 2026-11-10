@@ -121,7 +121,7 @@ def track_checkpoint_artifact(
     import wandb
 
     artifact = wandb.Artifact(name=name, type=artifact_type)
-    artifact.add_dir(str(path))
+    artifact.add_dir(str(path), policy="immutable", skip_cache=True)
     return run.log_artifact(artifact)
 
 
