@@ -62,9 +62,7 @@ class CollectionUpdate:
 
 
 def maximum_return(env, config):
-    if config.gamma < 1:
-        return 5.0 * env.control_timestep / (1.0 - config.gamma)
-    return 5.0 * env.control_timestep * episode_horizon(env, config)
+    return env.mdp.maximum_return(config.gamma, episode_horizon(env, config))
 
 
 def episode_horizon(env, config):

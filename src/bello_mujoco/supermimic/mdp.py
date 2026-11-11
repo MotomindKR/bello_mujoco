@@ -11,6 +11,9 @@ from bello_mujoco.supermimic.kinematics import Kinematics
 from bello_mujoco.supermimic.model import invariant_features, normalized_context
 
 
+_TRACKING_WEIGHTS = (1.0, 1.0, 1.0, 1.0, 0.5, 0.5)
+
+
 @dataclass(frozen=True)
 class TrackingConfig:
     body_position_sigma: float = 0.3
@@ -47,6 +50,15 @@ class TrackingMDP:
     joint_high: jax.Array
     timestep: float = field(metadata={"static": True})
     config: TrackingConfig = field(metadata={"static": True})
+
+    @property
+    def maximum_step_reward(self):
+        return sum(_TRACKING_WEIGHTS) * self.timestep
+
+    def maximum_return(self, gamma, max_steps):
+        if gamma < 1:
+            return self.maximum_step_reward / (1.0 - gamma)
+        return self.maximum_step_reward * max_steps
 
     def reward(
         self, state, reference, action, previous_action, *, bodies=None, targets=None
@@ -106,7 +118,7 @@ class TrackingMDP:
         tracking = sum(
             weight * jnp.exp(-error / sigma**2)
             for weight, error, sigma in zip(
-                (1.0, 1.0, 1.0, 1.0, 0.5, 0.5), errors, sigmas, strict=True
+                _TRACKING_WEIGHTS, errors, sigmas, strict=True
             )
         )
         mid = (self.joint_low + self.joint_high) / 2

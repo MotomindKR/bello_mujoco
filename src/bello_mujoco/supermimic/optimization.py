@@ -8,7 +8,11 @@ import jax.numpy as jnp
 import optax
 
 from bello_mujoco.supermimic.imagination import actor_loss
-from bello_mujoco.supermimic.mdp import lambda_returns, survival_weights
+from bello_mujoco.supermimic.mdp import (
+    imagined_return,
+    lambda_returns,
+    survival_weights,
+)
 from bello_mujoco.supermimic.model import (
     Actor,
     Critic,
@@ -185,7 +189,9 @@ def update_actor_critic(learner, starts, env, config, update, key):
     reachable = survival_weights(detached.terminations) > 0
     critic_inputs = jnp.where(reachable[..., None], detached.critic_inputs, 0.0)
     norm = learner.critic_norm.update(critic_inputs, reachable)
-    values = jnp.where(reachable, learner.critic(critic_inputs, norm), 0.0)
+    return_bound = env.mdp.maximum_return(config.gamma, env.max_episode_steps)
+    raw_values = jnp.where(reachable, learner.critic(critic_inputs, norm), 0.0)
+    values = jnp.minimum(raw_values, return_bound)
     targets = jax.lax.stop_gradient(
         lambda_returns(
             jnp.where(reachable[:-1], detached.rewards, 0.0),
@@ -233,7 +239,30 @@ def update_actor_critic(learner, starts, env, config, update, key):
         (learner.critic, learner.critic_optimizer),
         jax.random.split(critic_key, config.critic_epochs),
     )
-    valid = actor_valid & jnp.all(critic_valid) & starts.valid & finite_tree(norm)
+    raw_bootstrap = learner.critic(detached.critic_inputs[-1], learner.critic_norm)
+    bootstrap = jnp.minimum(raw_bootstrap, return_bound)
+    returns = imagined_return(
+        detached.rewards, detached.terminations, bootstrap, config.gamma
+    )
+
+    def exceeds_bound(values, bound):
+        return jnp.any(values > bound + 1e-5 * max(1.0, bound))
+
+    invalid_bound = (
+        exceeds_bound(detached.rewards, env.mdp.maximum_step_reward)
+        | exceeds_bound(targets, return_bound)
+        | exceeds_bound(returns, return_bound)
+        | (-loss > return_bound + 1e-5 * max(1.0, return_bound))
+    )
+    invalid_loss = jnp.any(critic_losses > config.max_critic_loss)
+    valid = (
+        actor_valid
+        & jnp.all(critic_valid)
+        & starts.valid
+        & finite_tree((norm, raw_values, raw_bootstrap, targets, returns))
+        & ~invalid_bound
+        & ~invalid_loss
+    )
     candidate = replace(
         learner,
         actor=actor,
@@ -252,9 +281,15 @@ def update_actor_critic(learner, starts, env, config, update, key):
         ).mean(),
         "diagnostic/imagined_reward_abs_max": jnp.abs(rollout.rewards).max(),
         "diagnostic/critic_target_abs_max": jnp.abs(targets).max(),
-        "diagnostic/critic_value_abs_max": jnp.abs(values).max(),
+        "diagnostic/critic_value_abs_max": jnp.abs(raw_values).max(),
+        "diagnostic/critic_target_max": targets.max(),
+        "diagnostic/actor_return_max": returns.max(),
+        "diagnostic/return_upper_bound": jnp.asarray(return_bound),
+        "diagnostic/critic_loss_max": critic_losses.max(),
         "diagnostic/imagined_survival": survival_weights(rollout.terminations)[
             -1
         ].mean(),
         "invalid/actor_critic_update": (~valid).astype(jnp.float32),
+        "invalid/return_bound": invalid_bound.astype(jnp.float32),
+        "invalid/critic_loss": invalid_loss.astype(jnp.float32),
     }

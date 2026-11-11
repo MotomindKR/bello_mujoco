@@ -193,6 +193,16 @@ the bounded float32 clock. GPU integration is checked with
   paper's literal full-horizon critic fit. Return arithmetic never bootstraps
   through a fully terminated transition. Critic target/value magnitudes and
   imagined survival are logged for failure diagnosis.
+- Actor bootstraps and critic target values use the tracking reward's discounted
+  return ceiling, derived from its maximum per-step reward and discount. With
+  discount 1, the full reference episode horizon supplies the finite ceiling.
+  Critic regression uses raw predictions; negative values remain uncapped.
+  This is an explicit robustness change from the published update.
+- Return-bound violations and `config.max_critic_loss` violations roll back the
+  entire actor/critic update and stop training. Before shutdown,
+  `learning_failure_UPDATE/` saves the pre-update learner, exact sampled starts,
+  update RNG and metadata. W&B stores these as separate `diagnostic` artifacts;
+  they are not resumable training checkpoints.
 - BF16 networks keep master parameters, normalization and optimizer state in
   FP32. Dense forward/backward matrix products use BF16; LayerNorm and its
   following activation retain FP32 intermediates.

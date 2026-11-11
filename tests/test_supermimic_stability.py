@@ -59,6 +59,125 @@ def test_terminated_return_never_uses_unreachable_rewards_or_bootstrap():
     np.testing.assert_allclose(targets[:, 0], [0.1, 0.2])
 
 
+@pytest.mark.parametrize("gamma", [0.9, 1.0])
+def test_actor_bootstrap_ceiling_blocks_exploitation_but_keeps_negative_values(
+    toy_runner, monkeypatch, gamma
+):
+    from bello_mujoco.supermimic import imagination
+
+    env, _, _ = toy_runner
+    env = replace(env, mdp=replace(env.mdp, timestep=0.03))
+    bound = env.mdp.maximum_return(gamma, env.max_episode_steps)
+
+    def rollout(actor, *args, **kwargs):
+        features = jnp.zeros((3, 2, 1)).at[-1, :, 0].set(actor)
+        return ImaginedRollout(jnp.zeros((2, 2)), jnp.zeros((2, 2)), features)
+
+    monkeypatch.setattr(imagination, "imagine", rollout)
+    evaluate = jax.jit(
+        jax.value_and_grad(
+            lambda value: actor_loss(
+                value,
+                None,
+                lambda features, _: features[..., 0],
+                None,
+                env,
+                None,
+                None,
+                key=jax.random.key(0),
+                horizon=2,
+                gamma=gamma,
+            )[0]
+        )
+    )
+    loss, gradient = evaluate(jnp.asarray(1000.0))
+    assert loss == pytest.approx(-(gamma**2) * bound)
+    assert gradient == 0
+    for value in (bound / 2, -1000.0):
+        loss, gradient = evaluate(jnp.asarray(value))
+        assert loss == pytest.approx(-(gamma**2) * value)
+        assert gradient == pytest.approx(-(gamma**2))
+
+
+@pytest.mark.parametrize("bias", [15.0, -100.0, 1000.0])
+def test_critic_fits_raw_predictions_and_rolls_back_finite_divergence(
+    toy_runner, monkeypatch, bias
+):
+    from bello_mujoco.supermimic import optimization
+
+    env, config, runner = toy_runner
+    leaves = eqx.filter(runner.learner.critic, eqx.is_array)
+    critic = jax.tree.map(jnp.zeros_like, leaves)
+    critic = eqx.tree_at(
+        lambda value: value.network.layers[-1].bias, critic, jnp.array([bias])
+    )
+    runner = replace(runner, learner=replace(runner.learner, critic=critic))
+    collect, _, improve = compile_updates(env, config)
+    for _ in range(2):
+        runner, _ = collect(runner, env.reference_bank)
+    count, width = config.imagined_batch_size, runner.learner.critic_norm.mean.size
+
+    def controlled(actor, *args, **kwargs):
+        loss = sum(jnp.sum(x) * 0 for x in jax.tree.leaves(actor))
+        rollout = ImaginedRollout(
+            jnp.zeros((2, count)),
+            jnp.zeros((2, count)),
+            jnp.zeros((3, count, width)),
+        )
+        return loss, rollout
+
+    monkeypatch.setattr(optimization, "actor_loss", controlled)
+    result, metrics = improve(runner, env.reference_bank)
+    bound = env.mdp.maximum_return(config.gamma, env.max_episode_steps)
+    assert metrics["diagnostic/critic_target_max"] <= bound
+    assert metrics["diagnostic/critic_value_abs_max"] == abs(bias)
+    if bias == 1000:
+        assert np.isfinite(metrics["critic/loss"])
+        assert metrics["invalid/critic_loss"] == 1
+        with pytest.raises(RuntimeError, match="invalid/actor_critic_update"):
+            require_valid_metrics(metrics)
+        for actual, expected in zip(
+            jax.tree.leaves(result.learner),
+            jax.tree.leaves(runner.learner),
+            strict=True,
+        ):
+            np.testing.assert_array_equal(actual, expected)
+    else:
+        require_valid_metrics(metrics)
+        fitted = result.learner.critic.network.layers[-1].bias[0]
+        if bias > 0:
+            assert bound < fitted < bias
+        else:
+            assert bias < fitted < -bound
+            assert metrics["diagnostic/critic_target_max"] < -bound
+
+
+def test_reward_ceiling_violation_rejects_the_entire_update(toy_runner, monkeypatch):
+    from bello_mujoco.supermimic import optimization
+
+    env, config, runner = toy_runner
+    collect, _, improve = compile_updates(env, config)
+    for _ in range(2):
+        runner, _ = collect(runner, env.reference_bank)
+    count, width = config.imagined_batch_size, runner.learner.critic_norm.mean.size
+
+    def controlled(actor, *args, **kwargs):
+        loss = sum(jnp.sum(x) * 0 for x in jax.tree.leaves(actor))
+        return loss, ImaginedRollout(
+            jnp.full((2, count), 2 * env.mdp.maximum_step_reward),
+            jnp.zeros((2, count)),
+            jnp.zeros((3, count, width)),
+        )
+
+    monkeypatch.setattr(optimization, "actor_loss", controlled)
+    result, metrics = improve(runner, env.reference_bank)
+    assert metrics["invalid/return_bound"] == 1
+    for actual, expected in zip(
+        jax.tree.leaves(result.learner), jax.tree.leaves(runner.learner), strict=True
+    ):
+        np.testing.assert_array_equal(actual, expected)
+
+
 def test_imagination_stops_extrapolating_after_full_termination(toy_runner):
     env, config, runner = toy_runner
     collect, _, _ = compile_updates(env, config)

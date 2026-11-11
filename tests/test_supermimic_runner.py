@@ -595,8 +595,9 @@ def test_reward_reanchors_tilted_reference_with_relative_rotation_yaw(toy_runner
     )
 
 
-def test_wall_budget_publishes_partial_final_checkpoint_after_actor_update(
-    toy_runner, tmp_path, monkeypatch
+@pytest.mark.parametrize("diverges", [False, True])
+def test_training_preserves_wall_budget_checkpoint_or_preupdate_failure(
+    toy_runner, tmp_path, monkeypatch, diverges
 ):
     import json
     from bello_mujoco.configuration import supermimic_training_profile
@@ -604,6 +605,9 @@ def test_wall_budget_publishes_partial_final_checkpoint_after_actor_update(
     from bello_mujoco.training import supermimic as training
 
     env, cfg, runner = toy_runner
+    collect, _, _ = compile_updates(env, cfg)
+    for _ in range(cfg.warmup_steps):
+        runner, _ = collect(runner, env.reference_bank)
     (tmp_path / "sonic-corpus.json").write_text(
         json.dumps({"clips": [{"array_bytes": 1}]})
     )
@@ -636,7 +640,7 @@ def test_wall_budget_publishes_partial_final_checkpoint_after_actor_update(
 
     def improve(state, bank):
         return replace(state, actor_updates=state.actor_updates + 1), {
-            "invalid/actor_critic_update": 0.0
+            "invalid/actor_critic_update": float(diverges)
         }
 
     monkeypatch.setattr(
@@ -650,9 +654,31 @@ def test_wall_budget_publishes_partial_final_checkpoint_after_actor_update(
     )
     monkeypatch.setattr(training, "checkpoint_path", lambda *a: tmp_path / "saved")
     saved = []
+    failures = []
     monkeypatch.setattr(
         checkpoint, "save_checkpoint", lambda p, s, *a, **k: saved.append((p, s))
     )
+    monkeypatch.setattr(
+        checkpoint,
+        "save_learning_failure",
+        lambda p, learner, starts, key, *a, **k: failures.append(
+            (p, learner, starts, key, k)
+        ),
+    )
+    if diverges:
+        with pytest.raises(RuntimeError, match="invalid/actor_critic_update"):
+            training.run_training(run)
+        assert not saved
+        [(path, learner, starts, key, metadata)] = failures
+        assert path == tmp_path / "saved/learning_failure_000000"
+        assert metadata["update"] == 0
+        assert starts.valid
+        np.testing.assert_array_equal(key, jax.random.split(runner.key, 3)[2])
+        for actual, expected in zip(
+            jax.tree.leaves(learner), jax.tree.leaves(runner.learner), strict=True
+        ):
+            np.testing.assert_array_equal(actual, expected)
+        return
     training.run_training(run)
     [(path, restored)] = saved
     assert path == tmp_path / "saved/final"

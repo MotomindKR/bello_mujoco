@@ -201,6 +201,27 @@ def test_supermimic_upload_runs_in_background_and_drains_on_close(
     ) is not upload_fails
 
 
+def test_learning_failure_is_published_separately_from_resume_checkpoints(
+    monkeypatch, tmp_path
+):
+    from bello_mujoco.training import supermimic
+    from bello_mujoco.training.checkpoint import CheckpointConfig
+
+    uploaded = []
+
+    def upload(run, path, **kwargs):
+        uploaded.append(kwargs)
+        return SimpleNamespace(wait=lambda: None, qualified_name="diagnostic:v0")
+
+    monkeypatch.setattr(supermimic, "track_checkpoint_artifact", upload)
+    publisher = supermimic.CheckpointPublisher(object(), CheckpointConfig())
+    publisher.submit(tmp_path / "learning_failure_000007", 7, diagnostic=True)
+    publisher.close()
+    assert uploaded == [
+        {"name": f"{tmp_path.name}-learning-failure", "artifact_type": "diagnostic"}
+    ]
+
+
 def test_checkpoint_uploads_are_serial_and_queue_without_waiting(monkeypatch, tmp_path):
     from threading import Event
     from bello_mujoco.training import supermimic

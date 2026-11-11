@@ -66,6 +66,61 @@ def resume_contract(run_config):
     return value
 
 
+def save_learning_failure(
+    path,
+    learner,
+    starts,
+    key,
+    run_config,
+    *,
+    update,
+    metrics,
+    git_commit,
+    dataset_digest,
+):
+    """Preserve one pre-update learner and its exact imagined-update inputs."""
+    path = Path(path)
+    require_repository_commit(git_commit)
+    if path.exists():
+        raise FileExistsError(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{path.name}-", dir=path.parent))
+    try:
+        for name, tree in (("learner", learner), ("starts", starts)):
+            eqx.tree_serialise_leaves(
+                staging / f"{name}.eqx", tree, filter_spec=_serialise_leaf
+            )
+        np.save(
+            staging / "update_key.npy", jax.random.key_data(key), allow_pickle=False
+        )
+        values = {name: float(value) for name, value in jax.device_get(metrics).items()}
+        document = {
+            "task": "supermimic_learning_failure",
+            "git_commit": git_commit,
+            "dataset_manifest_sha256": dataset_digest,
+            "resolved_config": to_builtin(run_config),
+            "update": int(update),
+            "key_impl": str(jax.random.key_impl(key)),
+            "metrics": {
+                name: value if np.isfinite(value) else str(value)
+                for name, value in values.items()
+            },
+            "sha256": {
+                child.name: file_sha256(child) for child in sorted(staging.iterdir())
+            },
+        }
+        (staging / "metadata.json").write_text(
+            json.dumps(document, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        )
+        for child in staging.iterdir():
+            with child.open("rb") as stream:
+                os.fsync(stream.fileno())
+        staging.rename(path)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
 def save_checkpoint(path, runner, run_config, *, git_commit, dataset_digest):
     path = Path(path)
     if path.exists():

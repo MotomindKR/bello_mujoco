@@ -139,6 +139,25 @@ def load_environment(
     )
 
 
+def sample_imagination_starts(runner, env, config, *, parallel=None):
+    key, start_key, update_key = jax.random.split(runner.key, 3)
+    sample = (
+        runner.replay.sample_starts
+        if parallel is None
+        else lambda key, size, **kwargs: parallel.sample_starts(
+            runner.replay, key, size, **kwargs
+        )
+    )
+    starts = sample(
+        start_key,
+        config.imagined_batch_size,
+        history_frames=env.codec.config.history_frames,
+        feedback_frames=env.maximum_observation_delay_steps + 1,
+        horizon=config.imagination_horizon,
+    )
+    return key, starts, update_key
+
+
 def compile_updates(env, config, *, parallel=None, parallel_collect=None):
     def collect(runner, bank):
         return collect_step(runner, replace(env, reference_bank=bank), config)
@@ -172,20 +191,8 @@ def compile_updates(env, config, *, parallel=None, parallel_collect=None):
         )
 
     def improve(runner, bank):
-        key, start_key, update_key = jax.random.split(runner.key, 3)
-        sample_starts = (
-            runner.replay.sample_starts
-            if parallel is None
-            else lambda key, size, **kwargs: parallel.sample_starts(
-                runner.replay, key, size, **kwargs
-            )
-        )
-        starts = sample_starts(
-            start_key,
-            config.imagined_batch_size,
-            history_frames=env.codec.config.history_frames,
-            feedback_frames=env.maximum_observation_delay_steps + 1,
-            horizon=config.imagination_horizon,
+        key, starts, update_key = sample_imagination_starts(
+            runner, env, config, parallel=parallel
         )
         dynamic_env = replace(env, reference_bank=bank)
 
@@ -206,8 +213,14 @@ def compile_updates(env, config, *, parallel=None, parallel_collect=None):
                     "diagnostic/imagined_reward_abs_max",
                     "diagnostic/critic_target_abs_max",
                     "diagnostic/critic_value_abs_max",
+                    "diagnostic/critic_target_max",
+                    "diagnostic/actor_return_max",
+                    "diagnostic/return_upper_bound",
+                    "diagnostic/critic_loss_max",
                     "diagnostic/imagined_survival",
                     "invalid/actor_critic_update",
+                    "invalid/return_bound",
+                    "invalid/critic_loss",
                 )
             }
             return runner.learner, {**metrics, "imagination/skipped": jnp.asarray(1.0)}
@@ -296,19 +309,22 @@ class CheckpointPublisher:
         )
         self.pending = {}
 
-    def submit(self, path, update):
+    def submit(self, path, update, *, diagnostic=False):
         self.check()
         if self.run is not None and self.config.upload_wandb_artifact:
-            future = self.pool.submit(self._upload, path, update)
+            future = self.pool.submit(self._upload, path, update, diagnostic=diagnostic)
             self.pending[future] = path
 
-    def _upload(self, path, update):
+    def _upload(self, path, update, *, diagnostic):
         started = perf_counter()
+        name = self.config.wandb_artifact_name or path.parent.name
         artifact = track_checkpoint_artifact(
             self.run,
             path,
-            name=self.config.wandb_artifact_name or path.parent.name,
-            artifact_type=self.config.wandb_artifact_type,
+            name=f"{name}-learning-failure" if diagnostic else name,
+            artifact_type="diagnostic"
+            if diagnostic
+            else self.config.wandb_artifact_type,
         )
         artifact.wait()
         return {
@@ -361,7 +377,10 @@ def publish_checkpoint(
 
 
 def run_training(run_config):
-    from bello_mujoco.supermimic.checkpoint import restore_checkpoint
+    from bello_mujoco.supermimic.checkpoint import (
+        restore_checkpoint,
+        save_learning_failure,
+    )
 
     started = time.monotonic()
     commit = capture_repository_commit()
@@ -516,8 +535,41 @@ def run_training(run_config):
             metrics = {**metrics, **model_metrics}
             actor_started = perf_counter()
             if update >= cfg.model_warmup_updates:
-                runner, actor_metrics = improve(runner, bank)
-                require_valid_metrics(actor_metrics)
+                candidate, actor_metrics = improve(runner, bank)
+                try:
+                    require_valid_metrics(actor_metrics)
+                except RuntimeError:
+                    try:
+                        _, starts, update_key = jax.jit(
+                            lambda state: sample_imagination_starts(
+                                state, env, cfg, parallel=parallel
+                            )
+                        )(runner)
+                        path = root / f"learning_failure_{update:06d}"
+                        save_learning_failure(
+                            path,
+                            runner.learner,
+                            starts,
+                            update_key,
+                            run_config,
+                            update=update,
+                            metrics=actor_metrics,
+                            git_commit=commit,
+                            dataset_digest=digest,
+                        )
+                        print(
+                            json.dumps({"learning_failure_saved": str(path)}),
+                            flush=True,
+                        )
+                        publisher.submit(path, update, diagnostic=True)
+                    except Exception as error:
+                        print(
+                            json.dumps({"learning_failure_capture_error": str(error)}),
+                            flush=True,
+                        )
+                    raise
+                runner = candidate
+                del candidate
                 metrics.update(actor_metrics)
             metrics.update(
                 {

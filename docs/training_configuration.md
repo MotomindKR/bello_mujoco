@@ -79,6 +79,9 @@ LAFAN and BONES recipes inherit the base and specify only overrides.
   remain float32.
 - `config.replay_steps` counts vector steps. `config.max_replay_bytes` bounds replay
   and `dataset.max_array_bytes` bounds reference arrays; neither covers total VRAM.
+- `config.max_critic_loss` stops and rolls back an actor/critic update if any
+  critic minibatch exceeds this MSE, including finite losses. It is an operational
+  divergence cutoff, not a reward or motion filter.
 - `checkpoint_evaluation` owns isolated CPU window checks and their resource
   limits; see [automatic checks](supermimic.md#automatic-checkpoint-checks).
 

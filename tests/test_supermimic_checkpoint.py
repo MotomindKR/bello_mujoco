@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import jax
 import jax.numpy as jnp
 import equinox as eqx
+import json
 import numpy as np
 import pytest
 
@@ -95,6 +96,48 @@ def continuation(tmp_path, monkeypatch):
         observations=observations,
     )
     return runner, run, file_sha256(corpus / MANIFEST)
+
+
+def test_failure_bundle_restores_the_preupdate_learner_starts_and_rng(
+    continuation, tmp_path
+):
+    runner, run, digest = continuation
+    starts = runner.replay.sample_starts(
+        jax.random.key(5), 2, history_frames=2, feedback_frames=1, horizon=2
+    )
+    key = jax.random.key(11)
+    path = tmp_path / "failure"
+    checkpoint.save_learning_failure(
+        path,
+        runner.learner,
+        starts,
+        key,
+        run,
+        update=2,
+        metrics={"critic/loss": 1e20, "actor/loss": jnp.inf},
+        git_commit="0" * 40,
+        dataset_digest=digest,
+    )
+    metadata = json.loads((path / "metadata.json").read_text())
+    restored = (
+        eqx.tree_deserialise_leaves(path / "learner.eqx", runner.learner),
+        eqx.tree_deserialise_leaves(path / "starts.eqx", starts),
+    )
+    for actual, expected in zip(
+        jax.tree.leaves(restored),
+        jax.tree.leaves((runner.learner, starts)),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(actual, expected)
+    restored_key = jax.random.wrap_key_data(
+        np.load(path / "update_key.npy"), impl=metadata["key_impl"]
+    )
+    np.testing.assert_array_equal(
+        jax.random.normal(restored_key), jax.random.normal(key)
+    )
+    assert metadata["metrics"]["actor/loss"] == "inf"
+    for name, digest in metadata["sha256"].items():
+        assert file_sha256(path / name) == digest
 
 
 def test_full_checkpoint_restores_replay_optimizers_rng_and_sampling(

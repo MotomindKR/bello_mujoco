@@ -220,6 +220,9 @@ def actor_loss(
     actor, model, critic, starts, env, normalizers, critic_norm, *, key, horizon, gamma
 ):
     rollout = imagine(actor, model, starts, env, normalizers, key=key, horizon=horizon)
-    bootstrap = critic(rollout.critic_inputs[-1], critic_norm)
+    bootstrap = jnp.minimum(
+        critic(rollout.critic_inputs[-1], critic_norm),
+        env.mdp.maximum_return(gamma, env.max_episode_steps),
+    )
     objective = imagined_return(rollout.rewards, rollout.terminations, bootstrap, gamma)
     return -objective.mean(), rollout
