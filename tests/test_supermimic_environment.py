@@ -648,6 +648,11 @@ def test_compact_references_reconstruct_the_saved_body_trajectories(mini_corpus)
     reconstructed = jax.jit(
         jax.vmap(lambda frame: env.reference_bodies(frame, jnp.zeros(2), 0.0))
     )(jnp.arange(original.num_frames))
+    reset_samples = jax.jit(jax.vmap(env.unaligned_reference))(
+        jnp.arange(original.num_frames)
+    )
+    np.testing.assert_allclose(reset_samples.qpos, original.qpos)
+    np.testing.assert_allclose(reset_samples.body_pos, reconstructed.position)
     for actual, expected in (
         (reconstructed.position, original.body_pos),
         (reconstructed.quaternion, original.body_quat),

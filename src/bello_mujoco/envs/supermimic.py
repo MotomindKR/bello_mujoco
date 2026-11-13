@@ -299,13 +299,13 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             self.kinematics.from_qpos(sample.qpos, sample.qvel)
         )
         return MotionSample(
-            sample.qpos,
-            sample.qvel,
-            bodies.position,
-            bodies.quaternion,
-            bodies.linear_velocity,
-            bodies.angular_velocity,
-            sample.foot_contacts,
+            qpos=sample.qpos,
+            qvel=sample.qvel,
+            body_pos=bodies.position,
+            body_quat=bodies.quaternion,
+            body_lin_vel=bodies.linear_velocity,
+            body_ang_vel=bodies.angular_velocity,
+            foot_contacts=sample.foot_contacts,
         )
 
     def bounded_reference_time(self, frame):
