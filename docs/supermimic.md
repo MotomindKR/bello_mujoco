@@ -242,7 +242,9 @@ Failure events identify the reference frame scored before clock advancement. Sel
 are coverage measurements rather than held-out generalization.
 
 Export bundles the actor, normalization, physics, selected references and runtime
-metadata. The world model and critic are not deployed. The Rust runtime bounds
+metadata. Scalar actuator input labels are omitted for MuJoCo 3.12 compatibility;
+their force parameters and limits are preserved. The world model and critic are
+not deployed. The Rust runtime bounds
 motor targets separately from raw policy actions:
 
 ```bash

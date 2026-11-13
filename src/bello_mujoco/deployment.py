@@ -660,6 +660,11 @@ def physics_mjcf(model) -> bytes:
     root = tree.getroot()
     for attribute in ("meshdir", "texturedir", "assetdir"):
         root.find("compiler").attrib.pop(attribute, None)
+    for actuator in root.findall("actuator/general"):
+        if actuator.get("gaintype", "fixed") in ("fixed", "affine"):
+            # These input labels do not affect force computation. MuJoCo 3.12,
+            # used by the native consumer, rejects them on scalar actuators.
+            actuator.attrib.pop("input", None)
     if any("file" in element.attrib for element in root.iter()):
         raise ValueError("deployment physics must not reference external files")
     key = root.find("keyframe/key[@name='home']")
