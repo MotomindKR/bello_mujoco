@@ -236,7 +236,8 @@ uv run bello-export-policy checkpoint_path=checkpoints/RUN/final \
 Evaluation starts each clip at frame zero with deterministic actions and frozen
 normalizers. `summary.json` records completion, first failure, normalized return,
 pose errors and motor interventions, weighting clips equally. Normalized return
-uses the full planned clip duration, including after early failure. Select
+uses the full planned clip duration, including after early failure.
+Failure events identify the reference frame scored before clock advancement. Select
 `evaluation_split=training` explicitly to score training clips; those reports
 are coverage measurements rather than held-out generalization.
 

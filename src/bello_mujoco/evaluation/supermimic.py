@@ -198,7 +198,7 @@ def render_supermimic_checkpoint(
                     height, tilt = env.mdp.errors(env.physical_state(state), reference)
                     failure_event = {
                         "step": completed,
-                        "reference_frame": float(state.reference_time),
+                        "reference_frame": float(env.scored_reference_time(state)),
                         "height_error_m": float(height),
                         "gravity_projection_error": float(tilt),
                         "height_failed": bool(info["done/height"]),

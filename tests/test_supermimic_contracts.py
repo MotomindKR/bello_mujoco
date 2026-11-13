@@ -251,3 +251,24 @@ def test_strided_goal_includes_current_frame_and_clamps_to_source_clip_end():
     np.testing.assert_allclose(first[6:15].reshape(3, 3)[:, 0], [0, 4, 8])
     tail = goal(jnp.asarray(18))
     np.testing.assert_allclose(tail[:6].reshape(3, 2)[:, 0], [18, 19, 19])
+
+
+def test_scored_reference_clock_preserves_large_integer_frame_offsets():
+    start = 20_000_001
+    env = SimpleNamespace(
+        reference_bank=SimpleNamespace(
+            fps=50.0, time_offsets=jnp.array([start], jnp.int32)
+        ),
+        control_timestep=0.02,
+        reference_time_dtype=jnp.int32,
+        clip_id=lambda frame: jnp.asarray(0, jnp.int32),
+    )
+    score = jax.jit(
+        lambda frame, steps: BelloSuperMimicEnv.scored_reference_time(
+            env, SimpleNamespace(reference_time=frame, episode_length=steps)
+        )
+    )
+    frame = jnp.asarray(start + 4, jnp.int32)
+    assert int(score(frame, 1)) == start + 3
+    assert int(score(frame, 0)) == start + 4
+    assert int(score(jnp.asarray(start, jnp.int32), 1)) == start

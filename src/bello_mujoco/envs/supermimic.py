@@ -467,7 +467,10 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         )
 
     def scored_reference_time(self, state):
-        step = self.reference_bank.fps * self.control_timestep
+        step = jnp.asarray(
+            self.reference_bank.fps * self.control_timestep,
+            dtype=self.reference_time_dtype,
+        )
         start = self.reference_bank.time_offsets[self.clip_id(state.reference_time)]
         return jnp.where(
             state.episode_length > 0,
