@@ -7,7 +7,11 @@ import pytest
 
 from bello_mujoco.models.target_limits import TargetLimits
 from bello_mujoco.motion import retarget
-from bello_mujoco.motion.retarget import clip_from_poses, pose_velocities
+from bello_mujoco.motion.retarget import (
+    SourceFrameJointLimit,
+    clip_from_poses,
+    pose_velocities,
+)
 
 
 @pytest.fixture
@@ -205,3 +209,51 @@ def test_nonconverging_initial_pose_is_rejected_instead_of_exported(model, monke
         retarget.RetargetValidationError, match="initial GMR pose did not converge"
     ):
         wrapper._solve(None)
+
+
+def source_joint_limit(model, tmp_path):
+    urdf = tmp_path / "robot.urdf"
+    urdf.write_text('<robot><joint name="joint"><limit velocity="2"/></joint></robot>')
+    model.robot.source_urdf_path = lambda root: urdf
+    return SourceFrameJointLimit(model)
+
+
+@pytest.mark.parametrize("ik_timestep", [0.002, 0.02])
+def test_joint_speed_is_bounded_per_source_frame_across_repeated_ik_iterations(
+    model, tmp_path, ik_timestep
+):
+    limit = source_joint_limit(model, tmp_path)
+    configuration = mink.Configuration(model.mj_model)
+    task = mink.PostureTask(model.mj_model, cost=1.0)
+    target = configuration.q.copy()
+    target[7] = 1.0
+    task.set_target(target)
+    for source_timestep, expected in ((0.02, 0.04), (0.1, 0.24)):
+        limit.previous = configuration.q.copy()
+        limit.timestep = source_timestep
+        for _ in range(20):
+            velocity = mink.solve_ik(
+                configuration, [task], ik_timestep, "daqp", limits=[limit]
+            )
+            configuration.integrate_inplace(velocity, ik_timestep)
+        assert configuration.q[7] == pytest.approx(expected, abs=1e-7)
+
+
+def test_joint_limit_constrains_transformed_motor_positions_during_ik(model, tmp_path):
+    model.actuator_coordinate_transform = np.array([[2.0]])
+    model.target_limits = TargetLimits(
+        np.array([[-0.3, 0.3]]),
+        np.array([[-2.0, 2.0]]),
+        np.eye(1),
+        np.ones(1),
+    )
+    limit = source_joint_limit(model, tmp_path)
+    configuration = mink.Configuration(model.mj_model)
+    task = mink.PostureTask(model.mj_model, cost=1.0)
+    target = configuration.q.copy()
+    target[7] = 1.0
+    task.set_target(target)
+    for _ in range(20):
+        velocity = mink.solve_ik(configuration, [task], 0.02, "daqp", limits=[limit])
+        configuration.integrate_inplace(velocity, 0.02)
+    assert configuration.q[7] == pytest.approx(0.15, abs=1e-7)

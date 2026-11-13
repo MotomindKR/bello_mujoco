@@ -13,13 +13,20 @@ Keep segments and mirrors of the same source in one split. `evaluation_clips`
 must list every held-out clip in the manifest. Existing Mini clips can be indexed
 with `python -m bello_mujoco.sonic.corpus prepare DIRECTORY --splits SPLITS.json`.
 
-LAFAN, BONES and AMASS use the pinned stock
+LAFAN, BONES and AMASS use the shared
 [Mini GMR profile](../deps/GMR/general_motion_retargeting/ik_configs/smplx_to_bello_mini.json).
-Offline IK retains the stock profile and adds floor inequalities from the
-runtime collision surfaces. Penetrating poses receive bounded convergence passes,
+The profile uses orientation targets for hips and knees and consistent lower-body
+scales. Pelvis and torso retain full soft orientation goals, allowing a whole-body
+compromise for Mini's missing waist pitch. Wrist position and orientation retain
+the original priorities rather than weakening upper-body tracking.
+Offline IK constrains canonical motor/joint positions and source-frame joint
+displacements using the canonical URDF speed ratings. Every IK iteration uses the
+same previous exported pose and actual source interval; inner solver iterations
+cannot accumulate extra motion. Floor inequalities use the runtime collision
+surfaces. Penetrating poses receive bounded convergence passes,
 reported as `floor_ik_extra_passes`, followed by a nonnegative root lift for any
 remaining penetration, reported as `max_floor_projection_m`.
-Before recording the first frame, repeated stock GMR solves settle the initial
+Before recording the first frame, repeated GMR solves settle the initial
 pose until consecutive solves differ by at most 1 mm root translation,
 5 mrad root rotation and 10 mrad per joint. Failure to settle within the bounded
 pass budget rejects the clip explicitly. Diagnostics record
@@ -30,6 +37,8 @@ a low hand pose can otherwise lift every walking frame above the floor.
 Shared reconstruction
 computes central-difference velocities, native link-origin FK/twists, geometric
 foot-contact labels, position-envelope validation, and penetration diagnostics.
+These kinematic constraints do not certify torque feasibility or enforce planted-foot
+locking and self-collision avoidance.
 Source datasets remain read-only. Build a new corpus after changing preparation
 settings; existing datasets and checkpoints retain their original identities.
 
@@ -49,7 +58,7 @@ uv run --group soma bello-prepare-lafan source_directory=/data/lafan1/bvh \
 
 The default path fits the LAFAN body landmarks to a SOMA rig with fixed source
 bone lengths, uses pinned [SOMA-X](https://github.com/NVlabs/SOMA-X) pose transfer
-to native neutral SMPL-X, then runs stock Mini GMR. `human/` retains both human
+to native neutral SMPL-X, then runs Mini GMR. `human/` retains both human
 representations. Fitting batches preserve the full source clock; no windows are
 discarded. The YAML owns batch/fit settings and the 40 training / 9 evaluation
 split. Licensed SMPL-X models and SOMA assets must already exist locally.
@@ -63,7 +72,7 @@ without SOMA assets or a body-model directory.
 ### BONES-SEED
 
 Cache the full SOMA Uniform archive through SOMA-X, native neutral SMPL-X, and
-stock Mini GMR:
+Mini GMR:
 
 ```bash
 uv run --group soma bello-prepare-bones source_directory=/data/bones-seed \

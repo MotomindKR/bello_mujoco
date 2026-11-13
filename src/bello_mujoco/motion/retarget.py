@@ -1,7 +1,8 @@
-"""Stock Mini GMR retargeting and shared motion-clip reconstruction."""
+"""Mini GMR retargeting and shared motion-clip reconstruction."""
 
 from collections.abc import Mapping
 from types import SimpleNamespace
+import xml.etree.ElementTree as ET
 
 import mujoco
 import mink
@@ -14,6 +15,7 @@ from bello_mujoco.hardware.gmr_retarget import (
     HumanTargetFrame,
 )
 from bello_mujoco.motion.clip import MotionClip
+from bello_mujoco.models import robot_descriptions_root
 from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.sim import geom_lower_z
 
@@ -201,15 +203,74 @@ class FloorLimit(mink.Limit):
         )
 
 
+class SourceFrameJointLimit(mink.Limit):
+    """Constrain every IK iteration against the previous exported source frame."""
+
+    def __init__(self, model):
+        self.qpos_indices = model.actuator_qpos_indices
+        self.qvel_indices = model.actuator_qvel_indices
+        self.matrix = model.target_limits.matrix @ model.actuator_coordinate_transform
+        self.bounds = model.target_limits.bounds
+        root = ET.parse(
+            model.robot.source_urdf_path(robot_descriptions_root())
+        ).getroot()
+        joints = {joint.attrib["name"]: joint for joint in root.findall("joint")}
+        self.speeds = np.array(
+            [
+                float(joints[name].find("limit").attrib["velocity"])
+                for name in model.actuator_joint_names
+            ]
+        )
+        if not np.isfinite(self.speeds).all() or np.any(self.speeds <= 0):
+            raise RetargetValidationError(
+                "GMR requires positive finite URDF joint speeds"
+            )
+        self.previous = None
+        self.timestep = None
+
+    def compute_qp_inequalities(self, configuration, dt):
+        del dt  # Mink solves for displacement; its iteration dt is not the source dt.
+        q = configuration.q[self.qpos_indices]
+        position = self.matrix @ q
+        jacobian = np.zeros((len(position), configuration.model.nv))
+        jacobian[:, self.qvel_indices] = self.matrix
+        rows = [jacobian, -jacobian]
+        bounds = [self.bounds[:, 1] - position, position - self.bounds[:, 0]]
+        if self.previous is not None:
+            if (
+                self.timestep is None
+                or not np.isfinite(self.timestep)
+                or self.timestep <= 0
+            ):
+                raise RetargetValidationError("GMR source timestep must be positive")
+            step = self.speeds * self.timestep
+            displacement = q - self.previous[self.qpos_indices]
+            speed_jacobian = np.zeros((len(q), configuration.model.nv))
+            speed_jacobian[:, self.qvel_indices] = np.eye(len(q))
+            rows.extend((speed_jacobian, -speed_jacobian))
+            bounds.extend((step - displacement, step + displacement))
+        return mink.Constraint(G=np.concatenate(rows), h=np.concatenate(bounds))
+
+
 class _OfflineGmrRetargeter(GmrRetargeter):
     def __init__(self, env, config):
         super().__init__(env, config)
         self.floor = FloorLimit(env.model.mj_model)
-        self.retargeter.ik_limits.append(self.floor)
+        self.joint_limit = SourceFrameJointLimit(env.model)
+        self.retargeter.ik_limits.extend((self.floor, self.joint_limit))
         self.extra_floor_passes = 0
         self.max_floor_projection_m = 0.0
         self.initial_pose_passes = 0
         self.initial_pose_residual = 0.0
+
+    def retarget(self, frame):
+        self.joint_limit.previous = self._previous_qpos
+        self.joint_limit.timestep = (
+            None
+            if self._previous_timestamp_ns is None
+            else (frame.source_timestamp_ns - self._previous_timestamp_ns) / 1e9
+        )
+        return super().retarget(frame)
 
     def _solve(self, targets):
         initialize = not self._initialized
@@ -250,7 +311,7 @@ class _OfflineGmrRetargeter(GmrRetargeter):
 
 
 def retarget_gmr(model, targets: Mapping, *, fps, human_height_m, contact_height_m):
-    """Run the stock profile with native collision-surface floor constraints."""
+    """Run the shared profile with native floor and source-frame joint limits."""
     wrapper = _OfflineGmrRetargeter(
         SimpleNamespace(model=model, command_config=CommandConfig()),
         GmrLiveRetargetConfig(human_height_m=human_height_m),

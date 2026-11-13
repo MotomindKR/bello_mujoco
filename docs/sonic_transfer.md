@@ -266,9 +266,9 @@ Those duration and filename filters are conservative curation heuristics, not
 published optimal hyperparameters or a complete semantic classifier.
 
 Rotations are resampled with shortest-arc SLERP. Shape-dependent SMPL-X joint FK
-feeds the pinned stock Mini GMR profile. AMASS, LAFAN and BONES share the same
+feeds the shared Mini GMR profile. AMASS, LAFAN and BONES share the same
 retarget and clip reconstruction functions. Offline IK adds collision-surface
-floor constraints to the stock profile, with bounded convergence passes and a
+floor and canonical joint-motion constraints, with bounded convergence passes and a
 recorded residual root lift. Airborne targets retain their height; source data
 remains read-only. The AMASS quality thresholds in `AmassPreparationConfig`
 reject excessive joint speed or penetration.
