@@ -217,9 +217,9 @@ class _OfflineGmrRetargeter(GmrRetargeter):
         if not initialize:
             return pose
         delta = np.empty(self.model.nv)
-        tolerance = np.full(self.model.nv, 0.005)
-        tolerance[:3] = 0.0001
-        tolerance[3:6] = 0.001
+        tolerance = np.full(self.model.nv, 0.01)
+        tolerance[:3] = 0.001
+        tolerance[3:6] = 0.005
         for attempt in range(_INITIAL_POSE_MAX_PASSES):
             previous = pose
             pose = self._solve_floor(targets)

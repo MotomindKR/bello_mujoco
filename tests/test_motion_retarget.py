@@ -197,7 +197,7 @@ def test_nonconverging_initial_pose_is_rejected_instead_of_exported(model, monke
 
     def solve(self, _):
         self._initialized = True
-        self.pose[7] += 0.01
+        self.pose[7] += 0.1
         return self.pose.copy()
 
     monkeypatch.setattr(retarget._OfflineGmrRetargeter, "_solve_floor", solve)

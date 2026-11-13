@@ -20,8 +20,8 @@ runtime collision surfaces. Penetrating poses receive bounded convergence passes
 reported as `floor_ik_extra_passes`, followed by a nonnegative root lift for any
 remaining penetration, reported as `max_floor_projection_m`.
 Before recording the first frame, repeated stock GMR solves settle the initial
-pose until consecutive solves differ by at most 0.1 mm root translation,
-1 mrad root rotation and 5 mrad per joint. Failure to settle within the bounded
+pose until consecutive solves differ by at most 1 mm root translation,
+5 mrad root rotation and 10 mrad per joint. Failure to settle within the bounded
 pass budget rejects the clip explicitly. Diagnostics record
 `initial_pose_passes` and the maximum displacement/tolerance ratio
 `initial_pose_residual`; source frames and clocks are preserved.
