@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from bello_mujoco.contracts import ActionLayout, ObservationLayout
 from bello_mujoco.envs.geometry import mujoco_values_valid
 from bello_mujoco.envs.motion_tracking import BelloMotionTrackingEnv
-from bello_mujoco.motion.clip import MotionClip
+from bello_mujoco.motion.clip import MotionClip, MotionSample
 from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.sim import WarpConfig, load_model
 from bello_mujoco.sonic.reference import ReferenceBank, load_reference_bank
@@ -23,9 +23,10 @@ from bello_mujoco.supermimic.feedback import (
 )
 from bello_mujoco.supermimic.kinematics import Kinematics
 from bello_mujoco.supermimic.mdp import TrackingConfig, TrackingMDP, critic_features
+from bello_mujoco.supermimic.model import context_statistics
 from bello_mujoco.supermimic.observations import ObservationCodec
 from bello_mujoco.supermimic.sampling import ReturnSampler, SamplingConfig
-from bello_mujoco.supermimic.state import BodyState, PhysicalState
+from bello_mujoco.supermimic.state import PhysicalState
 
 
 def validate_frame_clock(bank, control_timestep):
@@ -156,7 +157,11 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             load_mjx=load_mjx,
         )
         bank = load_reference_bank(
-            paths, model, evaluation_names=evaluation_names, device=reference_device
+            paths,
+            model,
+            evaluation_names=evaluation_names,
+            device=reference_device,
+            cache_bodies=False,
         )
         kin = Kinematics.from_model(
             model.mj_model,
@@ -185,16 +190,19 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             jnp.asarray(0, device=reference_device),
             jnp.arange(int(bank.lengths[0]), device=reference_device),
         )
+        first_bodies = jax.vmap(kin.forward)(
+            jax.vmap(kin.from_qpos)(first.qpos, first.qvel)
+        )
         motion = MotionClip(
             bank.fps,
             bank.joint_names,
             bank.body_names,
             first.qpos,
             first.qvel,
-            first.body_pos,
-            first.body_quat,
-            first.body_lin_vel,
-            first.body_ang_vel,
+            first_bodies.position,
+            first_bodies.quaternion,
+            first_bodies.linear_velocity,
+            first_bodies.angular_velocity,
             first.foot_contacts,
         )
         sampler = ReturnSampler.from_bank(bank, sampling_config)
@@ -221,14 +229,12 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
     def observation_layout(self):
         n = self.action_size
         parts = (
+            ("gravity_direction", 3),
+            ("base_angular_velocity", 3),
             ("joint_position", n),
             ("joint_velocity", n),
-            ("base_angular_velocity", 3),
-            ("gravity_direction", 3),
             ("last_action", n),
         )
-        if self.codec.config.reference_orientation:
-            parts += (("reference_orientation_6d", 6),)
         return ObservationLayout(parts)
 
     @property
@@ -250,24 +256,22 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         n = self.action_size
         return ObservationLayout(
             (
-                ("invariant_physical_state", 13 + 2 * n),
-                ("joint_position_error", n),
-                ("body_position_error", 3 * len(self.kinematics.body_names)),
-                ("root_error", 9),
-                ("physical_context", n + 5),
+                ("invariant_physical_state", 10 + 2 * n),
                 ("future_reference", self.codec.goal_size),
+                ("physical_context", n + 4),
             )
         )
 
     def critic_observation(self, state, world_id=0):
+        physical = self.physical_state(state)
+        center, scale = context_statistics(self.config, self.action_size)
         return critic_features(
-            self.physical_state(state),
-            self.reference_state(
-                state.reference_time, state.alignment_xy, state.alignment_yaw
+            physical,
+            self.goal(
+                state.reference_time, physical, state.alignment_xy, state.alignment_yaw
             ),
-            self.goal(state.reference_time),
-            self.context(state, world_id),
-            self.kinematics,
+            (self.context(state, world_id)[:-1] - jnp.asarray(center))
+            / jnp.asarray(scale),
         )
 
     def critic_observation_batch(self, state, rng=None):
@@ -290,7 +294,19 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         return self.sampler.sample(key, self.reset_probabilities)
 
     def unaligned_reference(self, frame):
-        return self.reference_bank.sample_global_frame(frame)
+        sample = self.reference_bank.sample_global_frame(frame)
+        bodies = self.kinematics.forward(
+            self.kinematics.from_qpos(sample.qpos, sample.qvel)
+        )
+        return MotionSample(
+            sample.qpos,
+            sample.qvel,
+            bodies.position,
+            bodies.quaternion,
+            bodies.linear_velocity,
+            bodies.angular_velocity,
+            sample.foot_contacts,
+        )
 
     def bounded_reference_time(self, frame):
         bank = self.reference_bank
@@ -332,21 +348,9 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         )
 
     def reference_bodies(self, frame, xy, yaw):
-        """Cached body targets on the validated collection frame clock."""
-        if self.reference_bank.fps * self.control_timestep < 1:
-            # Interpolating joint angles requires FK after interpolation.
-            return self.kinematics.forward(self.reference_state(frame, xy, yaw))
-        sample = self.reference_bank.sample_global_frame(frame)
-        orientation = rot.exp(jnp.array([0.0, 0.0, yaw]))
-        shift = jnp.concatenate((xy, jnp.zeros(1)))
-        return BodyState(
-            rot.rotate(orientation, sample.body_pos) + shift,
-            rot.multiply(orientation, sample.body_quat),
-            rot.rotate(orientation, sample.body_lin_vel),
-            rot.rotate(orientation, sample.body_ang_vel),
-        )
+        return self.kinematics.forward(self.reference_state(frame, xy, yaw))
 
-    def goal(self, frame):
+    def goal(self, frame, physical, xy, yaw):
         bank = self.reference_bank
         clip = self.clip_id(frame)
         offsets = (
@@ -357,8 +361,7 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         )
         samples = bank.window(clip, frame - bank.time_offsets[clip], offsets)
         future = jax.vmap(self.kinematics.from_qpos)(samples.qpos, samples.qvel)
-        current = self.reference_state(frame, jnp.zeros(2), jnp.asarray(0.0))
-        return self.codec.goal(current, future)
+        return self.codec.goal(physical, align_reference(future, xy, yaw))
 
     def action_target(self, state, action):
         return self.mapping.command(action, state.joint_default_offset).accepted
@@ -442,14 +445,10 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
     def observation(self, state, rng=None, *, _feedback=None):
         packed = self._delayed_actor_feedback(state) if _feedback is None else _feedback
         feedback = PhysicalState.unflatten(packed, self.action_size)
-        reference = self.reference_state(
-            state.reference_time, state.alignment_xy, state.alignment_yaw
-        )
         return actor_sample(
             self.codec,
             feedback,
             state.last_action,
-            reference.quaternion,
             state.joint_default_offset,
             rng,
             noise=self.config.observation_noise,
@@ -458,7 +457,7 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
 
     def _reward(self, previous, state, world_id=0):
         reference = self.reference_state(
-            state.reference_time, state.alignment_xy, state.alignment_yaw
+            previous.reference_time, state.alignment_xy, state.alignment_yaw
         )
         return self.mdp.reward(
             self.physical_state(state),
@@ -467,10 +466,19 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             previous.last_action,
         )
 
+    def scored_reference_time(self, state):
+        step = self.reference_bank.fps * self.control_timestep
+        start = self.reference_bank.time_offsets[self.clip_id(state.reference_time)]
+        return jnp.where(
+            state.episode_length > 0,
+            jnp.maximum(state.reference_time - step, start),
+            state.reference_time,
+        ).astype(self.reference_time_dtype)
+
     def termination_flags(self, state):
         physical = self.physical_state(state)
         reference = self.reference_state(
-            state.reference_time, state.alignment_xy, state.alignment_yaw
+            self.scored_reference_time(state), state.alignment_xy, state.alignment_yaw
         )
         height, tilt = self.mdp.errors(physical, reference)
         clip = self.clip_id(state.reference_time)

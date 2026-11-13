@@ -14,8 +14,6 @@ from bello_mujoco.supermimic.model import (
     Moments,
     NetworkConfig,
     WorldModel,
-    apply_delta,
-    state_delta,
     world_model_loss,
 )
 from bello_mujoco.supermimic.replay import ReplayBuffer, ReplayWindow, Transition
@@ -54,20 +52,19 @@ def transition(time, *, terminal=False, episode=0, step=None):
     )
 
 
-def test_replay_masks_terminal_successors_and_unfilled_storage():
+def test_replay_requires_complete_windows_and_excludes_internal_resets():
     replay = ReplayBuffer.empty(transition(0), 5)
     for time in range(3):
         replay = jax.jit(ReplayBuffer.insert)(
             replay, transition(time, terminal=time == 2)
         )
-    window = replay.sample_windows(jax.random.key(1), 8, 5)
+    assert not np.any(replay.sample_windows(jax.random.key(1), 8, 5).mask)
+    window = replay.sample_windows(jax.random.key(1), 8, 3)
+    assert window.transitions.action.shape == (8, 2, 1)
+    np.testing.assert_array_equal(window.mask, 1)
     np.testing.assert_array_equal(
-        window.mask, jnp.tile(jnp.array([1.0, 1.0, 1.0, 0.0, 0.0]), (8, 1))
+        window.transitions.state.position[:, :, 0], [[0, 1]] * 8
     )
-    np.testing.assert_array_equal(
-        window.transitions.state.position[:, :3, 0], jnp.tile(jnp.arange(3), (8, 1))
-    )
-    assert np.all(window.transitions.terminal[:, 2])
 
 
 def test_rejected_replay_rows_never_train_windows_or_start_imagination():
@@ -79,8 +76,8 @@ def test_rejected_replay_rows_never_train_windows_or_start_imagination():
             sample = replace(sample, action=sample.action.at[1].set(jnp.nan))
         replay = replay.insert(sample, valid)
     window = replay.sample_windows(jax.random.key(3), 64, 3)
-    assert np.any(np.asarray(window.mask[:, 1]) == 0)
-    assert np.all(np.asarray(window.mask[:, 1]) == np.asarray(window.mask[:, 2]))
+    np.testing.assert_array_equal(window.mask, 1)
+    np.testing.assert_array_equal(window.transitions.state.position[..., 1], 0)
     assert np.isfinite(window.transitions.action).all()
     starts = replay.sample_starts(
         jax.random.key(4), 128, history_frames=1, feedback_frames=1
@@ -96,7 +93,7 @@ def test_masked_world_model_tail_cannot_overflow_loss_or_gradients():
     class UnstableModel(eqx.Module):
         factor: jax.Array
 
-        def step(self, state, action, context, input_norm, output_norm):
+        def step(self, state, action, context, input_norm):
             return replace(
                 state, joint_position=self.factor * (state.joint_position + 1)
             )
@@ -107,8 +104,7 @@ def test_masked_world_model_tail_cannot_overflow_loss_or_gradients():
         UnstableModel(jnp.array(1e4)),
         window,
         Moments.empty(1),
-        Moments.empty(14),
-        error_floor=jnp.ones(14),
+        (1.0, 1.0, 1.0, 1.0),
     )
     assert float(loss) == pytest.approx(1e8 / 14, rel=1e-6)
     assert float(gradient.factor) == pytest.approx(2e4 / 14, rel=1e-6)
@@ -149,15 +145,14 @@ def test_replay_wrap_and_history_do_not_cross_episodes_or_evicted_records():
     ).valid
 
 
-def test_replay_masks_context_changes_even_without_a_terminal_flag():
+def test_replay_excludes_context_changes_even_without_terminal_flags():
     replay = ReplayBuffer.empty(transition(0), 4)
     for time in range(4):
         tr = transition(time)
         if time >= 2:
             tr = replace(tr, context=jnp.ones_like(tr.context))
         replay = replay.insert(tr)
-    windows = replay.sample_windows(jax.random.key(5), 3, 4)
-    np.testing.assert_array_equal(windows.mask, [[1, 1, 0, 0]] * 3)
+    assert not np.any(replay.sample_windows(jax.random.key(5), 3, 4).mask)
 
 
 def test_weighted_moments_and_local_deltas_are_consistent():
@@ -168,24 +163,7 @@ def test_weighted_moments_and_local_deltas_are_consistent():
     updated = state.update(jnp.array([[5.0, 6.0]]))
     np.testing.assert_allclose(updated.mean, [3.0, 4.0])
     np.testing.assert_allclose(updated.variance, [8 / 3, 8 / 3])
-    np.testing.assert_allclose(updated.std(), np.sqrt(np.array([8 / 3, 8 / 3]) + 1e-4))
-    frozen = replace(updated, count=jnp.asarray(2e8))
-    for actual, expected in zip(
-        jax.tree.leaves(frozen.update(values)), jax.tree.leaves(frozen), strict=True
-    ):
-        np.testing.assert_array_equal(actual, expected)
-    original = jax.tree.map(lambda x: x[0], transition(0).state)
-    original = replace(original, quaternion=rot.exp(jnp.array([0.1, -0.2, 0.4])))
-    delta = jnp.linspace(-0.02, 0.02, 14)
-    result = apply_delta(original, delta)
-    np.testing.assert_allclose(state_delta(original, result), delta, atol=1e-6)
-    np.testing.assert_allclose(
-        jax.jacfwd(lambda d: state_delta(original, apply_delta(original, d)))(
-            jnp.zeros(14)
-        ),
-        np.eye(14),
-        atol=1e-5,
-    )
+    np.testing.assert_allclose(updated.std(), np.sqrt(np.array([8 / 3, 8 / 3])) + 1e-2)
 
 
 def test_dynamics_fits_logged_motor_transitions_with_finite_gradients():
@@ -193,13 +171,17 @@ def test_dynamics_fits_logged_motor_transitions_with_finite_gradients():
     config = NetworkConfig(
         dynamics_widths=(32, 32), actor_widths=(16,), critic_widths=(16,), latent_size=4
     )
-    model = WorldModel(1, 6, config=config, key=keys[0])
+    from test_supermimic_runner import toy_runner
+
+    env, _, _ = toy_runner.__wrapped__()
+    model = WorldModel(env, config=config, key=keys[0])
     tr = transition(0)
     tr = jax.tree.map(lambda x: jnp.repeat(x, 16, axis=0), tr)
     commands = jax.random.uniform(keys[1], (32, 1), minval=-1, maxval=1)
     successor = replace(
         tr.state,
-        joint_position=tr.state.joint_position + 0.02 * commands,
+        joint_position=tr.state.joint_position
+        + model.substep_coefficient * 0.02 * commands,
         joint_velocity=commands,
     )
     tr = replace(
@@ -209,10 +191,8 @@ def test_dynamics_fits_logged_motor_transitions_with_finite_gradients():
         previous_motor=jnp.full_like(commands, 100),
         motor=jnp.full_like(commands, 200),
     )
-    inputs = model.features(tr.state, tr.action, tr.context)
-    targets = state_delta(tr.state, tr.successor)
+    inputs = model.features(tr.state, tr.action)
     input_norm = Moments.empty(inputs.shape[-1]).update(inputs)
-    output_norm = Moments.empty(targets.shape[-1]).update(targets)
     window = ReplayWindow(jax.tree.map(lambda x: x[:, None], tr), jnp.ones((32, 1)))
     optimizer = optax.adam(0.01)
     optimizer_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
@@ -220,7 +200,7 @@ def test_dynamics_fits_logged_motor_transitions_with_finite_gradients():
     @eqx.filter_jit
     def step(net, opt_state):
         loss, gradient = eqx.filter_value_and_grad(world_model_loss)(
-            net, window, input_norm, output_norm, error_floor=1e-3
+            net, window, input_norm, (0.01, 0.02, 0.1, 3.14)
         )
         updates, opt_state = optimizer.update(
             gradient, opt_state, eqx.filter(net, eqx.is_inexact_array)
@@ -228,7 +208,7 @@ def test_dynamics_fits_logged_motor_transitions_with_finite_gradients():
         return eqx.apply_updates(net, updates), opt_state, loss
 
     initial = float(
-        world_model_loss(model, window, input_norm, output_norm, error_floor=1e-3)
+        world_model_loss(model, window, input_norm, (0.01, 0.02, 0.1, 3.14))
     )
     for _ in range(40):
         model, optimizer_state, loss = step(model, optimizer_state)
@@ -240,25 +220,35 @@ def test_dynamics_fits_logged_motor_transitions_with_finite_gradients():
     )
     assert actions.shape == (3, 1)
     critic = Critic(7, config=config, key=keys[2])
-    assert critic(jnp.ones((3, 7)), Moments.empty(7)).shape == (3,)
+    assert critic(jnp.ones((3, 7))).shape == (3,)
 
 
-def test_dynamics_conditions_on_raw_action_and_excludes_sensor_latency():
+def test_dynamics_conditions_on_processed_action_and_excludes_sensor_latency():
+    from test_supermimic_runner import toy_runner
+
+    env, _, _ = toy_runner.__wrapped__()
+    env = replace(
+        env,
+        mapping=replace(
+            env.mapping, scale=jnp.array([0.3]), neutral_joint=jnp.array([0.2])
+        ),
+    )
     model = WorldModel(
-        1, 6, config=NetworkConfig(dynamics_widths=(8,)), key=jax.random.key(0)
+        env, config=NetworkConfig(dynamics_widths=(8,)), key=jax.random.key(0)
     )
     tr = transition(0)
     action = jnp.full((2, 1), 25.0)
-    context = tr.context.at[:, 1].set(1.0)
-    first = model.features(tr.state, action, context)
-    second = model.features(tr.state, action, context.at[:, -1].set(2.0))
-    assert first.shape == (2, model.input_size)
-    np.testing.assert_array_equal(first[:, 15], action[:, 0])
-    np.testing.assert_array_equal(first, second)
+    features = model.features(tr.state, action)
+    assert features.shape == (2, model.input_size)
+    np.testing.assert_allclose(features[:, -1], 7.7)
     jac = jax.jacfwd(
-        lambda a: model.features(jax.tree.map(lambda x: x[0], tr.state), a, context[0])
+        lambda a: model.features(jax.tree.map(lambda x: x[0], tr.state), a)
     )(action[0])
-    assert jac[15, 0] == 1
+    assert jac[-1, 0] == pytest.approx(0.3)
+    np.testing.assert_array_equal(
+        model.context_features(tr.context),
+        model.context_features(tr.context.at[:, -1].set(2.0)),
+    )
 
 
 def test_world_model_sums_time_errors_and_masks_resets_without_reweighting_windows():
@@ -271,10 +261,10 @@ def test_world_model_sums_time_errors_and_masks_resets_without_reweighting_windo
     transitions = jax.tree.map(lambda x: jnp.repeat(x[:, None], 3, axis=1), tr)
     window = ReplayWindow(transitions, jnp.array([[1, 1, 1], [1, 0, 0]], dtype=float))
     loss = world_model_loss(
-        IdentityModel(), window, Moments.empty(1), Moments.empty(14), error_floor=1.0
+        IdentityModel(), window, Moments.empty(1), (1.0, 1.0, 1.0, 1.0)
     )
-    # Four unit joint errors, fourteen state channels, two sampled windows.
-    assert float(loss) == pytest.approx(4 / 14 / 2, rel=1e-6)
+    # Average over four valid transitions and fourteen weighted physical channels.
+    assert float(loss) == pytest.approx(1 / 14, rel=1e-6)
 
 
 def test_actor_starts_include_the_last_valid_transition_of_short_motion_tails():
@@ -289,3 +279,26 @@ def test_actor_starts_include_the_last_valid_transition_of_short_motion_tails():
     assert starts.valid
     np.testing.assert_array_equal(starts.transition.remaining_steps, 1)
     np.testing.assert_array_equal(starts.history[..., 1], 0)
+
+
+def test_model_loss_uses_fixed_physical_scales_and_matrix_rotation_error():
+    class IdentityModel:
+        def step(self, state, *args):
+            return state
+
+    tr = transition(0)
+    target = replace(
+        tr.state,
+        position=tr.state.position.at[:, 2].add(0.02),
+        quaternion=jnp.broadcast_to(rot.exp(jnp.array([0.0, 0.0, jnp.pi / 2])), (2, 4)),
+        joint_position=tr.state.joint_position + 0.1,
+        joint_velocity=tr.state.joint_velocity + 3.14,
+        linear_velocity=tr.state.linear_velocity + 100.0,
+    )
+    tr = replace(tr, successor=target)
+    window = ReplayWindow(jax.tree.map(lambda x: x[:, None], tr), jnp.ones((2, 1)))
+    value = world_model_loss(
+        IdentityModel(), window, Moments.empty(1), (0.01, 0.02, 0.1, 3.14)
+    )
+    expected = (4 + 2 / 0.02**2 + 1 + 1) / 14
+    assert float(value) == pytest.approx(expected, rel=1e-6)

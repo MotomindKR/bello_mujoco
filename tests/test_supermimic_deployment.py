@@ -99,7 +99,12 @@ def exported(tmp_path, request):
         matmul_precision=getattr(request, "param", "float32"),
     )
     actor = Actor(
-        codec.sample_size, 3, codec.goal_size, 2, config=networks, key=jax.random.key(9)
+        codec.sample_size,
+        3,
+        codec.actor_goal_size,
+        2,
+        config=networks,
+        key=jax.random.key(9),
     )
     actor = eqx.tree_at(
         lambda net: net.decoder.layers[-1].bias, actor, jnp.array([2.0, -3.0])
@@ -116,19 +121,20 @@ def exported(tmp_path, request):
         variance=jnp.linspace(0.2, 2.0, codec.sample_size),
     )
     goal_norm = replace(
-        Moments.empty(codec.goal_size), mean=jnp.linspace(-0.1, 0.2, codec.goal_size)
+        Moments.empty(codec.actor_goal_size),
+        mean=jnp.linspace(-0.1, 0.2, codec.actor_goal_size),
     )
     imu = rot.normalize(jnp.array([0.99, 0.0, 0.0, 0.1]))
     metadata = {
         "git_commit": "0" * 40,
         "task": "supermimic",
         "robot": "synthetic",
-        "observation_size": 3 * codec.sample_size + codec.goal_size,
+        "observation_size": 3 * codec.sample_size + codec.actor_goal_size,
         "observation_stack_size": 1,
         "observation_max_abs": 10000.0,
         "observation_frame": [
             ["proprioceptive_history", 3 * codec.sample_size],
-            ["future_reference", codec.goal_size],
+            ["future_reference", codec.actor_goal_size],
         ],
         "coordinates": ["b", "a"],
         "policy_indices": [0, 1],
@@ -152,16 +158,13 @@ def exported(tmp_path, request):
         "history_frames": 3,
         "future_frames": 2,
         "future_frame_stride": codec.config.future_frame_stride,
-        "reference_orientation": True,
-        "goal_joint_velocity_scale": 0.1,
         "rotation_6d_layout": "first_two_columns_row_major",
         "sample_frame": [
+            ["gravity_direction", 3],
+            ["base_angular_velocity", 3],
             ["joint_position", 2],
             ["joint_velocity", 2],
-            ["base_angular_velocity", 3],
-            ["gravity_direction", 3],
             ["last_action", 2],
-            ["reference_orientation_6d", 6],
         ],
     }
     return env, actor, obs_norm, goal_norm, metadata, physics, bank, kin, clip_path, imu
@@ -202,7 +205,6 @@ def trace(exported, *, vertical=False):
         sample = env.codec.sample(
             feedback,
             previous_action,
-            rot.multiply(alignment, current.quaternion),
             jnp.zeros(2),
         )
         history = (
@@ -217,7 +219,8 @@ def trace(exported, *, vertical=False):
             * env.codec.config.future_frame_stride,
         )
         future = jax.vmap(kin.from_qpos)(future_samples.qpos, future_samples.qvel)
-        goal = env.codec.goal(current, future)
+        future = replace(future, quaternion=rot.multiply(alignment, future.quaternion))
+        goal = env.codec.actor_goal(env.codec.goal(feedback, future))
         action = actor(history, goal, obs_norm, goal_norm)
         command = env.mapping.command(action, jnp.zeros(2))
         projected = project_motor_target(

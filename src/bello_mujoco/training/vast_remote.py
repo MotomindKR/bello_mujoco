@@ -524,7 +524,7 @@ history = env.codec.initial_history(observation)
 step = make_native_motion_step(env)
 infer = jax.jit(lambda h, goal: actor(h, goal, obs_norm, goal_norm))
 for _ in range(5):
-    action = infer(history, env.goal(state.reference_time))
+    action = infer(history, env.codec.actor_goal(env.goal(state.reference_time, env.physical_state(state), state.alignment_xy, state.alignment_yaw)))
     state, observation, reward, done, info = step(data, state, action)
     if not np.isfinite(float(reward)) or bool(info["done/nonfinite"]):
         raise RuntimeError("restored SuperMimic actor produced a nonfinite native rollout")

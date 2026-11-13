@@ -43,10 +43,10 @@ def motion_tracking_asset_config(
 class MotionSample:
     qpos: jax.Array
     qvel: jax.Array
-    body_pos: jax.Array
-    body_quat: jax.Array
-    body_lin_vel: jax.Array
-    body_ang_vel: jax.Array
+    body_pos: jax.Array | None
+    body_quat: jax.Array | None
+    body_lin_vel: jax.Array | None
+    body_ang_vel: jax.Array | None
     foot_contacts: jax.Array
 
 

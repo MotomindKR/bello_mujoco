@@ -8,6 +8,7 @@ import json
 import numpy as np
 import pytest
 
+from bello_mujoco.envs.motion_tracking import MotionTrackingEnvConfig
 from bello_mujoco.models.compiler import ModelConfig
 from bello_mujoco.sonic.corpus import MANIFEST, file_sha256
 from bello_mujoco.supermimic import checkpoint
@@ -64,6 +65,9 @@ def continuation(tmp_path, monkeypatch):
     observations = ObservationConfig(history_frames=2, future_frames=2)
     env = SimpleNamespace(
         action_size=1,
+        control_timestep=0.02,
+        config=MotionTrackingEnvConfig(),
+        mapping=SimpleNamespace(scale=jnp.ones(1), neutral_joint=jnp.zeros(1)),
         codec=ObservationCodec(observations, jnp.zeros(1)),
         kinematics=SimpleNamespace(body_names=("root",)),
     )
@@ -196,22 +200,27 @@ def test_dynamics_snapshot_loads_without_replay_and_checks_its_own_hash(
         path, runner, config, git_commit="0" * 40, dataset_digest=digest
     )
     document = checkpoint.checkpoint_metadata(path)
+    environment = SimpleNamespace(
+        action_size=1,
+        control_timestep=0.02,
+        config=MotionTrackingEnvConfig(),
+        mapping=SimpleNamespace(scale=jnp.ones(1), neutral_joint=jnp.zeros(1)),
+    )
     monkeypatch.setattr(
         checkpoint,
         "_evaluation_environment",
-        lambda *a, **k: (document, config, SimpleNamespace(action_size=1)),
+        lambda *a, **k: (document, config, environment),
     )
     (path / "state.eqx").unlink()
-    _, model, inputs, outputs, _ = checkpoint.load_dynamics(
+    _, model, inputs, _ = checkpoint.load_dynamics(
         path, dataset_directory=config.dataset.directory, reference_clips=("fixture",)
     )
     for actual, expected in zip(
-        jax.tree.leaves((model, inputs, outputs)),
+        jax.tree.leaves((model, inputs)),
         jax.tree.leaves(
             (
                 runner.learner.model,
                 runner.learner.input_norm,
-                runner.learner.output_norm,
             )
         ),
         strict=True,

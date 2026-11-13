@@ -150,7 +150,7 @@ def save_checkpoint(path, runner, run_config, *, git_commit, dataset_digest):
         )
         eqx.tree_serialise_leaves(
             staging / "dynamics.eqx",
-            (learner.model, learner.input_norm, learner.output_norm),
+            (learner.model, learner.input_norm),
         )
         shutil.copyfile(run_config.dataset.directory / MANIFEST, staging / MANIFEST)
         document["state_sha256"] = file_sha256(staging / "state.eqx")
@@ -303,13 +303,13 @@ def load_actor(path, *, dataset_directory, reference_clips, use_viewer_model=Fal
         Actor(
             codec.sample_size,
             config.observations.history_frames,
-            codec.goal_size,
+            codec.actor_goal_size,
             env.action_size,
             config=config.networks,
             key=jax.random.PRNGKey(0),
         ),
         Moments.empty(codec.sample_size),
-        Moments.empty(codec.goal_size),
+        Moments.empty(codec.actor_goal_size),
     )
     if file_sha256(path / "actor.eqx") != document["actor_sha256"]:
         raise ValueError("checkpoint actor checksum mismatch")
@@ -329,16 +329,10 @@ def load_dynamics(path, *, dataset_directory, reference_clips):
     )
     if file_sha256(path / "dynamics.eqx") != document["dynamics_sha256"]:
         raise ValueError("checkpoint dynamics checksum mismatch")
-    n, context_size = env.action_size, env.action_size + 5
-    model = WorldModel(
-        n, context_size, config=config.networks, key=jax.random.PRNGKey(0)
-    )
+    model = WorldModel(env, config=config.networks, key=jax.random.PRNGKey(0))
     template = (
         model,
         Moments.empty(model.input_size),
-        Moments.empty(12 + 2 * n),
     )
-    model, input_norm, output_norm = eqx.tree_deserialise_leaves(
-        path / "dynamics.eqx", template
-    )
-    return env, model, input_norm, output_norm, config
+    model, input_norm = eqx.tree_deserialise_leaves(path / "dynamics.eqx", template)
+    return env, model, input_norm, config

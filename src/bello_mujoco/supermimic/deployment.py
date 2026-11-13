@@ -30,7 +30,7 @@ def actor_onnx(actor, observation_norm, goal_norm, *, env, metadata):
         return output
 
     history = env.codec.config.history_frames
-    sample_size, goal_size = env.codec.sample_size, env.codec.goal_size
+    sample_size, goal_size = env.codec.sample_size, env.codec.actor_goal_size
     history_size = history * sample_size
     history_input = op(
         "Gather",
@@ -81,10 +81,6 @@ def actor_onnx(actor, observation_norm, goal_norm, *, env, metadata):
     )
 
     def mlp(value, network, prefix):
-        if network.norms:
-            raise ValueError(
-                "exported actors must not contain hidden layer normalization"
-            )
         mixed = network.matmul_precision == "bfloat16"
 
         def round_activation(value, name):
@@ -110,15 +106,35 @@ def actor_onnx(actor, observation_norm, goal_norm, *, env, metadata):
             if mixed:
                 value = round_activation(value, f"{prefix}_rounded_linear_{index}")
             if index < len(network.layers) - 1:
-                if network.activation != "elu":
-                    raise ValueError(
-                        "SuperMimic actor export requires ELU hidden activations"
-                    )
-                value = op("Elu", [value], f"{prefix}_activation_{index}", alpha=1.0)
-                if mixed:
-                    value = round_activation(
-                        value, f"{prefix}_rounded_activation_{index}"
-                    )
+                norm = network.norms[index]
+                value = op(
+                    "LayerNormalization",
+                    [
+                        value,
+                        constant(f"{prefix}_norm_weight_{index}", norm.weight),
+                        constant(f"{prefix}_norm_bias_{index}", norm.bias),
+                    ],
+                    f"{prefix}_normalized_{index}",
+                    axis=-1,
+                    epsilon=norm.eps,
+                )
+                scaled = op(
+                    "Div",
+                    [value, constant(f"{prefix}_sqrt_two_{index}", 2**0.5)],
+                    f"{prefix}_gelu_scaled_{index}",
+                )
+                erf = op("Erf", [scaled], f"{prefix}_gelu_erf_{index}")
+                gate = op(
+                    "Add",
+                    [erf, constant(f"{prefix}_one_{index}", 1.0)],
+                    f"{prefix}_gelu_gate_{index}",
+                )
+                half = op(
+                    "Mul",
+                    [value, constant(f"{prefix}_half_{index}", 0.5)],
+                    f"{prefix}_gelu_half_{index}",
+                )
+                value = op("Mul", [half, gate], f"{prefix}_activation_{index}")
         return value
 
     latent = op("Tanh", [mlp(normalized_goal, actor.encoder, "encoder")], "latent")
@@ -196,10 +212,10 @@ def export_supermimic_checkpoint(config, output):
         "git_commit": commit,
         "task": "supermimic",
         "robot": model.robot.asset,
-        "observation_size": history_size + codec.goal_size,
+        "observation_size": history_size + codec.actor_goal_size,
         "observation_frame": [
             ["proprioceptive_history", history_size],
-            ["future_reference", codec.goal_size],
+            ["future_reference", codec.actor_goal_size],
         ],
         "observation_stack_size": 1,
         "observation_max_abs": 10000.0,
@@ -207,8 +223,6 @@ def export_supermimic_checkpoint(config, output):
         "history_frames": codec.config.history_frames,
         "future_frames": codec.config.future_frames,
         "future_frame_stride": codec.config.future_frame_stride,
-        "reference_orientation": codec.config.reference_orientation,
-        "goal_joint_velocity_scale": codec.config.goal_joint_velocity_scale,
         "rotation_6d_layout": "first_two_columns_row_major",
         "reference_root_body": env.config.anchor_body_name,
         "coordinates": model.actuator_coordinate_names,

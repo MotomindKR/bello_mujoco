@@ -167,65 +167,57 @@ the bounded float32 clock. GPU integration is checked with
 
 ## Runtime contract
 
-- The actor receives proprioceptive history and future reference goals. State
-  uses metres, radians, WXYZ quaternions and logical joint coordinates. Six-value
-  rotations use `[R00, R01, R10, R11, R20, R21]`; export records the layout.
-  Goal frames include the current frame and use `observations.future_frame_stride`
-  control steps between samples, consistently in training, evaluation and Rust playback.
-- Simulation uses direct PD targets, scaled by effort/stiffness and transformed
-  through the ankle transmission. Exploration clipping applies only during
-  collection. Imagination and deterministic inference retain raw actions.
-- Physical randomization is explicit context for the model and critic. Command
-  delay is rejected. Replay windows and actor history do not cross resets.
-- Collection episode caps are bootstrapped timeouts. Full-clip evaluation retains
-  the original recording length. Height/tilt errors and nonfinite states cause
-  episode failures; horizontal drift and joint RMS are reported separately.
-- The reset curriculum records buffered returns for every visited temporal bin,
-  averaging repeated visits within each episode. Clip ends bootstrap from the
-  mean training-bin value; time limits bootstrap from the next bin and falls
-  stop continuation. Unknown bins start optimistically. Bounded sample memory
-  follows the current policy, and cumulative squared focus retains past practice.
-  Short motion tails remain eligible actor starts and imagination stops at their end.
-- Numerically invalid collection transitions reset their environments and are excluded
-  from replay, normalizers and curriculum scoring. Rejection reports identify
-  the environment, clip index, source frame and affected fields. Invalid resets,
-  an entirely invalid collection batch, corrupt global statistics and physics
-  capacity overflows stop training. Fatal errors are saved in `failure.json`
-  and the W&B run summary before shutdown.
-  Validity includes MuJoCo's `mjMAXVAL` magnitude bound and raw accelerations;
-  finite divergent states must not enter replay or running statistics.
-  Native evaluation retains these accelerations and applies the same numerical
-  termination.
-- `config.max_joint_velocity` rejects finite simulator joint-speed spikes before
-  they enter replay, running statistics or curriculum updates. The default
-  1000 rad/s ceiling is a numerical guard; it does not filter motion files or
-  change the tracking height/tilt criteria.
-- Imagined trajectories become absorbing once cumulative survival is exactly zero.
-  The first terminal transition keeps its reward. Unreachable later states do not
-  enter critic normalization or fitting; states with positive soft survival keep
-  the unweighted critic loss. This is an explicit robustness change from the
-  paper's literal full-horizon critic fit. Return arithmetic never bootstraps
-  through a fully terminated transition. Critic target/value magnitudes and
-  imagined survival are logged for failure diagnosis.
-- Actor bootstraps and critic target values use the tracking reward's discounted
-  return ceiling, derived from its maximum per-step reward and discount.
-  The return curriculum requires a discount strictly below one.
-  Critic regression uses raw predictions; negative values remain uncapped.
-  This is an explicit robustness change from the published update.
-- Return-bound violations and `config.max_critic_loss` violations roll back the
-  entire actor/critic update and stop training. Before shutdown,
-  `learning_failure_UPDATE/` saves the pre-update learner, exact sampled starts,
-  update RNG and metadata. W&B stores these as separate `diagnostic` artifacts;
-  they are not resumable training checkpoints.
-- BF16 networks keep master parameters, normalization and optimizer state in
-  FP32. Dense forward/backward matrix products use BF16. Export preserves rounding
-  after the dot product and after bias addition. LayerNorm and its
-  following activation retain FP32 intermediates.
-- Imagined actor/critic updates unroll kinematics. Collection retains the rolled
-  tree to avoid a CUDA compiler failure when the full tree fuses with MJX.
-- Precision, gains, rewards, termination thresholds and memory guards belong in
-  the recipe. A changed recipe does not alter saved policies. Physical hardware
-  commissioning remains pending.
+The learner follows the original release at
+[`abc124c`](https://github.com/HybridRobotics/supermimic/tree/abc124c1bd5976341034668af3d12c087f2f1f55),
+with its inspected mjlab dependency at `dd51a9f`. This is an executable-code
+baseline, not a claim to reproduce the exact unpublished headline-run settings.
+
+- Generalized-coordinate dynamics predicts body-frame root and logical joint
+  velocity changes. Pose integration accounts for physics substeps; world-frame
+  root twists and WXYZ quaternions remain the physical-state contract.
+- State and processed PD-command channels use running normalization. Simulation
+  context uses its configured physical ranges. Model loss scores integrated root
+  position/rotation and joint position/velocity using fixed nominal error scales
+  from `config.model_*_error`; no output-delta normalizer is trained.
+- Dynamics, goal encoder, decoder and critic use LayerNorm/GELU hidden layers.
+  The actor receives gravity, local angular velocity, relative joint positions,
+  joint velocities and previous action, with history newest last. Its goal
+  concatenates windowed joint positions/velocities and future root orientations
+  relative to the current robot root. Only the critic also sees windowed root
+  translation, generalized state and physical context.
+- Collection stores raw actions; the model normalizes their scaled logical PD
+  commands. Differential motor transmission remains Mini-specific. Simulation
+  setpoints are unprojected; hardware command limiting is separate.
+- A model window counts stored state frames, supervising one fewer transitions.
+  Sampling excludes reset/invalid interiors and selects environments uniformly
+  among those with complete windows. Actor history never crosses resets.
+- Reward and termination score the post-step state against the reference held
+  before stepping; goals then advance and clamp at clip endings. Collection time
+  caps bootstrap as timeouts. Full-clip evaluation retains recording duration.
+- Imagined termination is a sigmoid of the maximum normalized height/tilt error.
+  Actor bootstraps are upper-bounded by the attainable discounted reward; critic
+  GAE uses raw values and clamps final targets. Five critic epochs reuse one
+  shuffled partition. Fully terminated imagination becomes absorbing to prevent
+  unreachable numerical overflow, while every finite horizon state is fitted.
+- Hidden Linear weights between the first and last Linear of each MLP use Muon
+  with RMS learning-rate scaling and explicit weight decay. Other parameters use
+  Adam. The released-code baseline uses constant learning rate and FP32 networks
+  with TF32 matrix products; BF16 is an explicit alternative. The paper's Adam
+  and cosine schedule differ from these released defaults.
+- Muon orthogonalization uses BF16 internally, matching PyTorch. Reference banks
+  retain root/joint trajectories and contact labels; tracked bodies are
+  reconstructed through FK instead of cached across the full corpus.
+- The buffered return curriculum updates every visited temporal bin, handles
+  terminal/timeout boundaries, and retains bounded per-bin samples. Goal stride,
+  curriculum settings, reset noise and the training cap belong in YAML.
+- Invalid physics is excluded from replay and statistics. Invalid resets,
+  capacity overflows, invalid learner updates and configured critic-loss
+  violations stop training with diagnostics. Checkpoint uploads remain asynchronous.
+
+The input, model and optimizer contracts changed. Historical checkpoints require
+historical checkouts; there is no conversion or compatibility fallback. Corrected
+stock-GMR motion files keep their existing identities. Physical commissioning
+remains pending.
 
 ## Evaluate and export
 

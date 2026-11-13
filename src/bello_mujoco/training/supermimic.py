@@ -579,6 +579,15 @@ def run_training(run_config):
             )
             runner = replace(runner, update=runner.update + 1)
             update += 1
+            metrics.update(
+                {
+                    "learning/model_optimizer_steps": update * cfg.model_batches,
+                    "learning/actor_optimizer_steps": runner.actor_updates,
+                    "learning/critic_optimizer_steps": runner.actor_updates
+                    * cfg.critic_epochs
+                    * cfg.critic_minibatches,
+                }
+            )
             metrics = jax.block_until_ready(metrics)
             log_interval = update == 1 or update % 50 == 0
             logged_metrics = training_metric_snapshot(

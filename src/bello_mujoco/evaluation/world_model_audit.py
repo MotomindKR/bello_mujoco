@@ -74,11 +74,11 @@ class WorldModelAuditConfig:
 
 
 @eqx.filter_jit
-def rollout_predictions(model, initial, action, context, input_norm, output_norm):
+def rollout_predictions(model, initial, action, context, input_norm):
     controls = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), (action, context))
 
     def step(state, values):
-        predicted = model.step(state, *values, input_norm, output_norm)
+        predicted = model.step(state, *values, input_norm)
         return predicted, None
 
     predicted, _ = jax.lax.scan(step, initial, controls)
@@ -214,7 +214,17 @@ def collect_validation_trace(env, actor, observation_norm, goal_norm, window):
     failed = timed_out = False
     for _ in range(planned):
         contexts.append(env.context(state, 0))
-        action = infer(history, goal(state.reference_time))
+        action = infer(
+            history,
+            env.codec.actor_goal(
+                goal(
+                    state.reference_time,
+                    env.physical_state(state),
+                    state.alignment_xy,
+                    state.alignment_yaw,
+                )
+            ),
+        )
         command = command_at(action, state.joint_default_offset)
         state, observation, reward, done, info = step(data, state, action)
         if bool(info["done/nonfinite"]):
@@ -298,7 +308,7 @@ def audit_world_model(config):
         raise FileExistsError(config.output_path)
     metadata = checkpoint_metadata(config.checkpoint_path)
     selected = tuple(dict.fromkeys(w.clip for w in config.windows))
-    _, model, input_norm, output_norm, _ = load_dynamics(
+    _, model, input_norm, _ = load_dynamics(
         config.checkpoint_path,
         dataset_directory=config.motion_dataset,
         reference_clips=selected,
@@ -348,7 +358,6 @@ def audit_world_model(config):
                     action[indices],
                     context[indices],
                     input_norm,
-                    output_norm,
                 )
                 errors = {
                     name: np.asarray(value)

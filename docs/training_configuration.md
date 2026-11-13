@@ -74,9 +74,13 @@ LAFAN and BONES recipes inherit the base and specify only overrides.
 - `config.max_episode_steps` caps collection episodes without shortening source
   references or full-clip evaluation. `max_training_seconds` bounds a run between
   completed updates and saves its final state.
-- `networks.matmul_precision` selects network matmuls; the base recipe uses BF16.
+- `networks.matmul_precision` selects network matmuls; the base recipe uses FP32 with TF32 products.
   Physical state, kinematics, rewards, master parameters and optimizer state
   remain float32.
+- `config.learning_rate` is constant in the original-release baseline.
+  `config.muon_weight_decay` applies only to Muon-selected hidden weights;
+  `config.model_*_error` defines fixed physical scales for model fitting.
+  `config.window_length` counts stored state frames, not transitions.
 - `config.replay_steps` counts vector steps. `config.max_replay_bytes` bounds replay
   and `dataset.max_array_bytes` bounds reference arrays; neither covers total VRAM.
 - `config.max_critic_loss` stops and rolls back an actor/critic update if any

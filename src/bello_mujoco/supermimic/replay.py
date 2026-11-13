@@ -103,29 +103,51 @@ class ReplayBuffer:
         return (self.cursor - self.size + age) % self.capacity
 
     def sample_windows(self, key, batch_size, length):
-        if not 1 <= length <= self.capacity or batch_size <= 0:
+        if not 2 <= length <= self.capacity or batch_size <= 0:
             raise ValueError("window length and batch size exceed replay dimensions")
         time_key, env_key = jax.random.split(key)
-        age = jax.random.randint(
-            time_key, (batch_size,), 0, jnp.maximum(1, self.size - length + 1)
+        ages = jnp.arange(self.capacity)
+        rows = self.rows(ages)
+        following = self.rows(ages + 1)
+        boundary = (
+            self.data.terminal[rows]
+            | self.data.timeout[rows]
+            | ~self.valid[rows]
+            | ~self.valid[following]
+            | (self.data.episode_id[rows] != self.data.episode_id[following])
+            | (self.data.clip_id[rows] != self.data.clip_id[following])
+            | jnp.any(self.data.context[rows] != self.data.context[following], axis=-1)
         )
-        env = jax.random.randint(env_key, (batch_size,), 0, self.num_envs)
-        ages = age[:, None] + jnp.arange(length)
+        prefix = jnp.concatenate(
+            (jnp.zeros((1, self.num_envs), jnp.int32), jnp.cumsum(boundary, axis=0)),
+            axis=0,
+        )
+        end = jnp.minimum(ages + length - 1, self.capacity)
+        eligible = (
+            (ages[:, None] + length <= self.size)
+            & self.valid[rows]
+            & (prefix[end] == prefix[ages])
+        )
+        counts = jnp.cumsum(eligible.T, axis=1, dtype=jnp.int32)
+        totals = counts[:, -1]
+        available = totals > 0
+        probability = available / jnp.maximum(available.sum(), 1)
+        probability = jnp.where(
+            available.any(), probability, jnp.full(self.num_envs, 1 / self.num_envs)
+        )
+        env = jax.random.choice(env_key, self.num_envs, (batch_size,), p=probability)
+        draw = jax.random.randint(
+            time_key, (batch_size,), 0, jnp.maximum(totals[env], 1)
+        )
+        age = jax.vmap(
+            lambda count, value: jnp.searchsorted(count, value, side="right")
+        )(counts[env], draw)
+        age = jnp.minimum(age, self.capacity - length)
+        ages = age[:, None] + jnp.arange(length - 1)
         rows = self.rows(ages)
         transitions = jax.tree.map(lambda x: x[rows, env[:, None]], self.data)
-        ended = transitions.terminal | transitions.timeout
-        before = jnp.concatenate(
-            (jnp.ones((batch_size, 1), bool), ~ended[:, :-1]), axis=1
-        )
-        valid = (
-            (ages < self.size)
-            & self.valid[rows, env[:, None]]
-            & (transitions.episode_id == transitions.episode_id[:, :1])
-            & (transitions.clip_id == transitions.clip_id[:, :1])
-            & jnp.all(transitions.context == transitions.context[:, :1], axis=-1)
-            & before
-        )
-        return ReplayWindow(transitions, jnp.cumprod(valid.astype(jnp.float32), axis=1))
+        mask = jnp.broadcast_to(available.any(), ages.shape).astype(jnp.float32)
+        return ReplayWindow(transitions, mask)
 
     def sample_starts(self, key, batch_size, *, history_frames, feedback_frames):
         if min(batch_size, history_frames, feedback_frames) <= 0:

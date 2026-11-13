@@ -38,7 +38,7 @@ def test_finite_joint_speed_spike_is_rejected_before_normalization(
     assert metrics["diagnostic/invalid/physics"] == 0
     np.testing.assert_array_equal(result.replay.valid[0], [False, True])
     np.testing.assert_array_equal(result.collector.environment.episode_length, [0, 1])
-    for name in ("input_norm", "output_norm", "observation_norm", "goal_norm"):
+    for name in ("input_norm", "observation_norm", "goal_norm"):
         moments = getattr(result.learner, name)
         assert moments.count == 1
         assert np.max(np.abs(moments.mean)) < 1e3
@@ -79,10 +79,9 @@ def test_actor_bootstrap_ceiling_blocks_exploitation_but_keeps_negative_values(
             lambda value: actor_loss(
                 value,
                 None,
-                lambda features, _: features[..., 0],
+                lambda features: features[..., 0],
                 None,
                 env,
-                None,
                 None,
                 key=jax.random.key(0),
                 horizon=2,
@@ -115,7 +114,7 @@ def test_critic_fits_raw_predictions_and_rolls_back_finite_divergence(
     collect, _, improve = compile_updates(env, config)
     for _ in range(2):
         runner, _ = collect(runner, env.reference_bank)
-    count, width = config.imagined_batch_size, runner.learner.critic_norm.mean.size
+    count, width = config.imagined_batch_size, runner.learner.critic.input_size
 
     def controlled(actor, *args, **kwargs):
         loss = sum(jnp.sum(x) * 0 for x in jax.tree.leaves(actor))
@@ -131,6 +130,8 @@ def test_critic_fits_raw_predictions_and_rolls_back_finite_divergence(
     bound = env.mdp.maximum_return(config.gamma, env.max_episode_steps)
     assert metrics["diagnostic/critic_target_max"] <= bound
     assert metrics["diagnostic/critic_value_abs_max"] == abs(bias)
+    if bias == 15:
+        assert metrics["critic/loss"] == pytest.approx((bias - bound) ** 2, rel=1e-6)
     if bias == 1000:
         assert np.isfinite(metrics["critic/loss"])
         assert metrics["invalid/critic_loss"] == 1
@@ -159,7 +160,7 @@ def test_reward_ceiling_violation_rejects_the_entire_update(toy_runner, monkeypa
     collect, _, improve = compile_updates(env, config)
     for _ in range(2):
         runner, _ = collect(runner, env.reference_bank)
-    count, width = config.imagined_batch_size, runner.learner.critic_norm.mean.size
+    count, width = config.imagined_batch_size, runner.learner.critic.input_size
 
     def controlled(actor, *args, **kwargs):
         loss = sum(jnp.sum(x) * 0 for x in jax.tree.leaves(actor))
@@ -190,6 +191,8 @@ def test_imagination_stops_extrapolating_after_full_termination(toy_runner):
     )
 
     class ExplodingAfterFall:
+        context_features = runner.learner.model.context_features
+
         def step(self, state, action, *args):
             return replace(
                 state,
@@ -203,7 +206,6 @@ def test_imagination_stops_extrapolating_after_full_termination(toy_runner):
         getattr(learner, name)
         for name in (
             "input_norm",
-            "output_norm",
             "observation_norm",
             "goal_norm",
         )
@@ -217,7 +219,6 @@ def test_imagination_stops_extrapolating_after_full_termination(toy_runner):
                 starts,
                 env,
                 norms,
-                learner.critic_norm,
                 key=jax.random.key(4),
                 horizon=8,
                 gamma=config.gamma,
@@ -230,43 +231,36 @@ def test_imagination_stops_extrapolating_after_full_termination(toy_runner):
     assert all(np.isfinite(x).all() for x in jax.tree.leaves((rollout, gradient)))
     np.testing.assert_array_equal(rollout.terminations, 1)
     np.testing.assert_array_equal(rollout.rewards[1:], 0)
-    np.testing.assert_array_equal(rollout.critic_inputs[1:], 0)
+    np.testing.assert_array_equal(
+        rollout.critic_inputs[2:],
+        jnp.broadcast_to(rollout.critic_inputs[1], rollout.critic_inputs[2:].shape),
+    )
 
 
-@pytest.mark.parametrize("terminated", [True, False])
-def test_critic_excludes_only_unreachable_tail(toy_runner, monkeypatch, terminated):
+def test_critic_rejects_divergent_targets_even_after_termination(
+    toy_runner, monkeypatch
+):
     from bello_mujoco.supermimic import optimization
 
     env, config, runner = toy_runner
     collect, _, improve = compile_updates(env, config)
     for _ in range(2):
         runner, _ = collect(runner, env.reference_bank)
-    count = config.imagined_batch_size
-    width = runner.learner.critic_norm.mean.size
+    count, width = config.imagined_batch_size, runner.learner.critic.input_size
 
-    def controlled_rollout(actor, *args, **kwargs):
-        features = jnp.zeros((3, count, width)).at[1:].set(1e20)
-        rewards = jnp.full((2, count), -1e20).at[0].set(0.1)
-        terms = jnp.full((2, count), float(terminated))
+    def controlled(actor, *args, **kwargs):
         loss = sum(jnp.sum(x) * 0 for x in jax.tree.leaves(actor))
-        return loss, ImaginedRollout(rewards, terms, features)
+        return loss, ImaginedRollout(
+            jnp.full((2, count), -1e20),
+            jnp.ones((2, count)),
+            jnp.zeros((3, count, width)),
+        )
 
-    monkeypatch.setattr(optimization, "actor_loss", controlled_rollout)
+    monkeypatch.setattr(optimization, "actor_loss", controlled)
     result, metrics = improve(runner, env.reference_bank)
-    if terminated:
+    with pytest.raises(RuntimeError, match="critic/loss|invalid/actor_critic_update"):
         require_valid_metrics(metrics)
-        assert result.learner.critic_norm.count == count
-        np.testing.assert_array_equal(result.learner.critic_norm.mean, 0)
-        assert metrics["critic/loss"] < 1
-        assert metrics["diagnostic/critic_target_abs_max"] < 1
-    else:
-        with pytest.raises(
-            RuntimeError, match="critic/loss|invalid/actor_critic_update"
-        ):
-            require_valid_metrics(metrics)
-        for actual, previous in zip(
-            jax.tree.leaves(result.learner),
-            jax.tree.leaves(runner.learner),
-            strict=True,
-        ):
-            np.testing.assert_array_equal(actual, previous)
+    for actual, expected in zip(
+        jax.tree.leaves(result.learner), jax.tree.leaves(runner.learner), strict=True
+    ):
+        np.testing.assert_array_equal(actual, expected)

@@ -91,10 +91,23 @@ def test_real_environment_arrays_transfer_and_compile(mini_corpus):
     arrays = EnvironmentArrays.from_environment(placed)
     for value in jax.tree.leaves(arrays):
         assert value.sharding == parallel.replicated
-    goal = jax.jit(lambda inputs: inputs.apply(env).goal(jnp.asarray(0, jnp.int32)))(
-        arrays
+    goal = jax.jit(
+        lambda inputs: inputs.apply(env).goal(
+            jnp.asarray(0, jnp.int32),
+            env.reference_state(jnp.asarray(0, jnp.int32), jnp.zeros(2), 0.0),
+            jnp.zeros(2),
+            0.0,
+        )
+    )(arrays)
+    np.testing.assert_allclose(
+        goal,
+        env.goal(
+            jnp.asarray(0, jnp.int32),
+            env.reference_state(jnp.asarray(0, jnp.int32), jnp.zeros(2), 0.0),
+            jnp.zeros(2),
+            0.0,
+        ),
     )
-    np.testing.assert_allclose(goal, env.goal(jnp.asarray(0, jnp.int32)))
 
 
 def test_filtered_gpu_training_is_rejected_before_loading_assets():
@@ -168,7 +181,12 @@ def test_native_mini_collection_uses_new_codec_reward_and_terminal_successors(
     critic = env.critic_observation(state)
     assert critic.shape == (env.critic_observation_size,)
     assert np.isfinite(critic).all()
-    assert env.goal(state.reference_time).shape == (env.codec.goal_size,)
+    assert env.goal(
+        state.reference_time,
+        env.physical_state(state),
+        state.alignment_xy,
+        state.alignment_yaw,
+    ).shape == (env.codec.goal_size,)
     step = make_native_motion_step(env)
     first = state
     for _ in range(3):
@@ -180,7 +198,7 @@ def test_native_mini_collection_uses_new_codec_reward_and_terminal_successors(
     expected_reward, _ = env.mdp.reward(
         env.physical_state(state),
         env.reference_state(
-            state.reference_time, state.alignment_xy, state.alignment_yaw
+            env.scored_reference_time(state), state.alignment_xy, state.alignment_yaw
         ),
         state.last_action,
         first.last_action,
@@ -206,7 +224,7 @@ def test_native_mini_collection_uses_new_codec_reward_and_terminal_successors(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("precision", ["float32", "bfloat16"])
+@pytest.mark.parametrize("precision", ["float32", "tensorfloat32", "bfloat16"])
 def test_cuda_mini_compiled_collect_fit_and_improve(mini_corpus, precision):
     if not any(device.platform == "gpu" for device in jax.devices()):
         pytest.skip("requires CUDA/MJX-Warp")
@@ -392,7 +410,14 @@ def test_mini_checkpoint_actor_restores_exports_and_evaluates_held_out_clip(
     mujoco.mj_forward(visible.model.mj_model, visual_data)
     np.testing.assert_allclose(visual_data.qacc, data.qacc, atol=1e-7, rtol=1e-7)
     history = restored.codec.initial_history(observation)
-    goal = restored.goal(state.reference_time)
+    goal = restored.codec.actor_goal(
+        restored.goal(
+            state.reference_time,
+            restored.physical_state(state),
+            state.alignment_xy,
+            state.alignment_yaw,
+        )
+    )
     with ZipFile(bundle) as archive:
         assert set(archive.namelist()) == {
             "policy.onnx",
@@ -603,3 +628,30 @@ def test_mini_imagination_updates_actor_and_critic_without_updating_dynamics(
         jax.tree.leaves(updated.model), jax.tree.leaves(learner.model), strict=True
     ):
         np.testing.assert_array_equal(a, b)
+
+
+def test_compact_references_reconstruct_the_saved_body_trajectories(mini_corpus):
+    from bello_mujoco.configuration import supermimic_training_profile
+    from bello_mujoco.training.supermimic import load_environment
+    from bello_mujoco.motion.clip import load_motion_clip
+
+    _, path = mini_corpus
+    config = supermimic_training_profile(
+        path.parent, name="bello_mini_supermimic_smoke"
+    )
+    env = load_environment(config, load_mjx=False, paths=(path,))
+    original = load_motion_clip(path, env.model)
+    assert all(
+        getattr(env.reference_bank, name) is None
+        for name in ("body_pos", "body_quat", "body_lin_vel", "body_ang_vel")
+    )
+    reconstructed = jax.jit(
+        jax.vmap(lambda frame: env.reference_bodies(frame, jnp.zeros(2), 0.0))
+    )(jnp.arange(original.num_frames))
+    for actual, expected in (
+        (reconstructed.position, original.body_pos),
+        (reconstructed.quaternion, original.body_quat),
+        (reconstructed.linear_velocity, original.body_lin_vel),
+        (reconstructed.angular_velocity, original.body_ang_vel),
+    ):
+        np.testing.assert_allclose(actual, expected, atol=2e-6, rtol=2e-6)

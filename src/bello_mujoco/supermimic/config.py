@@ -44,32 +44,23 @@ class ObservationConfig:
     history_frames: int = 10
     future_frames: int = 10
     future_frame_stride: int = 5
-    reference_orientation: bool = True
-    goal_joint_velocity_scale: float = 0.1
 
     def __post_init__(self):
         for name in ("history_frames", "future_frames", "future_frame_stride"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
-        if type(self.reference_orientation) is not bool:
-            raise ValueError("reference_orientation must be a boolean")
-        if (
-            not math.isfinite(self.goal_joint_velocity_scale)
-            or self.goal_joint_velocity_scale <= 0
-        ):
-            raise ValueError("goal_joint_velocity_scale must be positive and finite")
 
 
 @dataclass(frozen=True)
 class LearningConfig:
     seed: int = 0
-    total_timesteps: int = 3276800000
+    total_timesteps: int = 3276832768
     num_envs: int = 4096
     max_episode_steps: int | None = 500
     replay_steps: int = 1000
     max_replay_bytes: int = 16 * 1024**3
-    warmup_steps: int = 64
-    model_warmup_updates: int = 500
+    warmup_steps: int = 8
+    model_warmup_updates: int = 0
     window_length: int = 8
     model_batches: int = 10
     model_batch_size: int = 2048
@@ -80,8 +71,11 @@ class LearningConfig:
     update_to_data_ratio: float = 0.4
     action_noise: float = 0.1
     learning_rate: float = 0.0002
-    learning_rate_decay_updates: int = 250000
-    learning_rate_final_fraction: float = 0.03
+    muon_weight_decay: float = 0.1
+    model_root_position_error: float = 0.01
+    model_root_orientation_error: float = 0.02
+    model_joint_position_error: float = 0.1
+    model_joint_velocity_error: float = 3.14
     gamma: float = 0.99
     gae_lambda: float = 0.95
     max_gradient_norm: float = 1.0
@@ -107,7 +101,6 @@ class LearningConfig:
             "imagination_horizon",
             "critic_epochs",
             "critic_minibatches",
-            "learning_rate_decay_updates",
         ):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
@@ -121,6 +114,10 @@ class LearningConfig:
             "actor_gradient_clip",
             "max_joint_velocity",
             "max_critic_loss",
+            "model_root_position_error",
+            "model_root_orientation_error",
+            "model_joint_position_error",
+            "model_joint_velocity_error",
         ):
             if not math.isfinite(getattr(self, name)) or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive and finite")
@@ -128,11 +125,15 @@ class LearningConfig:
             raise ValueError("update_to_data_ratio must be at most one")
         if not 0 < self.gamma < 1:
             raise ValueError("gamma must be in (0, 1) for the return curriculum")
-        for name in ("gae_lambda", "learning_rate_final_fraction"):
+        for name in ("gae_lambda",):
             if not 0 < getattr(self, name) <= 1:
                 raise ValueError(f"{name} must be in (0, 1]")
         if not math.isfinite(self.action_noise) or self.action_noise < 0:
             raise ValueError("action_noise must be finite and nonnegative")
+        if not math.isfinite(self.muon_weight_decay) or self.muon_weight_decay < 0:
+            raise ValueError("muon_weight_decay must be finite and nonnegative")
+        if self.window_length < 2:
+            raise ValueError("window_length must contain at least two stored frames")
         if self.replay_steps < max(self.window_length, self.warmup_steps):
             raise ValueError(
                 "replay_steps must hold warmup and a complete model window"

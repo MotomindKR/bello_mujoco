@@ -20,6 +20,20 @@ from bello_mujoco.motion.clip import (
 SplitName = Literal["train", "evaluation"]
 
 
+@dataclass(frozen=True)
+class _JointTrajectory:
+    fps: float
+    joint_names: tuple[str, ...]
+    body_names: tuple[str, ...]
+    qpos: np.ndarray
+    qvel: np.ndarray
+    foot_contacts: np.ndarray
+
+    @property
+    def num_frames(self):
+        return self.qpos.shape[0]
+
+
 @jax.tree_util.register_dataclass
 @dataclass(frozen=True)
 class ReferenceBank:
@@ -36,18 +50,19 @@ class ReferenceBank:
     split_counts: tuple[int, int] = field(metadata={"static": True})
     qpos: jax.Array
     qvel: jax.Array
-    body_pos: jax.Array
-    body_quat: jax.Array
-    body_lin_vel: jax.Array
-    body_ang_vel: jax.Array
+    body_pos: jax.Array | None
+    body_quat: jax.Array | None
+    body_lin_vel: jax.Array | None
+    body_ang_vel: jax.Array | None
     foot_contacts: jax.Array
 
     @classmethod
     def from_clips(
         cls,
-        clips: Iterable[tuple[str, MotionClip, SplitName]],
+        clips: Iterable[tuple[str, MotionClip | _JointTrajectory, SplitName]],
         *,
         device=None,
+        cache_bodies=True,
     ) -> ReferenceBank:
         entries = tuple(clips)
         if not entries:
@@ -114,10 +129,10 @@ class ReferenceBank:
             ),
             qpos=concatenate("qpos"),
             qvel=concatenate("qvel"),
-            body_pos=concatenate("body_pos"),
-            body_quat=concatenate("body_quat"),
-            body_lin_vel=concatenate("body_lin_vel"),
-            body_ang_vel=concatenate("body_ang_vel"),
+            body_pos=concatenate("body_pos") if cache_bodies else None,
+            body_quat=concatenate("body_quat") if cache_bodies else None,
+            body_lin_vel=concatenate("body_lin_vel") if cache_bodies else None,
+            body_ang_vel=concatenate("body_ang_vel") if cache_bodies else None,
             foot_contacts=concatenate("foot_contacts"),
         )
 
@@ -138,13 +153,17 @@ class ReferenceBank:
         self, clip_id: jax.Array, local_frames: jax.Array
     ) -> MotionSample:
         index = self.frame_indices(clip_id, local_frames)
+
+        def cached(value):
+            return None if value is None else value[index]
+
         return MotionSample(
             qpos=self.qpos[index],
             qvel=self.qvel[index],
-            body_pos=self.body_pos[index],
-            body_quat=self.body_quat[index],
-            body_lin_vel=self.body_lin_vel[index],
-            body_ang_vel=self.body_ang_vel[index],
+            body_pos=cached(self.body_pos),
+            body_quat=cached(self.body_quat),
+            body_lin_vel=cached(self.body_lin_vel),
+            body_ang_vel=cached(self.body_ang_vel),
             foot_contacts=self.foot_contacts[index],
         )
 
@@ -190,15 +209,19 @@ class ReferenceBank:
         b = self.sample_frames(clip_id, upper)
 
         def lerp(x, y):
-            return x + alpha * (y - x)
+            return None if x is None else x + alpha * (y - x)
 
         qpos = (
             lerp(a.qpos, b.qpos)
             .at[3:7]
             .set(quat_slerp(a.qpos[3:7], b.qpos[3:7], alpha))
         )
-        body_quat = jax.vmap(quat_slerp, in_axes=(0, 0, None))(
-            a.body_quat, b.body_quat, alpha
+        body_quat = (
+            None
+            if self.body_quat is None
+            else jax.vmap(quat_slerp, in_axes=(0, 0, None))(
+                a.body_quat, b.body_quat, alpha
+            )
         )
         return MotionSample(
             qpos=qpos,
@@ -262,6 +285,7 @@ def load_reference_bank(
     *,
     evaluation_names: Iterable[str] = (),
     device=None,
+    cache_bodies=True,
 ) -> ReferenceBank:
     paths = tuple(Path(path).expanduser().resolve() for path in paths)
     evaluation = frozenset(evaluation_names)
@@ -269,8 +293,18 @@ def load_reference_bank(
     # Validate/load on the host, then transfer each concatenated field once.
     for path in paths:
         split: SplitName = "evaluation" if path.stem in evaluation else "train"
-        clips.append((path.stem, load_motion_clip(path, model, as_numpy=True), split))
+        clip = load_motion_clip(path, model, as_numpy=True)
+        if not cache_bodies:
+            clip = _JointTrajectory(
+                clip.fps,
+                clip.joint_names,
+                clip.body_names,
+                clip.qpos,
+                clip.qvel,
+                clip.foot_contacts,
+            )
+        clips.append((path.stem, clip, split))
     unknown = sorted(evaluation - {path.stem for path in paths})
     if unknown:
         raise ValueError(f"evaluation clips were not found in the corpus: {unknown}")
-    return ReferenceBank.from_clips(clips, device=device)
+    return ReferenceBank.from_clips(clips, device=device, cache_bodies=cache_bodies)

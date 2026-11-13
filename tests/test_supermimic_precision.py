@@ -35,9 +35,7 @@ def test_bfloat16_layer_norm_and_optimizer_keep_float32_parameters():
     import equinox as eqx
     import optax
 
-    network = MLP(
-        (4, 8, 2), key=jax.random.key(4), matmul_precision="bfloat16", layer_norm=True
-    )
+    network = MLP((4, 8, 2), key=jax.random.key(4), matmul_precision="bfloat16")
     value = jnp.arange(12, dtype=jnp.float32).reshape((3, 4)) / 10
     gradient = eqx.filter_grad(lambda net: jnp.mean(net(value) ** 2))(network)
     optimizer = optax.adam(1e-3)
@@ -55,9 +53,7 @@ def test_bfloat16_layer_norm_and_optimizer_keep_float32_parameters():
 def test_bfloat16_backward_uses_matching_dot_operand_types():
     import equinox as eqx
 
-    network = MLP(
-        (4, 8, 2), key=jax.random.key(0), matmul_precision="bfloat16", layer_norm=True
-    )
+    network = MLP((4, 8, 2), key=jax.random.key(0), matmul_precision="bfloat16")
     graph = eqx.filter_make_jaxpr(eqx.filter_grad(lambda net, x: jnp.sum(net(x) ** 2)))
     closed, _, _ = graph(network, jnp.ones((3, 4)))
     dots = [e for e in closed.jaxpr.eqns if e.primitive.name == "dot_general"]
@@ -79,10 +75,7 @@ def test_masked_nonfinite_samples_do_not_enter_running_moments():
 
 
 @pytest.mark.parametrize("precision", ["float32", "bfloat16"])
-@pytest.mark.parametrize("layer_norm,activation", [(True, "silu"), (False, "elu")])
-def test_network_outputs_and_gradients_match_torch_with_identical_weights(
-    precision, layer_norm, activation
-):
+def test_network_outputs_and_gradients_match_torch_with_identical_weights(precision):
     import equinox as eqx
 
     torch = pytest.importorskip("torch")
@@ -90,8 +83,6 @@ def test_network_outputs_and_gradients_match_torch_with_identical_weights(
     network = MLP(
         (16, 32, 24, 5),
         key=jax.random.key(12),
-        layer_norm=layer_norm,
-        activation=activation,
         matmul_precision=precision,
     )
     leaves, structure = jax.tree.flatten(eqx.filter(network, eqx.is_inexact_array))
@@ -108,7 +99,7 @@ def test_network_outputs_and_gradients_match_torch_with_identical_weights(
             result.to(dtype), layer.weight.to(dtype), layer.bias.to(dtype)
         )
         if i < len(reference.layers) - 1:
-            if layer_norm:
+            if reference.norms:
                 norm = reference.norms[i]
                 result = functional.layer_norm(
                     result.float(),
@@ -117,11 +108,7 @@ def test_network_outputs_and_gradients_match_torch_with_identical_weights(
                     norm.bias,
                     norm.eps,
                 )
-            result = (
-                functional.silu(result)
-                if activation == "silu"
-                else functional.elu(result)
-            )
+            result = functional.gelu(result, approximate="none")
     result = result.float()
     result.square().mean().backward()
     _, (gradient, input_gradient) = eqx.filter_jit(
@@ -188,7 +175,7 @@ def test_adam_and_gradient_clipping_match_torch_for_identical_gradients(
 
     torch = pytest.importorskip("torch")
     cfg = LearningConfig()
-    network = MLP((4, 8, 2), key=jax.random.key(0), layer_norm=True)
+    network = MLP((4, 8, 2), key=jax.random.key(0))
     leaves, structure = jax.tree.flatten(eqx.filter(network, eqx.is_inexact_array))
     parameters = [
         torch.nn.Parameter(torch.tensor(np.asarray(x).copy())) for x in leaves
@@ -228,7 +215,13 @@ def test_adam_and_gradient_clipping_match_torch_for_identical_gradients(
             np.testing.assert_allclose(
                 actual, expected.detach().numpy(), atol=2e-7, rtol=1e-6
             )
-        adam = next(s for s in state if hasattr(s, "mu"))
+        adam = next(
+            s
+            for s in jax.tree.leaves(
+                state, is_leaf=lambda s: hasattr(s, "mu") and hasattr(s, "nu")
+            )
+            if hasattr(s, "mu") and hasattr(s, "nu")
+        )
         for mu, nu, parameter in zip(
             jax.tree.leaves(adam.mu), jax.tree.leaves(adam.nu), parameters, strict=True
         ):

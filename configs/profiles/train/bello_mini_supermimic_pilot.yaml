@@ -7,7 +7,6 @@ config:
   model_batches: 2
   model_batch_size: 256
   imagined_batch_size: 256
-  learning_rate_decay_updates: 5000
 checkpoint_config:
   name: bello_mini_supermimic_pilot_seed${config.seed}
   every_updates: 1000

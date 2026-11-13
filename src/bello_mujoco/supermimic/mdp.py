@@ -8,7 +8,7 @@ import jax.numpy as jnp
 
 from bello_mujoco.supermimic import rotations as rot
 from bello_mujoco.supermimic.kinematics import Kinematics
-from bello_mujoco.supermimic.model import invariant_features, normalized_context
+from bello_mujoco.supermimic.model import invariant_features
 
 
 _TRACKING_WEIGHTS = (1.0, 1.0, 1.0, 1.0, 0.5, 0.5)
@@ -27,14 +27,13 @@ class TrackingConfig:
     soft_limit_factor: float = 0.9
     height_error: float = 0.25
     tilt_error: float = 0.8
-    soft_height_width: float = 0.02
-    soft_tilt_width: float = 0.04
+    termination_softness: float = 0.05
 
     def __post_init__(self):
         for name, value in vars(self).items():
             if not math.isfinite(value):
                 raise ValueError(f"{name} must be finite")
-            if name.endswith(("sigma", "error", "width")) and value <= 0:
+            if name.endswith(("sigma", "error", "softness")) and value <= 0:
                 raise ValueError(f"{name} must be positive")
         if not 0 < self.soft_limit_factor <= 1:
             raise ValueError("soft_limit_factor must be in (0, 1]")
@@ -159,42 +158,15 @@ class TrackingMDP:
 
     def soft_termination(self, state, reference):
         height, tilt = self.errors(state, reference)
-        alive = jax.nn.sigmoid(
-            (self.config.height_error - height) / self.config.soft_height_width
-        ) * jax.nn.sigmoid(
-            (self.config.tilt_error - tilt) / self.config.soft_tilt_width
+        error = jnp.maximum(
+            height / self.config.height_error, tilt / self.config.tilt_error
         )
-        return 1.0 - alive
+        return jax.nn.sigmoid((error - 1.0) / self.config.termination_softness)
 
 
-def critic_features(
-    state, reference, goal, context, kinematics, *, bodies=None, targets=None
-):
-    heading_inverse = rot.conjugate(rot.heading(state.quaternion))
-    if bodies is None:
-        bodies = kinematics.forward(state)
-    if targets is None:
-        targets = kinematics.forward(reference)
-    alignment = rot.heading(
-        rot.multiply(state.quaternion, rot.conjugate(reference.quaternion))
-    )
-    origin = state.position.at[2].set(reference.position[2])
-    target_position = origin + rot.rotate(
-        alignment, targets.position - reference.position
-    )
-    body_error = rot.rotate(heading_inverse, target_position - bodies.position)
+def critic_features(state, goal, normalized_context):
     return jnp.concatenate(
-        (
-            invariant_features(state),
-            reference.joint_position - state.joint_position,
-            body_error.reshape(-1),
-            rot.rotate(heading_inverse, reference.position - state.position),
-            rot.rotation_6d(
-                rot.multiply(rot.conjugate(state.quaternion), reference.quaternion)
-            ),
-            normalized_context(context),
-            goal,
-        )
+        (invariant_features(state), goal, normalized_context), axis=-1
     )
 
 

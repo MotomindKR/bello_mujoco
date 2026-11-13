@@ -1,8 +1,8 @@
-# Reference-comparison baseline: full unofficial batches and 14,000 updates.
+# LAFAN quality gate using the original release's learner semantics.
 # Hardware filtering/delay commissioning is separate from these baselines.
 max_training_seconds: null
 config:
-  total_timesteps: 143622144
+  total_timesteps: 143392768
   max_episode_steps: 500
 environment:
   reset:

@@ -48,10 +48,10 @@ class Moments:
             jnp.where(batch_count > 0, var, self.variance),
             total,
         )
-        return jax.lax.cond(self.count < 2e8, lambda: updated, lambda: self)
+        return updated
 
     def std(self, floor=1e-2):
-        return jnp.sqrt(self.variance + floor**2)
+        return jnp.sqrt(jnp.maximum(self.variance, 0.0)) + floor
 
     def normalize(self, values, floor=1e-2):
         return (values - self.mean) / self.std(floor)
@@ -80,7 +80,6 @@ class NetworkConfig:
 class MLP(eqx.Module):
     layers: tuple[eqx.nn.Linear, ...]
     norms: tuple[eqx.nn.LayerNorm, ...]
-    activation: str = eqx.field(static=True)
     matmul_precision: str = eqx.field(static=True)
 
     def __init__(
@@ -88,9 +87,6 @@ class MLP(eqx.Module):
         sizes,
         *,
         key,
-        activation="elu",
-        layer_norm=False,
-        output_scale=1.0,
         matmul_precision="float32",
     ):
         keys = jax.random.split(key, len(sizes) - 1)
@@ -98,24 +94,10 @@ class MLP(eqx.Module):
             eqx.nn.Linear(a, b, key=k)
             for a, b, k in zip(sizes[:-1], sizes[1:], keys, strict=True)
         )
-        self.norms = (
-            tuple(eqx.nn.LayerNorm(n) for n in sizes[1:-1]) if layer_norm else ()
-        )
-        self.activation = activation
+        self.norms = tuple(eqx.nn.LayerNorm(n) for n in sizes[1:-1])
         if matmul_precision not in ("float32", "tensorfloat32", "bfloat16"):
             raise ValueError("invalid MLP matmul precision")
         self.matmul_precision = matmul_precision
-        last = self.layers[-1]
-        self.layers = self.layers[:-1] + (
-            eqx.tree_at(
-                lambda layer: (layer.weight, layer.bias),
-                last,
-                (
-                    last.weight * output_scale,
-                    last.bias if output_scale == 1.0 else jnp.zeros_like(last.bias),
-                ),
-            ),
-        )
 
     def __call__(self, value):
         mixed = self.matmul_precision == "bfloat16"
@@ -131,28 +113,20 @@ class MLP(eqx.Module):
                 ),
             ) + layer.bias.astype(dtype)
             if i < len(self.layers) - 1:
-                if self.norms:
-                    shape = value.shape
-                    value = jax.vmap(self.norms[i])(
-                        value.astype(jnp.float32).reshape((-1, shape[-1]))
-                    ).reshape(shape)
-                value = (
-                    jax.nn.silu(value.astype(jnp.float32))
-                    if self.activation == "silu"
-                    else jax.nn.elu(value.astype(jnp.float32))
-                )
-                if not self.norms:
-                    value = value.astype(dtype)
+                shape = value.shape
+                value = jax.vmap(self.norms[i])(
+                    value.astype(jnp.float32).reshape((-1, shape[-1]))
+                ).reshape(shape)
+                value = jax.nn.gelu(value, approximate=False)
         return value.astype(jnp.float32)
 
 
 def invariant_features(state):
     inverse = rot.conjugate(state.quaternion)
-    tilt = rot.multiply(rot.conjugate(rot.heading(state.quaternion)), state.quaternion)
     return jnp.concatenate(
         (
             state.position[..., 2:3],
-            rot.rotation_6d(tilt),
+            rot.rotate(inverse, jnp.asarray([0.0, 0.0, -1.0])),
             rot.rotate(inverse, state.linear_velocity),
             rot.rotate(inverse, state.angular_velocity),
             state.joint_position,
@@ -162,21 +136,18 @@ def invariant_features(state):
     )
 
 
-def normalized_context(context):
-    n = context.shape[-1] - 5
-    if n <= 0:
-        raise ValueError(
-            "context requires joint offsets, friction, torso COM, and latency"
-        )
-    return jnp.concatenate(
-        (
-            context[..., :n] / 0.01,
-            (context[..., n : n + 1] - 0.75) / 0.45,
-            context[..., n + 1 : n + 4] / 0.05,
-            context[..., -1:] / 2.0,
-        ),
-        axis=-1,
+def context_statistics(environment, joint_count):
+    cfg = environment.model_randomization
+    bias = environment.reset.joint_default_offset_noise
+    friction = cfg.friction_range if cfg.enabled else (1.0, 1.0)
+    com = cfg.torso_com_offset_range if cfg.enabled else (0.0, 0.0)
+    offset = cfg.joint_angle_offset_range if cfg.enabled else (0.0, 0.0)
+    ranges = (
+        [(offset[0] - bias, offset[1] + bias)] * joint_count + [friction] + [com] * 3
     )
+    center = tuple((lo + hi) / 2 for lo, hi in ranges)
+    scale = tuple((hi - lo) / 2 if (hi - lo) / 2 > 1e-3 else 1.0 for lo, hi in ranges)
+    return center, scale
 
 
 def state_delta(start, end):
@@ -197,15 +168,20 @@ def state_delta(start, end):
     )
 
 
-def apply_delta(state, delta):
-    n = state.joint_position.shape[-1]
-    dp, dr, dv, dw, dq, dqd = jnp.split(delta, (3, 6, 9, 12, 12 + n), axis=-1)
+def integrate_velocity(state, delta, timestep, substep_coefficient):
+    dv, dw, dqd = jnp.split(delta, (3, 6), axis=-1)
+    c = substep_coefficient
+    inverse = rot.conjugate(state.quaternion)
+    local_v = rot.rotate(inverse, state.linear_velocity)
+    local_w = rot.rotate(inverse, state.angular_velocity)
+    pose_v = rot.rotate(state.quaternion, local_v + c * dv)
+    pose_w = rot.rotate(state.quaternion, local_w + c * dw)
     return PhysicalState(
-        state.position + rot.rotate(rot.heading(state.quaternion), dp),
-        rot.normalize(rot.multiply(state.quaternion, rot.exp(dr))),
+        state.position + pose_v * timestep,
+        rot.normalize(rot.multiply(rot.exp(pose_w * timestep), state.quaternion)),
         state.linear_velocity + rot.rotate(state.quaternion, dv),
         state.angular_velocity + rot.rotate(state.quaternion, dw),
-        state.joint_position + dq,
+        state.joint_position + (state.joint_velocity + c * dqd) * timestep,
         state.joint_velocity + dqd,
     )
 
@@ -213,43 +189,61 @@ def apply_delta(state, delta):
 class WorldModel(eqx.Module):
     network: MLP
     joint_count: int = eqx.field(static=True)
+    timestep: float = eqx.field(static=True)
+    substep_coefficient: float = eqx.field(static=True)
+    action_scale: tuple[float, ...] = eqx.field(static=True)
+    action_offset: tuple[float, ...] = eqx.field(static=True)
+    context_center: tuple[float, ...] = eqx.field(static=True)
+    context_scale: tuple[float, ...] = eqx.field(static=True)
 
-    def __init__(self, joint_count, context_size, *, config=NetworkConfig(), key):
-        if joint_count <= 0 or context_size != joint_count + 5:
-            raise ValueError(
-                "world-model context must match the controlled joint layout"
-            )
-        self.joint_count = joint_count
+    def __init__(self, env, *, config=NetworkConfig(), key):
+        self.joint_count = env.action_size
+        self.timestep = env.control_timestep
+        decimation = env.config.decimation
+        self.substep_coefficient = (decimation + 1) / (2 * decimation)
+        self.action_scale = tuple(float(x) for x in env.mapping.scale)
+        self.action_offset = tuple(float(x) for x in env.mapping.neutral_joint)
+        self.context_center, self.context_scale = context_statistics(
+            env.config, self.joint_count
+        )
         self.network = MLP(
-            (self.input_size,) + config.dynamics_widths + (12 + 2 * joint_count,),
+            (self.input_size + self.joint_count + 4,)
+            + config.dynamics_widths
+            + (6 + self.joint_count,),
             key=key,
-            activation="silu",
-            layer_norm=True,
-            output_scale=0.0,
             matmul_precision=config.matmul_precision,
         )
 
     @property
     def input_size(self):
-        return 17 + 4 * self.joint_count
+        return 10 + 3 * self.joint_count
 
-    @staticmethod
-    def features(state, action, context):
-        # Sensor latency affects the policy, not action-conditioned physical dynamics.
+    def features(self, state, action):
         return jnp.concatenate(
             (
                 invariant_features(state),
-                action,
-                normalized_context(context)[..., :-1],
+                action * jnp.asarray(self.action_scale)
+                + jnp.asarray(self.action_offset),
             ),
             axis=-1,
         )
 
-    def step(self, state, action, context, input_norm, output_norm):
-        features = self.features(state, action, context)
-        normalized = self.network(input_norm.normalize(features))
-        delta = normalized * output_norm.std(1e-4) + output_norm.mean
-        return apply_delta(state, delta)
+    def context_features(self, context):
+        return (context[..., :-1] - jnp.asarray(self.context_center)) / jnp.asarray(
+            self.context_scale
+        )
+
+    def step(self, state, action, context, input_norm):
+        features = jnp.concatenate(
+            (
+                input_norm.normalize(self.features(state, action)),
+                self.context_features(context),
+            ),
+            axis=-1,
+        )
+        return integrate_velocity(
+            state, self.network(features), self.timestep, self.substep_coefficient
+        )
 
 
 class Actor(eqx.Module):
@@ -277,7 +271,6 @@ class Actor(eqx.Module):
             + config.actor_widths
             + (joint_count,),
             key=dec,
-            output_scale=0.01,
             matmul_precision=config.matmul_precision,
         )
 
@@ -303,11 +296,15 @@ class Critic(eqx.Module):
             matmul_precision=config.matmul_precision,
         )
 
-    def __call__(self, features, normalizer):
-        return self.network(normalizer.normalize(features))[..., 0]
+    @property
+    def input_size(self):
+        return self.network.layers[0].weight.shape[1]
+
+    def __call__(self, features):
+        return self.network(features)[..., 0]
 
 
-def world_model_loss(model, window, input_norm, output_norm, *, error_floor):
+def world_model_loss(model, window, input_norm, nominal_errors):
     tr = window.transitions
     initial = jax.tree.map(lambda x: x[:, 0], tr.state)
     controls = (tr.action, tr.context, window.mask)
@@ -315,7 +312,12 @@ def world_model_loss(model, window, input_norm, output_norm, *, error_floor):
 
     def step(state, inputs):
         action, context, valid = inputs
-        prediction = model.step(state, action, context, input_norm, output_norm)
+        safe_state = jax.tree.map(
+            lambda value, first: jnp.where(valid[:, None] > 0, value, first),
+            state,
+            initial,
+        )
+        prediction = model.step(safe_state, action, context, input_norm)
         prediction = jax.tree.map(
             lambda predicted, previous: jnp.where(
                 valid[:, None] > 0, predicted, previous
@@ -329,8 +331,23 @@ def world_model_loss(model, window, input_norm, output_norm, *, error_floor):
         step, initial, controls, unroll=min(8, controls[0].shape[0])
     )
     predicted = jax.tree.map(lambda x: jnp.swapaxes(x, 0, 1), predicted)
-    scale = jnp.maximum(output_norm.std(1e-4), error_floor)
-    error = state_delta(tr.successor, predicted) / scale
+
+    def loss_channels(state):
+        rotation = jnp.stack(
+            tuple(rot.rotate(state.quaternion, axis) for axis in jnp.eye(3)), axis=-1
+        )
+        return jnp.concatenate(
+            (
+                state.position / nominal_errors[0],
+                rotation.reshape(rotation.shape[:-2] + (9,))
+                * (0.5**0.5 / nominal_errors[1]),
+                state.joint_position / nominal_errors[2],
+                state.joint_velocity / nominal_errors[3],
+            ),
+            axis=-1,
+        )
+
+    error = loss_channels(predicted) - loss_channels(tr.successor)
     error = jnp.where(window.mask[..., None] > 0, error, 0.0)
     squared = jnp.mean(error**2, axis=-1)
-    return (squared * window.mask).sum() / window.mask.shape[0]
+    return (squared * window.mask).sum() / jnp.maximum(window.mask.sum(), 1)

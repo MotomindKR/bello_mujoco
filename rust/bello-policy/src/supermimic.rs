@@ -23,8 +23,6 @@ struct Settings {
     history_frames: usize,
     future_frames: usize,
     future_frame_stride: usize,
-    reference_orientation: bool,
-    goal_joint_velocity_scale: f64,
     rotation_6d_layout: String,
 }
 
@@ -286,24 +284,19 @@ impl SuperMimic {
                 && settings.future_frames <= 1000
                 && settings.future_frame_stride > 0
                 && settings.future_frame_stride <= 1000
-                && settings.goal_joint_velocity_scale.is_finite()
-                && settings.goal_joint_velocity_scale > 0.
                 && settings.collection_action_clip.is_finite()
                 && settings.collection_action_clip > 0.
                 && settings.simulation_control == "unprojected_pd"
                 && settings.rotation_6d_layout == "first_two_columns_row_major",
             "invalid SuperMimic codec settings"
         );
-        let mut sample_layout = vec![
+        let sample_layout = vec![
+            ("gravity_direction".to_owned(), 3),
+            ("base_angular_velocity".to_owned(), 3),
             ("joint_position".to_owned(), n),
             ("joint_velocity".to_owned(), n),
-            ("base_angular_velocity".to_owned(), 3),
-            ("gravity_direction".to_owned(), 3),
             ("last_action".to_owned(), n),
         ];
-        if settings.reference_orientation {
-            sample_layout.push(("reference_orientation_6d".to_owned(), 6));
-        }
         let size: usize = sample_layout.iter().map(|(_, n)| n).sum();
         ensure!(
             settings.sample_frame == sample_layout
@@ -316,7 +309,7 @@ impl SuperMimic {
                         ),
                         (
                             "future_reference".to_owned(),
-                            (15 + 2 * n) * settings.future_frames
+                            (6 + 2 * n) * settings.future_frames
                         )
                     ],
             "invalid SuperMimic observation layout"
@@ -367,7 +360,7 @@ impl SuperMimic {
         let frame =
             step as f32 * (self.clip.fps() as f32 * self.policy.metadata.control_timestep as f32);
         let current = self.clip.sample_frame(f64::from(frame));
-        let (reference_position, reference_orientation, _, _) = self.layout.root(&current);
+        let (_, reference_orientation, _, _) = self.layout.root(&current);
         let orientation = (checked(DQuat::from_array(feedback.orientation_xyzw))?
             * self.root_from_imu.conjugate())
         .normalize();
@@ -395,6 +388,10 @@ impl SuperMimic {
         let position = map(&feedback.motor_position);
         let velocity = map(&feedback.motor_velocity);
         let mut sample = Vec::new();
+        sample.extend((orientation.conjugate() * DVec3::NEG_Z).to_array());
+        sample.extend(
+            (self.root_from_imu * DVec3::from_array(feedback.angular_velocity_local)).to_array(),
+        );
         sample.extend(
             position
                 .iter()
@@ -402,16 +399,7 @@ impl SuperMimic {
                 .map(|(a, b)| a - b),
         );
         sample.extend(velocity);
-        sample.extend(
-            (self.root_from_imu * DVec3::from_array(feedback.angular_velocity_local)).to_array(),
-        );
-        sample.extend((orientation.conjugate() * DVec3::NEG_Z).to_array());
         sample.extend(self.last_action.iter().map(|v| f64::from(*v)));
-        if self.settings.reference_orientation {
-            sample.extend(rotation_6d(
-                orientation.conjugate() * alignment * reference_orientation,
-            ));
-        }
         let sample: Vec<f32> = sample.into_iter().map(|v| v as f32).collect();
         if self.history.is_empty() {
             self.history = sample.repeat(self.settings.history_frames);
@@ -421,27 +409,14 @@ impl SuperMimic {
             self.history[start..].copy_from_slice(&sample);
         }
         let mut observation = self.history.clone();
-        let inverse_heading = heading(reference_orientation).conjugate();
+        let mut orientations = Vec::new();
         for i in 0..self.settings.future_frames {
             let offset = (i * self.settings.future_frame_stride) as f32
                 * (self.clip.fps() as f32 * self.policy.metadata.control_timestep as f32);
             let future = self.clip.sample_frame(f64::from(frame + offset));
-            let (position, quaternion, linear, angular) = self.layout.root(&future);
-            observation.extend(
-                (inverse_heading * (position - reference_position))
-                    .to_array()
-                    .map(|v| v as f32),
-            );
-            observation.extend(rotation_6d(inverse_heading * quaternion).map(|v| v as f32));
-            observation.extend(
-                (quaternion.conjugate() * linear)
-                    .to_array()
-                    .map(|v| v as f32),
-            );
-            observation.extend(
-                (quaternion.conjugate() * angular)
-                    .to_array()
-                    .map(|v| v as f32),
+            let (_, quaternion, _, _) = self.layout.root(&future);
+            orientations.extend(
+                rotation_6d(orientation.conjugate() * alignment * quaternion).map(|v| v as f32),
             );
             observation.extend(
                 self.layout
@@ -449,10 +424,14 @@ impl SuperMimic {
                     .iter()
                     .map(|&index| future.qpos[index] as f32),
             );
-            observation.extend(self.layout.qvel.iter().map(|&index| {
-                (future.qvel[index] * self.settings.goal_joint_velocity_scale) as f32
-            }));
+            observation.extend(
+                self.layout
+                    .qvel
+                    .iter()
+                    .map(|&index| future.qvel[index] as f32),
+            );
         }
+        observation.extend(orientations);
         let output = self.policy.infer(&observation)?;
         let proposal: Vec<f64> = output.motor_target.iter().map(|v| f64::from(*v)).collect();
         let limited = self

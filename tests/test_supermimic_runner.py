@@ -95,10 +95,10 @@ class ToyEnv:
     def advance_reference_time(self, frame):
         return frame + 1
 
-    def goal(self, frame):
+    def goal(self, frame, physical, xy, yaw):
         reference = self.reference_state(frame, jnp.zeros(2), 0.0)
         future = jax.tree.map(lambda x: jnp.stack((x, x)), reference)
-        return self.codec.goal(reference, future)
+        return self.codec.goal(physical, future)
 
     def context(self, state, world_id):
         return jnp.array([0.0, 1.0, 0.0, 0.0, 0.0, 0.0])
@@ -108,7 +108,6 @@ class ToyEnv:
         return self.codec.sample(
             physical,
             state.last_action,
-            jnp.array([1.0, 0.0, 0.0, 0.0]),
             state.joint_default_offset,
         )
 
@@ -305,7 +304,9 @@ def test_imagination_keeps_gradients_beyond_collection_action_clip(
     )
 
     class IdentityModel:
-        def step(self, state, action, context, input_norm, output_norm):
+        context_features = runner.learner.model.context_features
+
+        def step(self, state, action, context, input_norm):
             return state
 
     def unexpected_projection(*args):
@@ -315,7 +316,6 @@ def test_imagination_keeps_gradients_beyond_collection_action_clip(
     learner = runner.learner
     norms = (
         learner.input_norm,
-        learner.output_norm,
         learner.observation_norm,
         learner.goal_norm,
     )
@@ -326,7 +326,6 @@ def test_imagination_keeps_gradients_beyond_collection_action_clip(
         starts,
         env,
         norms,
-        learner.critic_norm,
         key=jax.random.key(4),
         horizon=2,
         gamma=config.gamma,
@@ -383,7 +382,7 @@ def test_collection_resets_nonfinite_feedback_without_poisoning_replay_or_moment
     np.testing.assert_array_equal(result.replay.valid[0], [False, True])
     np.testing.assert_array_equal(result.collector.environment.episode_length, [0, 1])
     np.testing.assert_array_equal(result.collector.episode_ids, [1, 0])
-    for name in ("input_norm", "output_norm", "observation_norm", "goal_norm"):
+    for name in ("input_norm", "observation_norm", "goal_norm"):
         moments = getattr(result.learner, name)
         assert int(moments.count) == 1
         assert np.isfinite(moments.mean).all()
@@ -449,16 +448,13 @@ def test_finite_divergent_physics_cannot_poison_running_statistics(
     assert int(metrics["diagnostic/invalid/physics"]) == 1
     np.testing.assert_array_equal(result.replay.valid[0], [False, True])
     np.testing.assert_array_equal(result.collector.environment.episode_length, [0, 1])
-    for name in ("input_norm", "output_norm", "observation_norm", "goal_norm"):
+    for name in ("input_norm", "observation_norm", "goal_norm"):
         assert getattr(result.learner, name).count == 1
     good = result.replay.data
-    from bello_mujoco.supermimic.model import state_delta
-
-    expected = state_delta(
-        jax.tree.map(lambda x: x[0, 1], good.state),
-        jax.tree.map(lambda x: x[0, 1], good.successor),
+    expected = runner.learner.model.features(
+        jax.tree.map(lambda x: x[0, 1], good.state), good.action[0, 1]
     )
-    np.testing.assert_allclose(result.learner.output_norm.mean, expected)
+    np.testing.assert_allclose(result.learner.input_norm.mean, expected)
 
 
 @pytest.mark.parametrize("value", [jnp.nan, jnp.inf, 2 * mujoco.mjMAXVAL])
@@ -497,11 +493,9 @@ def test_compiled_collect_fit_imagine_loop_preserves_terminal_successors(toy_run
     runner, metrics = fit(runner)
     require_valid_metrics(metrics)
     assert int(runner.learner.input_norm.count) == config.num_envs * 2
-    assert int(runner.learner.output_norm.count) == config.num_envs * 2
     runner, metrics = fit(runner)
     require_valid_metrics(metrics)
     assert int(runner.learner.input_norm.count) == config.num_envs * 2
-    assert int(runner.learner.output_norm.count) == config.num_envs * 2
     runner, metrics = improve(runner, env.reference_bank)
     require_valid_metrics(metrics)
     assert runner.actor_updates == 1
@@ -522,29 +516,19 @@ def test_nonfinite_metrics_stop_training():
         require_valid_metrics({"invalid/collection": 1.0})
 
 
-def test_critic_has_reanchored_body_errors_without_actor_history(toy_runner):
+def test_critic_has_representation_goal_and_context_without_actor_history(toy_runner):
     from bello_mujoco.supermimic.mdp import critic_features
+    from bello_mujoco.supermimic.model import invariant_features
 
     env, _, runner = toy_runner
     state = env.reference_state(jnp.asarray(0.0), jnp.zeros(2), 0.0)
-    reference = replace(state, position=state.position + jnp.array([1.0, 2.0, 0.2]))
-    context = jnp.array([0.0, 0.75, 0.0, 0.0, 0.0, 0.0])
-    goal = env.goal(jnp.asarray(0.0))
-    features = critic_features(state, reference, goal, context, env.kinematics)
-    np.testing.assert_allclose(features[16:22], [0, 0, 0.2, 0, 0, 0.2], atol=1e-7)
-    np.testing.assert_allclose(features[22:25], [1, 2, 0.2], atol=1e-7)
-    np.testing.assert_allclose(features[31:37], 0)
-    assert features.size == runner.learner.critic_norm.mean.size
-    derivative = jax.grad(
-        lambda z: critic_features(
-            replace(state, position=state.position.at[2].set(z)),
-            reference,
-            goal,
-            context,
-            env.kinematics,
-        )[16:22].sum()
-    )(state.position[2])
-    assert float(derivative) == pytest.approx(-2.0)
+    goal = env.goal(jnp.asarray(0.0), state, jnp.zeros(2), 0.0)
+    context = jnp.arange(5, dtype=float)
+    features = critic_features(state, goal, context)
+    np.testing.assert_allclose(features[:12], invariant_features(state))
+    np.testing.assert_allclose(features[12:-5], goal)
+    np.testing.assert_allclose(features[-5:], context)
+    assert features.size == runner.learner.critic.input_size
 
 
 def test_collector_bootstraps_timeout_curriculum_but_preserves_replay_flags(

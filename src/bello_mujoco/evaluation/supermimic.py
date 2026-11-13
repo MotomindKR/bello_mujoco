@@ -95,7 +95,11 @@ def render_supermimic_checkpoint(
         state, observation = reset_native_motion_rollout(env, data, **capacities)
         history = env.codec.initial_history(observation)
         native_step = make_native_motion_step(env, **capacities)
-        goal_at = jax.jit(env.goal)
+        goal_at = jax.jit(
+            lambda frame, qpos, qvel, xy, yaw, env=env: env.codec.actor_goal(
+                env.goal(frame, env.kinematics.from_qpos(qpos, qvel), xy, yaw)
+            )
+        )
         command_at = jax.jit(env.mapping.command)
         flags_at = jax.jit(motor_limit_flags)
 
@@ -137,7 +141,16 @@ def render_supermimic_checkpoint(
         failure_event = None
         try:
             for _ in range(limit):
-                action = infer(history, goal_at(state.reference_time))
+                action = infer(
+                    history,
+                    goal_at(
+                        state.reference_time,
+                        state.data.qpos,
+                        state.data.qvel,
+                        state.alignment_xy,
+                        state.alignment_yaw,
+                    ),
+                )
                 proposal = command_at(action, state.joint_default_offset)
                 limited += int(
                     np.any(
@@ -178,7 +191,9 @@ def render_supermimic_checkpoint(
                 timed_out |= bool(info["done/timeout"])
                 if bool(info["done/terminal"]) and failure_event is None:
                     reference = env.reference_state(
-                        state.reference_time, state.alignment_xy, state.alignment_yaw
+                        env.scored_reference_time(state),
+                        state.alignment_xy,
+                        state.alignment_yaw,
                     )
                     height, tilt = env.mdp.errors(env.physical_state(state), reference)
                     failure_event = {
@@ -252,7 +267,7 @@ def render_supermimic_checkpoint(
 def _tracking_errors(env, state):
     physical = env.physical_state(state)
     reference = env.reference_state(
-        state.reference_time, state.alignment_xy, state.alignment_yaw
+        env.scored_reference_time(state), state.alignment_xy, state.alignment_yaw
     )
     return (
         jnp.linalg.norm(physical.position - reference.position),

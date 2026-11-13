@@ -169,24 +169,23 @@ def prepare_collection(runner, env, config, *, axis_name=None):
         action_key = jax.random.fold_in(action_key, rank)
     learner, collector = runner.learner, runner.collector
     before = collector.environment
-    goals = jax.vmap(env.goal)(before.reference_time)
+    full_goals = jax.vmap(env.goal)(
+        before.reference_time,
+        jax.vmap(env.physical_state)(before),
+        before.alignment_xy,
+        before.alignment_yaw,
+    )
+    goals = env.codec.actor_goal(full_goals)
     inputs_valid = valid_environments(
         (collector.observation, collector.history, goals)
     ) & valid_joint_speeds(
         jax.vmap(env.physical_state)(before), config.max_joint_velocity
     )
-    actor_learner = replace(
-        learner,
-        observation_norm=learner.observation_norm.update(
-            collector.observation, inputs_valid, axis_name=axis_name
-        ),
-        goal_norm=learner.goal_norm.update(goals, inputs_valid, axis_name=axis_name),
-    )
-    action = actor_learner.actor(
+    action = learner.actor(
         collector.history,
         goals,
-        actor_learner.observation_norm,
-        actor_learner.goal_norm,
+        learner.observation_norm,
+        learner.goal_norm,
     )
     policy_output = action + config.action_noise * jax.random.normal(
         action_key, action.shape
@@ -232,9 +231,7 @@ def update_collection(runner, policy, outcome, env, config, *, axis_name=None):
         reward,
         info,
     )
-    features = learner.model.features(
-        transition.state, transition.action, transition.context
-    )
+    features = learner.model.features(transition.state, transition.action)
     delta = state_delta(transition.state, transition.successor)
     fields = {
         "transition": transition,
@@ -300,7 +297,6 @@ def update_collection(runner, policy, outcome, env, config, *, axis_name=None):
         ),
         goal_norm=learner.goal_norm.update(goals, valid, axis_name=axis_name),
         input_norm=learner.input_norm.update(features, valid, axis_name=axis_name),
-        output_norm=learner.output_norm.update(delta, valid, axis_name=axis_name),
     )
     result = replace(
         runner,
@@ -390,7 +386,6 @@ def finish_collection(update, reset, env, *, axis_name=None):
                         jax.vmap(env.physical_state)(next_collector.environment),
                         next_collector.environment.actor_feedback_history,
                         runner.learner.input_norm,
-                        runner.learner.output_norm,
                         runner.learner.observation_norm,
                         runner.learner.goal_norm,
                         runner.sampling,

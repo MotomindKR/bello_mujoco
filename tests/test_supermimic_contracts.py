@@ -114,8 +114,8 @@ def test_observation_and_goal_are_mini_native_and_heading_invariant():
     future = jax.tree.map(lambda value: jnp.stack((value, value, value)), state)
     goal = codec.goal(state, future)
     assert goal.shape == (codec.goal_size,)
-    sample = codec.sample(state, jnp.zeros(2), state.quaternion, jnp.array([0.1, 0.1]))
-    np.testing.assert_allclose(sample[:2], [0.1, -0.4], atol=1e-7)
+    sample = codec.sample(state, jnp.zeros(2), jnp.array([0.1, 0.1]))
+    np.testing.assert_allclose(sample[6:8], [0.1, -0.4], atol=1e-7)
     assert sample.shape == (codec.sample_size,)
     history = codec.advance_history(codec.initial_history(sample), sample + 1.0)
     np.testing.assert_array_equal(history, jnp.stack((sample, sample + 1.0)))
@@ -132,9 +132,7 @@ def test_observation_and_goal_are_mini_native_and_heading_invariant():
 
     np.testing.assert_allclose(codec.goal(move(state), move(future)), goal, atol=1e-6)
     np.testing.assert_allclose(
-        codec.sample(
-            move(state), jnp.zeros(2), move(state).quaternion, jnp.array([0.1, 0.1])
-        ),
+        codec.sample(move(state), jnp.zeros(2), jnp.array([0.1, 0.1])),
         sample,
         atol=1e-6,
     )
@@ -143,7 +141,6 @@ def test_observation_and_goal_are_mini_native_and_heading_invariant():
             lambda q: codec.sample(
                 replace(state, quaternion=q),
                 jnp.zeros(2),
-                state.quaternion,
                 jnp.zeros(2),
             )
         )(state.quaternion)
@@ -245,9 +242,12 @@ def test_strided_goal_includes_current_frame_and_clamps_to_source_clip_end():
         clip_id=lambda frame: jnp.asarray(0),
         reference_state=reference,
     )
-    goal = jax.jit(lambda frame: BelloSuperMimicEnv.goal(env, frame))
-    first = goal(jnp.asarray(10)).reshape(3, -1)
-    np.testing.assert_allclose(first[:, 15], [10, 14, 18])
-    np.testing.assert_allclose(first[:, 0], [0, 4, 8])
-    tail = goal(jnp.asarray(18)).reshape(3, -1)
-    np.testing.assert_allclose(tail[:, 15], [18, 19, 19])
+    root = reference(jnp.asarray(10), jnp.zeros(2), 0.0)
+    goal = jax.jit(
+        lambda frame: BelloSuperMimicEnv.goal(env, frame, root, jnp.zeros(2), 0.0)
+    )
+    first = goal(jnp.asarray(10))
+    np.testing.assert_allclose(first[:6].reshape(3, 2)[:, 0], [10, 14, 18])
+    np.testing.assert_allclose(first[6:15].reshape(3, 3)[:, 0], [0, 4, 8])
+    tail = goal(jnp.asarray(18))
+    np.testing.assert_allclose(tail[:6].reshape(3, 2)[:, 0], [18, 19, 19])
