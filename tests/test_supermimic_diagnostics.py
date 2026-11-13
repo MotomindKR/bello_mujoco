@@ -33,12 +33,12 @@ def test_command_and_force_limits_are_independent_under_jit_and_batching():
 
 def test_compact_motor_metrics_expand_only_when_requested():
     metrics = {
-        "collection/reward": jnp.asarray(0.1),
+        "collection/step_reward": jnp.asarray(0.1),
         "motor/rate_limited_fraction": jnp.array([0.2, 0.3]),
     }
     require_valid_metrics(metrics)
     assert training_metric_snapshot(metrics, ("a", "b"), include_per_motor=False) == {
-        "collection/reward": pytest.approx(0.1)
+        "collection/step_reward": pytest.approx(0.1)
     }
     expanded = training_metric_snapshot(metrics, ("a", "b"), include_per_motor=True)
     assert expanded["motor/a/rate_limited_fraction"] == pytest.approx(0.2)

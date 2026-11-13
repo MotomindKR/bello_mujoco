@@ -177,7 +177,7 @@ def window_environment(env, window):
         motion=motion,
         reference_bank=bank,
         sampler=sampler,
-        reset_probabilities=sampler.probabilities(sampler.initial_state(), 10.0),
+        reset_probabilities=sampler.uniform_probabilities,
     )
 
 

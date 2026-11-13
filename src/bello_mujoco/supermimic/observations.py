@@ -1,4 +1,4 @@
-"""Actor samples and consecutive-frame goals without pretrained G1 coordinates."""
+"""Actor samples and strided reference goals without pretrained G1 coordinates."""
 
 from dataclasses import dataclass, field
 

@@ -4,6 +4,16 @@ dataset:
 checkpoint_config:
   name: bello_mini_supermimic_bones_seed${config.seed}
   every_updates: 10000
+checkpoint_evaluation:
+  enabled: true
+  cpu_cores: 4
+  training_sample_size: 64
+  evaluate_held_out: true
+  windows:
+    - {clip: walk_forward_loop_002__A041, start_frame: 0, max_steps: 400}
+    - {clip: idle_loop_003__A236_M, start_frame: 0, max_steps: 400}
+    - {clip: dance_basic_cross_turn_full_R_fast_001__A307_M, start_frame: 0, max_steps: 400}
+    - {clip: reach_jump_R_002__A306_M, start_frame: 0, max_steps: 400}
 wandb_config:
   group: bello-mini-supermimic-bones
   run_name: bello_mini_supermimic_bones_seed${config.seed}

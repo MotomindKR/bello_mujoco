@@ -127,10 +127,8 @@ class ReplayBuffer:
         )
         return ReplayWindow(transitions, jnp.cumprod(valid.astype(jnp.float32), axis=1))
 
-    def sample_starts(
-        self, key, batch_size, *, history_frames, feedback_frames, horizon
-    ):
-        if min(batch_size, history_frames, feedback_frames, horizon) <= 0:
+    def sample_starts(self, key, batch_size, *, history_frames, feedback_frames):
+        if min(batch_size, history_frames, feedback_frames) <= 0:
             raise ValueError("start sampling dimensions must be positive")
         if max(history_frames, feedback_frames) > self.capacity:
             raise ValueError("replay cannot reconstruct the requested history")
@@ -139,7 +137,7 @@ class ReplayBuffer:
         eligible = (
             (ages < self.size)
             & self.valid[rows]
-            & (self.data.remaining_steps[rows] >= horizon)
+            & (self.data.remaining_steps[rows] > 0)
         )
         counts = jnp.cumsum(eligible.reshape(-1), dtype=jnp.int32)
         count = counts[-1]

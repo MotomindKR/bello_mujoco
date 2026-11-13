@@ -19,6 +19,12 @@ Offline IK retains the stock profile and adds floor inequalities from the
 runtime collision surfaces. Penetrating poses receive bounded convergence passes,
 reported as `floor_ik_extra_passes`, followed by a nonnegative root lift for any
 remaining penetration, reported as `max_floor_projection_m`.
+Before recording the first frame, repeated stock GMR solves settle the initial
+pose until consecutive solves differ by at most 0.1 mm root translation,
+1 mrad root rotation and 5 mrad per joint. Failure to settle within the bounded
+pass budget rejects the clip explicitly. Diagnostics record
+`initial_pose_passes` and the maximum displacement/tolerance ratio
+`initial_pose_residual`; source frames and clocks are preserved.
 Airborne targets retain their height. A clip-wide height shift is insufficient:
 a low hand pose can otherwise lift every walking frame above the floor.
 Shared reconstruction
@@ -164,6 +170,8 @@ the bounded float32 clock. GPU integration is checked with
 - The actor receives proprioceptive history and future reference goals. State
   uses metres, radians, WXYZ quaternions and logical joint coordinates. Six-value
   rotations use `[R00, R01, R10, R11, R20, R21]`; export records the layout.
+  Goal frames include the current frame and use `observations.future_frame_stride`
+  control steps between samples, consistently in training, evaluation and Rust playback.
 - Simulation uses direct PD targets, scaled by effort/stiffness and transformed
   through the ankle transmission. Exploration clipping applies only during
   collection. Imagination and deterministic inference retain raw actions.
@@ -172,6 +180,12 @@ the bounded float32 clock. GPU integration is checked with
 - Collection episode caps are bootstrapped timeouts. Full-clip evaluation retains
   the original recording length. Height/tilt errors and nonfinite states cause
   episode failures; horizontal drift and joint RMS are reported separately.
+- The reset curriculum records buffered returns for every visited temporal bin,
+  averaging repeated visits within each episode. Clip ends bootstrap from the
+  mean training-bin value; time limits bootstrap from the next bin and falls
+  stop continuation. Unknown bins start optimistically. Bounded sample memory
+  follows the current policy, and cumulative squared focus retains past practice.
+  Short motion tails remain eligible actor starts and imagination stops at their end.
 - Numerically invalid collection transitions reset their environments and are excluded
   from replay, normalizers and curriculum scoring. Rejection reports identify
   the environment, clip index, source frame and affected fields. Invalid resets,
@@ -194,8 +208,8 @@ the bounded float32 clock. GPU integration is checked with
   through a fully terminated transition. Critic target/value magnitudes and
   imagined survival are logged for failure diagnosis.
 - Actor bootstraps and critic target values use the tracking reward's discounted
-  return ceiling, derived from its maximum per-step reward and discount. With
-  discount 1, the full reference episode horizon supplies the finite ceiling.
+  return ceiling, derived from its maximum per-step reward and discount.
+  The return curriculum requires a discount strictly below one.
   Critic regression uses raw predictions; negative values remain uncapped.
   This is an explicit robustness change from the published update.
 - Return-bound violations and `config.max_critic_loss` violations roll back the
@@ -204,7 +218,8 @@ the bounded float32 clock. GPU integration is checked with
   update RNG and metadata. W&B stores these as separate `diagnostic` artifacts;
   they are not resumable training checkpoints.
 - BF16 networks keep master parameters, normalization and optimizer state in
-  FP32. Dense forward/backward matrix products use BF16; LayerNorm and its
+  FP32. Dense forward/backward matrix products use BF16. Export preserves rounding
+  after the dot product and after bias addition. LayerNorm and its
   following activation retain FP32 intermediates.
 - Imagined actor/critic updates unroll kinematics. Collection retains the rolled
   tree to avoid a CUDA compiler failure when the full tree fuses with MJX.
@@ -268,11 +283,16 @@ prediction error against native rollouts using recorded actions; it requires
 
 ### Automatic checkpoint checks
 
-`checkpoint_evaluation` queues explicit training windows to an isolated CPU worker.
-The LAFAN recipe enables these checks. Reports go to
+`checkpoint_evaluation` queues training windows and full clips to an isolated CPU worker.
+`training_sample_size` selects a fixed training sample using the run seed;
+`evaluate_held_out` evaluates the separate evaluation split. The BONES recipe
+enables both, and LAFAN retains its model windows alongside full held-out clips.
+Reports include full-duration return, completion and pose errors; per-step
+`collection/step_reward` and `imagination/step_reward` are step averages, not
+full-motion success metrics. Reports go to
 `checkpoint-evaluation/results/UPDATE/` and a separate W&B run keyed by checkpoint
 update. Worker failures fail the job; training drains queued checks before exit.
-These window checks do not replace full-clip corpus evaluation.
+Samples do not replace an exhaustive corpus evaluation.
 
 ## Remote preflight and validation
 

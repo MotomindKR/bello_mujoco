@@ -187,7 +187,6 @@ def test_imagination_stops_extrapolating_after_full_termination(toy_runner):
         2,
         history_frames=2,
         feedback_frames=1,
-        horizon=8,
     )
 
     class ExplodingAfterFall:

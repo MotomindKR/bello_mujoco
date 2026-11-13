@@ -4,6 +4,7 @@ from dataclasses import replace
 import json
 import os
 from pathlib import Path
+import random
 from statistics import mean
 import sys
 import time
@@ -30,6 +31,7 @@ def evaluate_job(job, request, root, tracking_run):
     )
     from bello_mujoco.sonic.corpus import MANIFEST, file_sha256
     from bello_mujoco.supermimic.checkpoint import checkpoint_metadata
+    from bello_mujoco.evaluation.supermimic import evaluate_supermimic_corpus
     from bello_mujoco.training.checkpoint_evaluation import write_json_atomic
 
     config = dataclass_from_dict(
@@ -56,33 +58,78 @@ def evaluate_job(job, request, root, tracking_run):
     if any(w.clip not in selected for w in config.windows):
         raise ValueError("checkpoint windows must select training clips")
     output = root / "results" / f"{job['update']:09d}"
-    model_report = audit_world_model(
-        WorldModelAuditConfig(
-            Path(job["checkpoint"]), dataset, output / "windows.json", config.windows
+    model_report = (
+        audit_world_model(
+            WorldModelAuditConfig(
+                Path(job["checkpoint"]),
+                dataset,
+                output / "windows.json",
+                config.windows,
+            )
         )
+        if config.windows
+        else {"windows": {}}
     )
     rows = [window["tracking"] for window in model_report["windows"].values()]
-    tracking = {
-        "window_count": len(rows),
-        "split": "training",
-        "measures_held_out_generalization": False,
-        "weighting": "equal_per_window",
-        "start": "explicit_window",
-        "failure_fraction": mean(float(row["terminal"]) for row in rows),
-        **{
-            f"mean_{key}": mean(row[key] for row in rows)
-            for key in rows[0]
-            if key not in ("terminal", "timeout")
-            and isinstance(rows[0][key], (int, float))
-        },
-    }
+    tracking = (
+        {
+            "window_count": len(rows),
+            "split": "training",
+            "measures_held_out_generalization": False,
+            "weighting": "equal_per_window",
+            "start": "explicit_window",
+            "failure_fraction": mean(float(row["terminal"]) for row in rows),
+            **{
+                f"mean_{key}": mean(row[key] for row in rows)
+                for key in rows[0]
+                if key not in ("terminal", "timeout")
+                and isinstance(rows[0][key], (int, float))
+            },
+        }
+        if rows
+        else {}
+    )
+    full_clips = {}
+    selections = {}
+    if config.training_sample_size:
+        if config.training_sample_size > len(selected):
+            raise ValueError("training sample exceeds the recorded training split")
+        rng = random.Random(metadata["resolved_config"]["config"]["seed"])
+        selections["training"] = tuple(
+            sorted(rng.sample(sorted(selected), config.training_sample_size))
+        )
+    if config.evaluate_held_out:
+        selections["held_out"] = tuple(
+            sorted(
+                Path(e["file"]).stem
+                for e in manifest["clips"]
+                if e["split"] == "evaluation"
+            )
+        )
+        if not selections["held_out"]:
+            raise ValueError(
+                "full-clip held-out evaluation requires an evaluation split"
+            )
+    for split, names in selections.items():
+        report = evaluate_supermimic_corpus(
+            Path(job["checkpoint"]),
+            dataset,
+            names,
+            output / split,
+            video_clips=(),
+            workers=config.cpu_cores,
+            split=split,
+        )
+        full_clips[split] = {"selected_clips": names, **report["summary"]}
     summary = {
         "update": job["update"],
         "identity": job["identity"],
         "tracking": tracking,
-        "window_report": "windows.json",
+        "full_clip": full_clips,
+        "window_report": "windows.json" if config.windows else None,
     }
     metrics = numeric_metrics(tracking, "tracking")
+    metrics.update(numeric_metrics(full_clips, "full_clip"))
     for name, window in model_report["windows"].items():
         metrics.update(numeric_metrics(window["horizons"], f"world_model/{name}"))
         metrics.update(numeric_metrics(window["tracking"], f"window_tracking/{name}"))
@@ -101,7 +148,13 @@ def evaluate_job(job, request, root, tracking_run):
         artifact.add_dir(str(output))
         tracking_run.log_artifact(artifact).wait()
     print(
-        json.dumps({"checkpoint_evaluated": job["update"], "tracking": tracking}),
+        json.dumps(
+            {
+                "checkpoint_evaluated": job["update"],
+                "tracking": tracking,
+                "full_clip": full_clips,
+            }
+        ),
         flush=True,
     )
 

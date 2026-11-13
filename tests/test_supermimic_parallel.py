@@ -131,7 +131,7 @@ def exercise_parallel_training():
     )
     from bello_mujoco.supermimic.parallel import AXIS, DataParallel, runner_specs
     from bello_mujoco.supermimic.replay import ReplayBuffer
-    from bello_mujoco.supermimic.sampling import ReturnSampler
+    from bello_mujoco.supermimic.sampling import ReturnSampler, SamplingWindow
     from bello_mujoco.training.supermimic import (
         DatasetConfig,
         SuperMimicTrainingRunConfig,
@@ -175,33 +175,34 @@ def exercise_parallel_training():
         )
     )
     sampler = jax.device_put(sampler, parallel.replicated)
-    state = sampler.initial_state()
+    state = sampler.initial_state(10.0)
     bins = jnp.array([0, 1, 1, 2])
-    returns = jnp.array([10.0, 1.0, 3.0, 4.0])
-    completed = jnp.array([True, True, True, False])
+    data = SamplingWindow.empty(4, 2)
+    for index in range(2):
+        data = data.record(
+            index,
+            bins,
+            bins,
+            jnp.array([0.1, -0.1, 0.3, 0.4]),
+            jnp.zeros(4, bool),
+            jnp.zeros(4, bool),
+            jnp.full(4, index == 1),
+            jnp.ones(4, bool),
+        )
     update_sampler = jax.jit(
         jax.shard_map(
-            lambda sampler, s, b, r, c: sampler.update(
-                s, b, r, c, 10.0, axis_name=AXIS
+            lambda sampler, state, window: sampler.update(
+                state, window, 10.0, 0.99, axis_name=AXIS
             ),
             mesh=parallel.mesh,
-            in_specs=(P(), P(), P(AXIS), P(AXIS), P(AXIS)),
+            in_specs=(P(), P(), P(AXIS, None)),
             out_specs=P(),
         )
     )
     expected = jax.device_put(sampler, cpu).update(
-        jax.device_put(state, cpu), bins, returns, completed, 10.0
+        jax.device_put(state, cpu), data, 10.0, 0.99
     )
-    equal(
-        update_sampler(
-            sampler,
-            state,
-            parallel.put(bins, P(AXIS)),
-            parallel.put(returns, P(AXIS)),
-            parallel.put(completed, P(AXIS)),
-        ),
-        expected,
-    )
+    equal(update_sampler(sampler, state, parallel.put(data, P(AXIS, None))), expected)
 
     env, config, runner = toy_runner.__wrapped__()
 
@@ -375,7 +376,7 @@ def exercise_parallel_training():
     )
     starts = jax.jit(
         lambda r, k: parallel.sample_starts(
-            r, k, 2, history_frames=2, feedback_frames=1, horizon=2
+            r, k, 2, history_frames=2, feedback_frames=1
         )
     )(replay, key)
     assert bool(starts.valid)

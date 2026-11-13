@@ -18,6 +18,9 @@ from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.sim import geom_lower_z
 
 
+_INITIAL_POSE_MAX_PASSES = 1000
+
+
 class RetargetValidationError(ValueError):
     """A retargeted pose violates the robot's physical position envelope."""
 
@@ -205,8 +208,32 @@ class _OfflineGmrRetargeter(GmrRetargeter):
         self.retargeter.ik_limits.append(self.floor)
         self.extra_floor_passes = 0
         self.max_floor_projection_m = 0.0
+        self.initial_pose_passes = 0
+        self.initial_pose_residual = 0.0
 
     def _solve(self, targets):
+        initialize = not self._initialized
+        pose = self._solve_floor(targets)
+        if not initialize:
+            return pose
+        delta = np.empty(self.model.nv)
+        tolerance = np.full(self.model.nv, 0.005)
+        tolerance[:3] = 0.0001
+        tolerance[3:6] = 0.001
+        for attempt in range(_INITIAL_POSE_MAX_PASSES):
+            previous = pose
+            pose = self._solve_floor(targets)
+            mujoco.mj_differentiatePos(self.model, delta, 1.0, previous, pose)
+            self.initial_pose_passes = attempt + 1
+            self.initial_pose_residual = float(np.max(np.abs(delta) / tolerance))
+            if self.initial_pose_residual <= 1.0:
+                return pose
+        raise RetargetValidationError(
+            f"initial GMR pose did not converge after {self.initial_pose_passes} passes "
+            f"(normalized pose change {self.initial_pose_residual:.6g})"
+        )
+
+    def _solve_floor(self, targets):
         pose = super()._solve(targets)
         for attempt in range(self.retargeter.max_iter + 1):
             depth = self.floor.penetration(pose)
@@ -260,4 +287,6 @@ def retarget_gmr(model, targets: Mapping, *, fps, human_height_m, contact_height
         **report,
         "floor_ik_extra_passes": wrapper.extra_floor_passes,
         "max_floor_projection_m": wrapper.max_floor_projection_m,
+        "initial_pose_passes": wrapper.initial_pose_passes,
+        "initial_pose_residual": wrapper.initial_pose_residual,
     }

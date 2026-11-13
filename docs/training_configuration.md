@@ -82,7 +82,10 @@ LAFAN and BONES recipes inherit the base and specify only overrides.
 - `config.max_critic_loss` stops and rolls back an actor/critic update if any
   critic minibatch exceeds this MSE, including finite losses. It is an operational
   divergence cutoff, not a reward or motion filter.
-- `checkpoint_evaluation` owns isolated CPU window checks and their resource
+- `observations.future_frame_stride` spaces the goal window in control steps,
+  starting with the current frame. `sampling` owns bin duration, buffered return
+  horizon, bounded sample memory and reset-mixture weights.
+- `checkpoint_evaluation` owns isolated CPU window/full-clip checks and their resource
   limits; see [automatic checks](supermimic.md#automatic-checkpoint-checks).
 
 See the [workflow](supermimic.md) for data preparation, runtime semantics,

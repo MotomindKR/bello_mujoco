@@ -19,7 +19,7 @@ config:
   seed: 0
   total_timesteps: 3276800000
   num_envs: 4096
-  max_episode_steps: null
+  max_episode_steps: 500
   replay_steps: 1000
   max_replay_bytes: 17179869184
   warmup_steps: 64
@@ -48,6 +48,12 @@ environment:
     decimation: 4
     command_delay_seconds: 0.0
     action_clip: 20.0  # Collection exploration only; evaluation and imagination use raw actions.
+  reset:
+    joint_pos_noise: [-0.1, 0.1]
+    root_position_noise: [0.05, 0.05, 0.01]
+    root_rotation_noise: [0.1, 0.1, 0.2]
+    root_linear_velocity_noise: [0.5, 0.5, 0.2]
+    root_angular_velocity_noise: [0.52, 0.52, 0.78]
   filtering:
     enabled: false
     cutoff_hz: 10.0
@@ -71,6 +77,7 @@ environment:
 observations:
   history_frames: 10
   future_frames: 10
+  future_frame_stride: 5
   reference_orientation: true
   goal_joint_velocity_scale: 0.1
 tracking:
@@ -98,7 +105,9 @@ sampling:
   difficult_weight: 0.4
   past_weight: 0.1
   temperature: 25.0
-  return_alpha: 0.2
+  bin_seconds: 0.2
+  horizon: 20
+  memory: 256
 warp:
   contact_budget_per_env: 128
   njmax: 1024

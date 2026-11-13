@@ -20,7 +20,6 @@ from bello_mujoco.supermimic.collection import (
     initialize_collection,
 )
 from bello_mujoco.supermimic.replay import ReplayBuffer, ReplayStart
-from bello_mujoco.supermimic.sampling import SamplingState
 
 AXIS = "environment"
 MODEL_WORLD_FIELDS = frozenset(
@@ -84,9 +83,9 @@ class EnvironmentArrays:
 def runner_specs():
     return RunnerState(
         P(),
-        CollectorState(P(AXIS), P(AXIS), P(AXIS), P(AXIS), P(AXIS), P(AXIS), P()),
+        CollectorState(P(AXIS), P(AXIS), P(AXIS), P(AXIS), P(AXIS, None), P()),
         ReplayBuffer(P(None, AXIS), P(None, AXIS), P(), P()),
-        SamplingState(P(), P(), P()),
+        P(),
         P(),
         P(),
         P(),

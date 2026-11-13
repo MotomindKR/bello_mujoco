@@ -43,11 +43,12 @@ class ControlConfig:
 class ObservationConfig:
     history_frames: int = 10
     future_frames: int = 10
+    future_frame_stride: int = 5
     reference_orientation: bool = True
     goal_joint_velocity_scale: float = 0.1
 
     def __post_init__(self):
-        for name in ("history_frames", "future_frames"):
+        for name in ("history_frames", "future_frames", "future_frame_stride"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be a positive integer")
         if type(self.reference_orientation) is not bool:
@@ -64,7 +65,7 @@ class LearningConfig:
     seed: int = 0
     total_timesteps: int = 3276800000
     num_envs: int = 4096
-    max_episode_steps: int | None = None
+    max_episode_steps: int | None = 500
     replay_steps: int = 1000
     max_replay_bytes: int = 16 * 1024**3
     warmup_steps: int = 64
@@ -125,7 +126,9 @@ class LearningConfig:
                 raise ValueError(f"{name} must be positive and finite")
         if self.update_to_data_ratio > 1:
             raise ValueError("update_to_data_ratio must be at most one")
-        for name in ("gamma", "gae_lambda", "learning_rate_final_fraction"):
+        if not 0 < self.gamma < 1:
+            raise ValueError("gamma must be in (0, 1) for the return curriculum")
+        for name in ("gae_lambda", "learning_rate_final_fraction"):
             if not 0 < getattr(self, name) <= 1:
                 raise ValueError(f"{name} must be in (0, 1]")
         if not math.isfinite(self.action_noise) or self.action_noise < 0:

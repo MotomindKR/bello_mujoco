@@ -97,18 +97,16 @@ def actor_onnx(actor, observation_norm, goal_norm, *, env, metadata):
         for index, layer in enumerate(network.layers):
             if mixed:
                 value = round_activation(value, f"{prefix}_input_{index}")
-            value = op(
-                "Gemm",
-                [
-                    value,
-                    constant(
-                        f"{prefix}_weight_{index}",
-                        np.asarray(parameter(layer.weight)).T,
-                    ),
-                    constant(f"{prefix}_bias_{index}", parameter(layer.bias)),
-                ],
-                f"{prefix}_linear_{index}",
+            weight = constant(
+                f"{prefix}_weight_{index}", np.asarray(parameter(layer.weight)).T
             )
+            bias = constant(f"{prefix}_bias_{index}", parameter(layer.bias))
+            if mixed:
+                value = op("MatMul", [value, weight], f"{prefix}_dot_{index}")
+                value = round_activation(value, f"{prefix}_rounded_dot_{index}")
+                value = op("Add", [value, bias], f"{prefix}_linear_{index}")
+            else:
+                value = op("Gemm", [value, weight, bias], f"{prefix}_linear_{index}")
             if mixed:
                 value = round_activation(value, f"{prefix}_rounded_linear_{index}")
             if index < len(network.layers) - 1:
@@ -208,6 +206,7 @@ def export_supermimic_checkpoint(config, output):
         "sample_frame": to_builtin(env.observation_layout.components),
         "history_frames": codec.config.history_frames,
         "future_frames": codec.config.future_frames,
+        "future_frame_stride": codec.config.future_frame_stride,
         "reference_orientation": codec.config.reference_orientation,
         "goal_joint_velocity_scale": codec.config.goal_joint_velocity_scale,
         "rotation_6d_layout": "first_two_columns_row_major",

@@ -22,6 +22,7 @@ struct Settings {
     sample_frame: Vec<(String, usize)>,
     history_frames: usize,
     future_frames: usize,
+    future_frame_stride: usize,
     reference_orientation: bool,
     goal_joint_velocity_scale: f64,
     rotation_6d_layout: String,
@@ -283,6 +284,8 @@ impl SuperMimic {
                 && settings.future_frames > 0
                 && settings.history_frames <= 1000
                 && settings.future_frames <= 1000
+                && settings.future_frame_stride > 0
+                && settings.future_frame_stride <= 1000
                 && settings.goal_joint_velocity_scale.is_finite()
                 && settings.goal_joint_velocity_scale > 0.
                 && settings.collection_action_clip.is_finite()
@@ -419,9 +422,9 @@ impl SuperMimic {
         }
         let mut observation = self.history.clone();
         let inverse_heading = heading(reference_orientation).conjugate();
-        for i in 1..=self.settings.future_frames {
-            let offset =
-                i as f32 * (self.clip.fps() as f32 * self.policy.metadata.control_timestep as f32);
+        for i in 0..self.settings.future_frames {
+            let offset = (i * self.settings.future_frame_stride) as f32
+                * (self.clip.fps() as f32 * self.policy.metadata.control_timestep as f32);
             let future = self.clip.sample_frame(f64::from(frame + offset));
             let (position, quaternion, linear, angular) = self.layout.root(&future);
             observation.extend(

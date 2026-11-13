@@ -12,6 +12,8 @@ class CheckpointEvaluationConfig:
     cpu_cores: int = 1
     finish_timeout_seconds: float = 900.0
     windows: tuple[MotionWindow, ...] = ()
+    training_sample_size: int = 0
+    evaluate_held_out: bool = False
 
     def __post_init__(self):
         if type(self.enabled) is not bool:
@@ -24,7 +26,15 @@ class CheckpointEvaluationConfig:
         ):
             raise ValueError("finish_timeout_seconds must be positive and finite")
         identities = [(w.clip, w.start_frame) for w in self.windows]
-        if self.enabled and not identities:
-            raise ValueError("enabled checkpoint evaluation requires explicit windows")
+        if type(self.training_sample_size) is not int or self.training_sample_size < 0:
+            raise ValueError("training_sample_size must be a nonnegative integer")
+        if type(self.evaluate_held_out) is not bool:
+            raise ValueError("evaluate_held_out must be a boolean")
+        if self.enabled and not (
+            identities or self.training_sample_size or self.evaluate_held_out
+        ):
+            raise ValueError(
+                "enabled checkpoint evaluation requires windows or full clips"
+            )
         if len(set(identities)) != len(identities):
             raise ValueError("windows must have unique clip/start pairs")

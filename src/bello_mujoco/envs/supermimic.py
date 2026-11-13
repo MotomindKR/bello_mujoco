@@ -198,7 +198,7 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
             first.foot_contacts,
         )
         sampler = ReturnSampler.from_bank(bank, sampling_config)
-        probabilities = sampler.probabilities(sampler.initial_state(), 1.0)
+        probabilities = sampler.uniform_probabilities
         return cls(
             model,
             motion,
@@ -350,7 +350,8 @@ class BelloSuperMimicEnv(BelloMotionTrackingEnv):
         bank = self.reference_bank
         clip = self.clip_id(frame)
         offsets = (
-            jnp.arange(1, self.codec.config.future_frames + 1)
+            jnp.arange(self.codec.config.future_frames)
+            * self.codec.config.future_frame_stride
             * bank.fps
             * self.control_timestep
         )

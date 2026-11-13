@@ -195,3 +195,59 @@ def test_corpus_frame_clock_rejects_rounding_and_fractional_drift():
         validate_frame_clock(SimpleNamespace(fps=25.0, clock_end=2**23), 0.02)
     with pytest.raises(ValueError, match="capacity"):
         validate_frame_clock(SimpleNamespace(fps=50.0, clock_end=2**31), 0.02)
+
+
+def test_strided_goal_includes_current_frame_and_clamps_to_source_clip_end():
+    from bello_mujoco.motion.clip import MotionClip
+    from bello_mujoco.sonic.reference import ReferenceBank
+
+    count = 20
+    qpos = (
+        jnp.zeros((count, 8))
+        .at[:, 3]
+        .set(1.0)
+        .at[:, 0]
+        .set(jnp.arange(count))
+        .at[:, 7]
+        .set(jnp.arange(count))
+    )
+    clip = MotionClip(
+        50.0,
+        ("joint",),
+        ("root",),
+        qpos,
+        jnp.zeros((count, 7)),
+        jnp.zeros((count, 1, 3)),
+        jnp.tile(jnp.array([1.0, 0.0, 0.0, 0.0]), (count, 1, 1)),
+        jnp.zeros((count, 1, 3)),
+        jnp.zeros((count, 1, 3)),
+        jnp.zeros((count, 2)),
+    )
+    bank = ReferenceBank.from_clips((("motion", clip, "train"),))
+
+    def physical(qpos, qvel):
+        return PhysicalState(
+            qpos[:3], qpos[3:7], qvel[:3], qvel[3:6], qpos[7:], qvel[6:]
+        )
+
+    def reference(frame, xy, yaw):
+        sample = bank.sample_global_frame(frame)
+        return physical(sample.qpos, sample.qvel)
+
+    codec = ObservationCodec(
+        ObservationConfig(future_frames=3, future_frame_stride=4), jnp.zeros(1)
+    )
+    env = SimpleNamespace(
+        reference_bank=bank,
+        codec=codec,
+        kinematics=SimpleNamespace(from_qpos=physical),
+        control_timestep=0.02,
+        clip_id=lambda frame: jnp.asarray(0),
+        reference_state=reference,
+    )
+    goal = jax.jit(lambda frame: BelloSuperMimicEnv.goal(env, frame))
+    first = goal(jnp.asarray(10)).reshape(3, -1)
+    np.testing.assert_allclose(first[:, 15], [10, 14, 18])
+    np.testing.assert_allclose(first[:, 0], [0, 4, 8])
+    tail = goal(jnp.asarray(18)).reshape(3, -1)
+    np.testing.assert_allclose(tail[:, 15], [18, 19, 19])

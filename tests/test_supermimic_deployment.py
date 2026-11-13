@@ -151,6 +151,7 @@ def exported(tmp_path, request):
         "root_from_hardware_imu_xyzw": np.roll(np.asarray(imu), -1).tolist(),
         "history_frames": 3,
         "future_frames": 2,
+        "future_frame_stride": codec.config.future_frame_stride,
         "reference_orientation": True,
         "goal_joint_velocity_scale": 0.1,
         "rotation_6d_layout": "first_two_columns_row_major",
@@ -210,7 +211,10 @@ def trace(exported, *, vertical=False):
             else env.codec.advance_history(history, sample)
         )
         future_samples = bank.window(
-            jnp.asarray(0), jnp.asarray(float(index)), jnp.arange(1, 3)
+            jnp.asarray(0),
+            jnp.asarray(float(index)),
+            jnp.arange(env.codec.config.future_frames)
+            * env.codec.config.future_frame_stride,
         )
         future = jax.vmap(kin.from_qpos)(future_samples.qpos, future_samples.qvel)
         goal = env.codec.goal(current, future)

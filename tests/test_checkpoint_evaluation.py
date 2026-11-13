@@ -237,3 +237,59 @@ def test_real_cpu_worker_starts_and_finishes_without_initializing_a_gpu(tmp_path
         assert (worker.root / "worker.json").is_file()
     finally:
         worker.close(wait=False)
+
+
+def test_full_clip_checks_use_fixed_training_sample_and_keep_held_out_separate(
+    tmp_path, monkeypatch
+):
+    from bello_mujoco.supermimic import checkpoint as snapshots
+    from bello_mujoco.evaluation import supermimic
+
+    path, metadata = checkpoint(tmp_path, "checkpoint", 10)
+    metadata["resolved_config"] = {"config": {"seed": 17}}
+    dataset = tmp_path / "corpus"
+    dataset.mkdir()
+    entries = [{"file": f"train{i}.npz", "split": "train"} for i in range(8)] + [
+        {"file": "held.npz", "split": "evaluation"}
+    ]
+    (dataset / "sonic-corpus.json").write_text(json.dumps({"clips": entries}))
+    identity = {
+        k: metadata[k]
+        for k in (
+            "git_commit",
+            "dataset_manifest_sha256",
+            "actor_sha256",
+            "dynamics_sha256",
+        )
+    }
+    identity["metadata_sha256"] = file_sha256(path / "metadata.json")
+    job = {"checkpoint": str(path), "update": 10, "identity": identity}
+    request = {
+        "dataset": str(dataset),
+        "evaluation": {
+            "enabled": True,
+            "training_sample_size": 3,
+            "evaluate_held_out": True,
+        },
+        "run_name": "test",
+    }
+    monkeypatch.setattr(snapshots, "checkpoint_metadata", lambda p: metadata)
+    calls = []
+
+    def evaluate(checkpoint, dataset, names, output, **kwargs):
+        calls.append((tuple(names), kwargs["split"]))
+        output.mkdir(parents=True)
+        return {
+            "summary": {"mean_completion_fraction": 0.5, "mean_normalized_return": 0.3}
+        }
+
+    monkeypatch.setattr(supermimic, "evaluate_supermimic_corpus", evaluate)
+    for folder in ("first", "second"):
+        checkpoint_worker.evaluate_job(job, request, tmp_path / folder, None)
+    assert calls[0] == calls[2]
+    assert len(calls[0][0]) == 3
+    assert set(calls[0][0]).issubset({f"train{i}" for i in range(8)})
+    assert calls[1] == calls[3] == (("held",), "held_out")
+    report = json.loads((tmp_path / "first/results/000000010/summary.json").read_text())
+    assert report["full_clip"]["training"]["mean_completion_fraction"] == 0.5
+    assert report["full_clip"]["held_out"]["mean_normalized_return"] == 0.3

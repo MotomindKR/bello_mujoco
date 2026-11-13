@@ -18,31 +18,6 @@ from bello_mujoco.robot_tasks import motion_task_definition
 from bello_mujoco.sim import load_model
 from bello_mujoco.supermimic.kinematics import Kinematics
 from bello_mujoco.supermimic.mdp import imagined_return, lambda_returns
-from bello_mujoco.supermimic.sampling import ReturnSampler, completed_return
-
-
-@pytest.mark.parametrize("gamma", [0.99, 1.0])
-def test_timeout_curriculum_return_is_independent_of_successful_tail_length(gamma):
-    steps = jnp.array([1, 50, 500])
-    reward = 0.1
-    observed = (
-        reward * (1 - gamma**steps) / (1 - gamma) if gamma < 1 else reward * steps
-    )
-    score = jax.jit(
-        lambda terminal, timeout: completed_return(
-            observed,
-            reward * steps,
-            steps,
-            terminal,
-            timeout,
-            gamma=gamma,
-            max_episode_steps=500,
-        )
-    )
-    np.testing.assert_allclose(score(False, True), 10 if gamma < 1 else 50, rtol=1e-6)
-    np.testing.assert_allclose(score(True, True), observed)
-    np.testing.assert_allclose(score(True, False), observed)
-    np.testing.assert_allclose(score(False, False), observed)
 
 
 def test_imagined_return_and_lambda_targets_handle_failure_and_bootstrap():
@@ -65,46 +40,6 @@ def test_imagined_return_and_lambda_targets_handle_failure_and_bootstrap():
         40.0
     )
     assert derivative == pytest.approx(0.125 * 0.9 * 0.8 * 0.7)
-
-
-def test_return_sampler_excludes_held_out_bins_and_preserves_final_bin_width():
-    from types import SimpleNamespace
-
-    bank = SimpleNamespace(
-        fps=50.0,
-        time_offsets=np.array([0, 64]),
-        lengths=np.array([63, 70]),
-        split_ids=np.array([0, 1]),
-    )
-    sampler = ReturnSampler.from_bank(bank)
-    np.testing.assert_array_equal(sampler.starts, [0, 50, 64, 114])
-    np.testing.assert_array_equal(sampler.lengths, [50, 12, 50, 19])
-    state = sampler.initial_state()
-    state = sampler.update(
-        state,
-        jnp.array([0, 1, 1]),
-        jnp.array([10.0, 0.0, 2.0]),
-        jnp.array([True, True, True]),
-        10.0,
-    )
-    probabilities = sampler.probabilities(state, 10.0)
-    np.testing.assert_allclose(state.returns, [2.0, 0.2, 0.0, 0.0])
-    expected_past = (
-        0.999 * sampler.initial_state().past_weights
-        + 0.001 * jax.nn.softmax(jnp.array([-5.0, -0.5, -jnp.inf, -jnp.inf]))
-    )
-    np.testing.assert_allclose(state.past_weights, expected_past)
-    assert probabilities[1] > probabilities[0]
-    np.testing.assert_array_equal(probabilities[2:], [0.0, 0.0])
-    draws = jax.jit(jax.vmap(lambda k: sampler.sample(k, probabilities)))(
-        jax.random.split(jax.random.key(0), 500)
-    )
-    assert draws.max() <= 61 and draws.min() >= 0
-    assert np.unique(np.asarray(draws)[np.asarray(draws) >= 50]).size == 12
-    unchanged = sampler.update(
-        state, jnp.array([0]), jnp.array([0.0]), jnp.array([False]), 10.0
-    )
-    np.testing.assert_array_equal(unchanged.past_weights, state.past_weights)
 
 
 @pytest.fixture
@@ -296,7 +231,10 @@ def test_cuda_mini_compiled_collect_fit_and_improve(mini_corpus, precision):
         imagination_horizon=2,
     )
     run = replace(
-        run, config=cfg, networks=replace(run.networks, matmul_precision=precision)
+        run,
+        config=cfg,
+        networks=replace(run.networks, matmul_precision=precision),
+        sampling=replace(run.sampling, horizon=2),
     )
     env = load_environment(run, load_mjx=True)
     learner = initialize_learner(
@@ -311,7 +249,10 @@ def test_cuda_mini_compiled_collect_fit_and_improve(mini_corpus, precision):
     require_valid_metrics(metrics)
     runner, metrics = improve(runner, env.reference_bank)
     require_valid_metrics(metrics)
+    runner, metrics = collect(runner, env.reference_bank)
+    require_valid_metrics(metrics)
     assert int(runner.actor_updates) == 1
+    assert int(runner.sampling.visits.sum()) > 0
 
 
 @pytest.mark.integration
@@ -367,7 +308,7 @@ def test_mini_checkpoint_actor_restores_exports_and_evaluates_held_out_clip(
         learner,
         collector,
         None,
-        env.sampler.initial_state(),
+        env.sampler.initial_state(10.0),
         jax.random.PRNGKey(2),
         jnp.asarray(1),
         jnp.asarray(1),

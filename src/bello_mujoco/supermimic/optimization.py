@@ -276,7 +276,7 @@ def update_actor_critic(learner, starts, env, config, update, key):
         "actor/loss": loss,
         "critic/loss": critic_losses.mean(),
         "actor/gradient_norm": optax.global_norm(gradient),
-        "imagination/reward": (
+        "imagination/step_reward": (
             rollout.rewards * survival_weights(rollout.terminations)[:-1]
         ).mean(),
         "diagnostic/imagined_reward_abs_max": jnp.abs(rollout.rewards).max(),

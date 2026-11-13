@@ -153,7 +153,6 @@ def sample_imagination_starts(runner, env, config, *, parallel=None):
         config.imagined_batch_size,
         history_frames=env.codec.config.history_frames,
         feedback_frames=env.maximum_observation_delay_steps + 1,
-        horizon=config.imagination_horizon,
     )
     return key, starts, update_key
 
@@ -209,7 +208,7 @@ def compile_updates(env, config, *, parallel=None, parallel_collect=None):
                     "actor/loss",
                     "critic/loss",
                     "actor/gradient_norm",
-                    "imagination/reward",
+                    "imagination/step_reward",
                     "diagnostic/imagined_reward_abs_max",
                     "diagnostic/critic_target_abs_max",
                     "diagnostic/critic_value_abs_max",

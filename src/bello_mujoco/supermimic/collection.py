@@ -10,7 +10,7 @@ from bello_mujoco.envs.geometry import mujoco_values_valid, tree_where
 from bello_mujoco.supermimic.control import motor_limit_flags
 from bello_mujoco.supermimic.replay import ReplayBuffer, Transition
 from bello_mujoco.supermimic.model import state_delta
-from bello_mujoco.supermimic.sampling import completed_return
+from bello_mujoco.supermimic.sampling import SamplingWindow
 from bello_mujoco.supermimic.state import PhysicalState
 
 
@@ -21,8 +21,7 @@ class CollectorState:
     observation: jax.Array
     history: jax.Array
     episode_ids: jax.Array
-    start_bins: jax.Array
-    discounted_returns: jax.Array
+    sampling_window: SamplingWindow
     vector_steps: jax.Array
 
 
@@ -118,14 +117,12 @@ def initialize_collection(env, config, learner, key, *, axis_name=None):
         reset_key = jax.random.fold_in(reset_key, jax.lax.axis_index(axis_name))
     state, observation = env.reset_batch(config.num_envs, reset_key)
     history = jax.vmap(env.codec.initial_history)(observation)
-    bins = jnp.searchsorted(env.sampler.starts, state.reference_time, side="right") - 1
     collector = CollectorState(
         state,
         observation,
         history,
         jnp.zeros(config.num_envs, jnp.int32),
-        bins,
-        jnp.zeros(config.num_envs),
+        SamplingWindow.empty(config.num_envs, env.sampler.config.horizon),
         jnp.asarray(0, jnp.int32),
     )
     flags = {
@@ -158,7 +155,7 @@ def initialize_collection(env, config, learner, key, *, axis_name=None):
         learner,
         collector,
         replay,
-        env.sampler.initial_state(),
+        env.sampler.initial_state(maximum_return(env, config)),
         key,
         jnp.asarray(0, jnp.int32),
         jnp.asarray(0, jnp.int32),
@@ -265,24 +262,27 @@ def update_collection(runner, policy, outcome, env, config, *, axis_name=None):
         & ~jnp.any(jnp.stack(tuple(rejected.values())), axis=0)
     )
     done = done | ~valid
-    discounted = (
-        collector.discounted_returns + config.gamma**before.episode_length * reward
+    horizon = env.sampler.config.horizon
+    window = collector.sampling_window.record(
+        collector.vector_steps % horizon,
+        env.sampler.bin_index(before.reference_time),
+        env.sampler.bin_index(after.reference_time),
+        jnp.where(valid, reward, 0.0),
+        info["done/terminal"] | ~valid,
+        transition.remaining_steps <= 1,
+        info["done/timeout"],
+        valid,
     )
-    sampling = env.sampler.update(
-        runner.sampling,
-        collector.start_bins,
-        completed_return(
-            discounted,
-            after.episode_return,
-            after.episode_length,
-            info["done/terminal"],
-            info["done/timeout"],
-            gamma=config.gamma,
-            max_episode_steps=episode_horizon(env, config),
+    sampling = jax.lax.cond(
+        (collector.vector_steps + 1) % horizon == 0,
+        lambda: env.sampler.update(
+            runner.sampling,
+            window,
+            maximum_return(env, config),
+            config.gamma,
+            axis_name=axis_name,
         ),
-        done & valid,
-        maximum_return(env, config),
-        axis_name=axis_name,
+        lambda: runner.sampling,
     )
     next_history = jax.vmap(env.codec.advance_history)(collector.history, observation)
     next_collector = CollectorState(
@@ -290,8 +290,7 @@ def update_collection(runner, policy, outcome, env, config, *, axis_name=None):
         observation,
         next_history,
         collector.episode_ids + done.astype(jnp.int32),
-        collector.start_bins,
-        jnp.where(done, 0.0, discounted),
+        window,
         collector.vector_steps + 1,
     )
     learner = replace(
@@ -321,7 +320,7 @@ def update_collection(runner, policy, outcome, env, config, *, axis_name=None):
         reward_sum, valid_count = jax.lax.psum((reward_sum, valid_count), axis_name)
     metrics = {
         **env.physics_metrics(after.data),
-        "collection/reward": reward_sum / jnp.maximum(valid_count, 1),
+        "collection/step_reward": reward_sum / jnp.maximum(valid_count, 1),
         "collection/completed": done.sum(),
         "collection/failures": info["done/terminal"].sum(),
         "collection/limited_fraction": jnp.mean(
@@ -336,6 +335,12 @@ def update_collection(runner, policy, outcome, env, config, *, axis_name=None):
             for name, flags in limit_flags.items()
         },
         "collection/rejected": (~valid).sum(),
+        "sampling/max_reset_probability": sampling.probabilities.max(),
+        "sampling/effective_reset_bins": 1.0 / jnp.sum(sampling.probabilities**2),
+        "sampling/visited_fraction": jnp.sum(
+            (sampling.visits > 0) & env.sampler.eligible
+        )
+        / env.sampler.eligible.sum(),
         "diagnostic/environment": jnp.where(jnp.any(~valid), first, -1),
         "diagnostic/clip": transition.clip_id[first],
         "diagnostic/frame": transition.reference_frame[first]
@@ -348,7 +353,7 @@ def update_collection(runner, policy, outcome, env, config, *, axis_name=None):
         result,
         done,
         policy.reset_key,
-        env.sampler.probabilities(sampling, maximum_return(env, config)),
+        sampling.probabilities,
         metrics,
         valid_count,
     )
@@ -368,16 +373,11 @@ def finish_collection(update, reset, env, *, axis_name=None):
     collector = runner.collector
     reset_state, reset_observation = reset
     reset_history = jax.vmap(env.codec.initial_history)(reset_observation)
-    bins = (
-        jnp.searchsorted(env.sampler.starts, reset_state.reference_time, side="right")
-        - 1
-    )
     next_collector = replace(
         collector,
         environment=tree_where(done, reset_state, collector.environment),
         observation=jnp.where(done[:, None], reset_observation, collector.observation),
         history=jnp.where(done[:, None, None], reset_history, collector.history),
-        start_bins=jnp.where(done, bins, collector.start_bins),
     )
     finite = jnp.all(
         jnp.stack(

@@ -17,7 +17,7 @@ from bello_mujoco.supermimic.model import NetworkConfig
 from bello_mujoco.supermimic.observations import ObservationCodec
 from bello_mujoco.supermimic.optimization import initialize_learner
 from bello_mujoco.supermimic.replay import ReplayBuffer
-from bello_mujoco.supermimic.sampling import SamplingState
+from bello_mujoco.supermimic.sampling import SamplingState, SamplingWindow
 from bello_mujoco.training.supermimic import DatasetConfig, SuperMimicTrainingRunConfig
 from test_supermimic_learning import transition
 
@@ -73,12 +73,13 @@ def continuation(tmp_path, monkeypatch):
         jnp.zeros((2, env.codec.sample_size)),
         jnp.zeros((2, 2, env.codec.sample_size)),
         jnp.zeros(2, jnp.int32),
-        jnp.zeros(2, jnp.int32),
-        jnp.ones(2),
+        SamplingWindow.empty(2, 3),
         jnp.asarray(3),
     )
     replay = ReplayBuffer.empty(transition(0), 8).insert(transition(0))
-    sampler = SamplingState(jnp.array([1.0]), jnp.array([1]), jnp.array([1.0]))
+    sampler = SamplingState(
+        jnp.array([1.0]), jnp.array([1]), jnp.array([1.0]), jnp.zeros(1), jnp.ones(1)
+    )
     runner = RunnerState(
         learner,
         collector,
@@ -103,7 +104,7 @@ def test_failure_bundle_restores_the_preupdate_learner_starts_and_rng(
 ):
     runner, run, digest = continuation
     starts = runner.replay.sample_starts(
-        jax.random.key(5), 2, history_frames=2, feedback_frames=1, horizon=2
+        jax.random.key(5), 2, history_frames=2, feedback_frames=1
     )
     key = jax.random.key(11)
     path = tmp_path / "failure"

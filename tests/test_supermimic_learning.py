@@ -83,7 +83,7 @@ def test_rejected_replay_rows_never_train_windows_or_start_imagination():
     assert np.all(np.asarray(window.mask[:, 1]) == np.asarray(window.mask[:, 2]))
     assert np.isfinite(window.transitions.action).all()
     starts = replay.sample_starts(
-        jax.random.key(4), 128, history_frames=1, feedback_frames=1, horizon=1
+        jax.random.key(4), 128, history_frames=1, feedback_frames=1
     )
     assert starts.valid
     assert not np.any(
@@ -123,9 +123,7 @@ def test_replay_wrap_and_history_do_not_cross_episodes_or_evicted_records():
             )
         )
     starts = jax.jit(
-        lambda b, k: b.sample_starts(
-            k, 64, history_frames=3, feedback_frames=2, horizon=2
-        )
+        lambda b, k: b.sample_starts(k, 64, history_frames=3, feedback_frames=2)
     )(replay, jax.random.key(3))
     assert starts.valid
     times = np.asarray(starts.transition.reference_frame)
@@ -147,7 +145,7 @@ def test_replay_wrap_and_history_do_not_cross_episodes_or_evicted_records():
         ),
     )
     assert not exhausted.sample_starts(
-        jax.random.key(4), 2, history_frames=2, feedback_frames=1, horizon=2
+        jax.random.key(4), 2, history_frames=2, feedback_frames=1
     ).valid
 
 
@@ -277,3 +275,17 @@ def test_world_model_sums_time_errors_and_masks_resets_without_reweighting_windo
     )
     # Four unit joint errors, fourteen state channels, two sampled windows.
     assert float(loss) == pytest.approx(4 / 14 / 2, rel=1e-6)
+
+
+def test_actor_starts_include_the_last_valid_transition_of_short_motion_tails():
+    replay = ReplayBuffer.empty(transition(0), 4)
+    tail = replace(
+        transition(0), remaining_steps=jnp.ones(2, jnp.int32), timeout=jnp.ones(2, bool)
+    )
+    replay = replay.insert(tail)
+    starts = replay.sample_starts(
+        jax.random.key(5), 8, history_frames=3, feedback_frames=1
+    )
+    assert starts.valid
+    np.testing.assert_array_equal(starts.transition.remaining_steps, 1)
+    np.testing.assert_array_equal(starts.history[..., 1], 0)

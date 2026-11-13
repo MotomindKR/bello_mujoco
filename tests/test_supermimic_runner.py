@@ -21,7 +21,7 @@ from bello_mujoco.supermimic.mdp import TrackingConfig, TrackingMDP
 from bello_mujoco.supermimic.model import NetworkConfig
 from bello_mujoco.supermimic.observations import ObservationCodec
 from bello_mujoco.supermimic.optimization import initialize_learner
-from bello_mujoco.supermimic.sampling import ReturnSampler
+from bello_mujoco.supermimic.sampling import ReturnSampler, SamplingConfig
 from bello_mujoco.training.supermimic import compile_updates, require_valid_metrics
 
 
@@ -221,7 +221,7 @@ def toy_runner():
     codec = ObservationCodec(
         ObservationConfig(history_frames=2, future_frames=2), jnp.zeros(1)
     )
-    sampler = ReturnSampler.from_bank(bank)
+    sampler = ReturnSampler.from_bank(bank, SamplingConfig(horizon=2))
     env = ToyEnv(
         bank,
         kin,
@@ -229,7 +229,7 @@ def toy_runner():
         mapping,
         TrackingMDP(kin, jnp.array([-1.0]), jnp.array([1.0]), 0.02, TrackingConfig()),
         sampler,
-        sampler.probabilities(sampler.initial_state(), 10.0),
+        sampler.uniform_probabilities,
     )
     config = LearningConfig(
         num_envs=2,
@@ -255,7 +255,7 @@ def toy_runner():
 
 def test_collection_episode_cap_preserves_timeout_successor_and_resets(toy_runner):
     env, config, runner = toy_runner
-    config = replace(config, max_episode_steps=1, gamma=1.0)
+    config = replace(config, max_episode_steps=1)
     collect, _, _ = compile_updates(env, config)
     result, metrics = collect(runner, env.reference_bank)
     require_valid_metrics(metrics)
@@ -265,7 +265,9 @@ def test_collection_episode_cap_preserves_timeout_successor_and_resets(toy_runne
     np.testing.assert_array_equal(result.collector.environment.episode_length, 0)
     np.testing.assert_array_equal(result.collector.episode_ids, 1)
     np.testing.assert_array_equal(stored.episode_step[0], 0)
-    assert maximum_return(env, config) == pytest.approx(5 * env.control_timestep)
+    assert maximum_return(env, config) == pytest.approx(
+        5 * env.control_timestep / (1 - config.gamma)
+    )
 
 
 def test_exploration_clip_is_recorded_without_projecting_the_pd_setpoint(toy_runner):
@@ -294,7 +296,7 @@ def test_imagination_keeps_gradients_beyond_collection_action_clip(
     env, config, runner = toy_runner
     runner, _ = collect_step(runner, env, config)
     starts = runner.replay.sample_starts(
-        jax.random.key(3), 2, history_frames=2, feedback_frames=1, horizon=2
+        jax.random.key(3), 2, history_frames=2, feedback_frames=1
     )
     actor = eqx.tree_at(
         lambda a: a.decoder.layers[-1].bias,
@@ -388,7 +390,7 @@ def test_collection_resets_nonfinite_feedback_without_poisoning_replay_or_moment
         assert np.isfinite(moments.variance).all()
     assert all(np.isfinite(x).all() for x in jax.tree.leaves(result.replay))
     starts = result.replay.sample_starts(
-        jax.random.key(9), 32, history_frames=2, feedback_frames=1, horizon=2
+        jax.random.key(9), 32, history_frames=2, feedback_frames=1
     )
     assert starts.valid
     assert np.all(np.asarray(starts.transition.reward) != 0)
@@ -561,12 +563,13 @@ def test_collector_bootstraps_timeout_curriculum_but_preserves_replay_flags(
     for _ in range(2):
         runner, _ = collect(runner, env.reference_bank)
     rewards = np.asarray(runner.replay.data.reward[:2])
-    expected = (rewards[0] + config.gamma * rewards[1]) + (
-        config.gamma**2 * rewards.mean(axis=0) / (1 - config.gamma)
-    )
-    assert float(runner.sampling.returns[0]) == pytest.approx(
-        env.sampler.config.return_alpha * expected.mean(), rel=1e-5
-    )
+    expected = np.stack(
+        (
+            rewards[0] + config.gamma * (rewards[1] + config.gamma * 10.0),
+            rewards[1] + config.gamma * 10.0,
+        )
+    ).mean()
+    assert float(runner.sampling.returns[0]) == pytest.approx(expected, rel=1e-5)
     assert np.all(runner.replay.data.timeout[1])
     assert not np.any(runner.replay.data.terminal[1])
 

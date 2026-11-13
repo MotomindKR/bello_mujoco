@@ -23,6 +23,8 @@ checkpoint_config:
   every_updates: 2000
 checkpoint_evaluation:
   enabled: true
+  cpu_cores: 4
+  evaluate_held_out: true
   windows:
     - {clip: dance2_subject1, start_frame: 10027, max_steps: 400}
     - {clip: jumps1_subject1, start_frame: 11613, max_steps: 400}

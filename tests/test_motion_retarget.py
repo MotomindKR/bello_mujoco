@@ -69,6 +69,8 @@ def test_offline_retarget_preserves_feasible_solver_poses_and_source_clock(
             retarget=solve,
             extra_floor_passes=0,
             max_floor_projection_m=0.0,
+            initial_pose_passes=0,
+            initial_pose_residual=0.0,
         ),
     )
     monkeypatch.setattr(
@@ -159,3 +161,47 @@ def test_reference_velocities_use_central_differences_in_the_current_root_frame(
         np.testing.assert_allclose(
             rotations[frame].apply(velocity[frame, 3:6]), expected, atol=1e-12
         )
+
+
+def test_offline_first_pose_converges_before_recording_without_freezing_motion(
+    model, monkeypatch
+):
+    wrapper = object.__new__(retarget._OfflineGmrRetargeter)
+    wrapper.model = model.mj_model
+    wrapper._initialized = False
+    wrapper.pose = model.mj_model.qpos0.copy()
+    calls = []
+
+    def solve(self, target):
+        self._initialized = True
+        self.pose[7] += 0.5 * (target - self.pose[7])
+        calls.append(target)
+        return self.pose.copy()
+
+    monkeypatch.setattr(retarget._OfflineGmrRetargeter, "_solve_floor", solve)
+    first = wrapper._solve(1.0)
+    assert first[7] == pytest.approx(1.0, abs=0.01)
+    assert len(calls) > 1
+    before = len(calls)
+    second = wrapper._solve(1.1)
+    assert len(calls) == before + 1
+    assert second[7] > first[7]
+    assert pose_velocities(model.mj_model, np.stack((first, second)), 50)[0, 6] > 0
+
+
+def test_nonconverging_initial_pose_is_rejected_instead_of_exported(model, monkeypatch):
+    wrapper = object.__new__(retarget._OfflineGmrRetargeter)
+    wrapper.model = model.mj_model
+    wrapper._initialized = False
+    wrapper.pose = model.mj_model.qpos0.copy()
+
+    def solve(self, _):
+        self._initialized = True
+        self.pose[7] += 0.01
+        return self.pose.copy()
+
+    monkeypatch.setattr(retarget._OfflineGmrRetargeter, "_solve_floor", solve)
+    with pytest.raises(
+        retarget.RetargetValidationError, match="initial GMR pose did not converge"
+    ):
+        wrapper._solve(None)
