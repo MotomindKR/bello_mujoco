@@ -195,6 +195,8 @@ baseline, not a claim to reproduce the exact unpublished headline-run settings.
   before stepping; goals then advance and clamp at clip endings. Collection time
   caps bootstrap as timeouts. Full-clip evaluation retains recording duration.
 - Imagined termination is a sigmoid of the maximum normalized height/tilt error.
+  Backpropagation recomputes each imagined step's network activations instead of
+  retaining them across the full horizon, preserving the loss and batch sizes.
   Actor bootstraps are upper-bounded by the attainable discounted reward; critic
   GAE uses raw values and clamps final targets. Five critic epochs reuse one
   shuffled partition. Fully terminated imagination becomes absorbing to prevent

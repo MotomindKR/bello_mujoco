@@ -106,7 +106,9 @@ def imagine(actor, model, starts, env, normalizers, *, key, horizon):
 
         initial = (start.state, history, feedback_history, noise_key, jnp.asarray(1.0))
         _, (states, actions, terminations) = jax.lax.scan(
-            step, initial, (frames[:-1], jax.tree.map(lambda x: x[:-1], references))
+            jax.checkpoint(step, prevent_cse=False),
+            initial,
+            (frames[:-1], jax.tree.map(lambda x: x[:-1], references)),
         )
         states = jax.tree.map(
             lambda first, rest: jnp.concatenate((first[None], rest)),

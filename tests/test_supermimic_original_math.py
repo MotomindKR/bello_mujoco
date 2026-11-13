@@ -133,6 +133,49 @@ def test_muon_partition_and_updates_match_torch():
             )
 
 
+def test_imagination_recomputation_preserves_rollout_and_policy_gradient(
+    toy_runner, monkeypatch
+):
+    from bello_mujoco.supermimic.collection import collect_step
+    from bello_mujoco.supermimic.imagination import actor_loss
+
+    env, config, runner = toy_runner
+    for _ in range(3):
+        runner, _ = collect_step(runner, env, config)
+    starts = runner.replay.sample_starts(
+        jax.random.key(3), 2, history_frames=2, feedback_frames=1
+    )
+    learner = runner.learner
+    norms = (learner.input_norm, learner.observation_norm, learner.goal_norm)
+
+    def objective(actor):
+        return actor_loss(
+            actor,
+            learner.model,
+            learner.critic,
+            starts,
+            env,
+            norms,
+            key=jax.random.key(4),
+            horizon=4,
+            gamma=config.gamma,
+        )
+
+    actual = eqx.filter_jit(eqx.filter_value_and_grad(objective, has_aux=True))(
+        learner.actor
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(jax, "checkpoint", lambda function, **kwargs: function)
+        expected = eqx.filter_jit(
+            eqx.filter_value_and_grad(lambda actor: objective(actor), has_aux=True)
+        )(learner.actor)
+    assert any(np.any(np.asarray(x) != 0) for x in jax.tree.leaves(actual[1]))
+    for result, reference in zip(
+        jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True
+    ):
+        np.testing.assert_allclose(result, reference, rtol=2e-5, atol=2e-6)
+
+
 @pytest.fixture
 def toy_runner():
     from test_supermimic_runner import toy_runner as factory
