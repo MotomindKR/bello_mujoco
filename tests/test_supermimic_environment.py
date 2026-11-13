@@ -321,7 +321,14 @@ def test_mini_checkpoint_actor_restores_exports_and_evaluates_held_out_clip(
         env, run.config, run.networks, env.action_size + 5, jax.random.PRNGKey(1)
     )
     # Actor-only consumers do not need a simulator/replay allocation.
-    collector = CollectorState(*([jnp.zeros(1)] * 6), vector_steps=jnp.asarray(4))
+    collector = CollectorState(
+        environment=jnp.zeros(1),
+        observation=jnp.zeros(1),
+        history=jnp.zeros(1),
+        episode_ids=jnp.zeros(1),
+        sampling_window=jnp.zeros(1),
+        vector_steps=jnp.asarray(4),
+    )
     runner = RunnerState(
         learner,
         collector,
